@@ -19,12 +19,12 @@
   <div class="backend-cards">
     <label class="card backend-card">
       <input type="radio" name="backend" value="{{ pam_board_value }}" {% if backend == pam_board_value %}checked{% endif %} onchange="saveBackend(this.value)">
-      <strong>Pam board</strong> <span class="pill pill-ok">Recommended</span>
+      <strong>Pam board</strong>
       <span class="muted">Built in. No outside account needed. Pam creates a project with a first sprint for you.</span>
     </label>
     <label class="card backend-card">
       <input type="radio" name="backend" value="{{ ado_value }}" {% if backend == ado_value %}checked{% endif %} onchange="saveBackend(this.value)">
-      <strong>Azure DevOps</strong>
+      <strong><img src="/static/icons/azuredevops.svg" alt="" width="16" height="16"> Azure DevOps</strong>
       <span class="muted">Use your existing project. Enter the org URL, project, and access token in Step 3.</span>
     </label>
     <label class="card backend-card">

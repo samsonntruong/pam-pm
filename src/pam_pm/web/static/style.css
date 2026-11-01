@@ -900,3 +900,11 @@ main.content > p:has(> a.btn) { display: flex; gap: 0.5rem; flex-wrap: wrap; }
   justify-content: center;
   flex-shrink: 0;
 }
+
+/* Dark theme only: light chip behind brand icons so dark-fill marks stay readable. */
+:root:not([data-theme="light"]) .backend-card img[src^="/static/icons/"] {
+  background: #eef2f6;
+  border-radius: 5px;
+  padding: 2px;
+  vertical-align: -4px;
+}
