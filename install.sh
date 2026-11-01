@@ -158,15 +158,15 @@ DESKTOP_WANTED=0
 if [ "$NO_DESKTOP" -eq 0 ] && [ "$(uname -s)" = "Darwin" ]; then
     DESKTOP_WANTED=1
 fi
-INSTALL_SPEC="$INSTALL_SOURCE"
+INSTALL_SPEC="pam-pm @ $INSTALL_SOURCE"
 if [ "$DESKTOP_WANTED" -eq 1 ]; then
     INSTALL_SPEC="pam-pm[desktop] @ $INSTALL_SOURCE"
 fi
 
 step "Step 3 of 4: Installing Pam from $INSTALL_SOURCE."
 echo "  Re-running later upgrades Pam in place. Your data is never touched."
-run "Running: uv tool install --python 3.12 --force $INSTALL_SPEC" \
-    "uv tool install --python 3.12 --force $INSTALL_SPEC" \
+run "Running: uv tool install --python 3.12 --force \"$INSTALL_SPEC\"" \
+    "uv tool install --python 3.12 --force \"$INSTALL_SPEC\"" \
     uv tool install --python 3.12 --force "$INSTALL_SPEC"
 
 run "Running: uv tool update-shell" "uv tool update-shell" \

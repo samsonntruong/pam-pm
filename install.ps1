@@ -167,16 +167,16 @@ if ($DryRun) {
 }
 
 $DesktopWanted = -not $NoDesktop
-$PamSpec = $InstallSource
+$PamSpec = "pam-pm @ $InstallSource"
 if ($DesktopWanted) {
     $PamSpec = "pam-pm[desktop] @ $InstallSource"
 }
 
 Show-Step "Step 3 of 4: Installing Pam from $InstallSource."
 Write-Output "  Re-running later upgrades Pam in place. Your data is never touched."
-Invoke-Step -Label "Running: uv tool install --python 3.12 --force $PamSpec" -Action {
+Invoke-Step -Label "Running: uv tool install --python 3.12 --force ""$PamSpec""" -Action {
     & uv tool install --python 3.12 --force $PamSpec
-} -DryText "uv tool install --python 3.12 --force $PamSpec"
+} -DryText "uv tool install --python 3.12 --force ""$PamSpec"""
 
 Invoke-Step -Label "Running: uv tool update-shell" -Action {
     & uv tool update-shell

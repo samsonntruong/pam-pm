@@ -1,7 +1,8 @@
 """Azure DevOps adapter over REST 7.1 with httpx.
 
-The PAT comes from the ADO_PAT env var only; it is never accepted as an
-argument and never appears in errors or logs.
+Org, project, team, and PAT resolve explicit, then env, then saved
+wizard values. The PAT is never accepted as an argument and never
+appears in errors or logs.
 """
 
 from __future__ import annotations
@@ -9,6 +10,7 @@ from __future__ import annotations
 import base64
 import os
 import re
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
@@ -84,17 +86,35 @@ class ADOAdapter(PMAdapter):
         timeout: int = 30,
         transport: httpx.BaseTransport | None = None,
         process: str | None = None,
+        data_dir: str | Path | None = None,
     ) -> None:
-        org = (org_url or os.environ.get("ADO_ORG_URL", "")).strip().rstrip("/")
-        proj = (project or os.environ.get("ADO_PROJECT", "")).strip()
-        pat = os.environ.get("ADO_PAT", "").strip()
+        saved_org = ""
+        saved_proj = ""
+        saved_team = ""
+        saved_pat = ""
+        try:
+            from pam_pm.core import secrets as secrets_mod
+
+            effective = secrets_mod.effective_ado_config(data_dir)
+            saved_org = str(effective.get("org_url", "") or "")
+            saved_proj = str(effective.get("project", "") or "")
+            saved_team = str(effective.get("team", "") or "")
+            saved_pat = str(effective.get("pat", "") or "")
+        except Exception:  # noqa: BLE001
+            saved_org = os.environ.get("ADO_ORG_URL", "")
+            saved_proj = os.environ.get("ADO_PROJECT", "")
+            saved_team = os.environ.get("ADO_TEAM", "")
+            saved_pat = os.environ.get("ADO_PAT", "")
+        org = (org_url or "").strip().rstrip("/") or saved_org.strip().rstrip("/")
+        proj = (project or "").strip() or saved_proj.strip()
+        pat = saved_pat.strip()
         if not org or not proj:
             raise ADOError("ADO_ORG_URL and ADO_PROJECT are required.")
         if not pat:
-            raise ADOError("ADO_PAT is missing; set it in the env.")
+            raise ADOError("ADO_PAT is missing; save it in Setup or set ADO_PAT.")
         self._org = org
         self._project = proj
-        self._team = (team or os.environ.get("ADO_TEAM", "")).strip()
+        self._team = (team or "").strip() or saved_team.strip()
         self._pat = pat
         basic = base64.b64encode((":" + pat).encode("utf-8")).decode("ascii")
         self._basic = "Basic " + basic

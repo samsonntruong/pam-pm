@@ -13,6 +13,7 @@ import logging
 import os
 import re
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -33,10 +34,22 @@ def redact(text: object, extra: str | None = None) -> str:
     out = str(text)
     for pattern in _TOKEN_RES:
         out = pattern.sub("[REDACTED]", out)
+    saved_bot = ""
+    saved_app = ""
+    try:
+        from pam_pm.core import secrets as secrets_mod
+
+        saved_bot = secrets_mod.load_secret("SLACK_BOT_TOKEN")
+        saved_app = secrets_mod.load_secret("SLACK_APP_TOKEN")
+    except Exception:  # noqa: BLE001
+        saved_bot = ""
+        saved_app = ""
     secrets = [
         extra,
         os.environ.get("SLACK_BOT_TOKEN", ""),
         os.environ.get("SLACK_APP_TOKEN", ""),
+        saved_bot,
+        saved_app,
     ]
     for val in secrets:
         if val and len(val) >= 4 and val in out:
@@ -56,11 +69,31 @@ class SlackAdapter(ChatAdapter):
         bot_token: str | None = None,
         app_token: str | None = None,
         timeout: int = 30,
+        data_dir: str | Path | None = None,
     ) -> None:
-        self._bot_token = bot_token or os.environ.get("SLACK_BOT_TOKEN", "")
-        self._app_token = app_token or os.environ.get("SLACK_APP_TOKEN", "")
+        self._bot_token = self._resolve_token(
+            "SLACK_BOT_TOKEN", bot_token, data_dir
+        )
+        self._app_token = self._resolve_token(
+            "SLACK_APP_TOKEN", app_token, data_dir
+        )
         self._timeout = timeout
         self._client: Any = None
+
+    @staticmethod
+    def _resolve_token(name: str, explicit: str | None, data_dir: str | Path | None) -> str:
+        text = (explicit or "").strip()
+        if text:
+            return text
+        env_value = os.environ.get(name, "").strip()
+        if env_value:
+            return env_value
+        try:
+            from pam_pm.core import secrets as secrets_mod
+
+            return secrets_mod.load_secret(name, data_dir)
+        except Exception:  # noqa: BLE001
+            return ""
 
     @property
     def app_token_configured(self) -> bool:

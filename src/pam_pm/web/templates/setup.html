@@ -25,7 +25,7 @@
     <label class="card backend-card">
       <input type="radio" name="backend" value="{{ ado_value }}" {% if backend == ado_value %}checked{% endif %} onchange="saveBackend(this.value)">
       <strong>Azure DevOps</strong>
-      <span class="muted">Use your existing project. Add ADO_ORG_URL, ADO_PROJECT, and ADO_PAT to your secrets file.</span>
+      <span class="muted">Use your existing project. Enter the org URL, project, and access token in Step 3.</span>
     </label>
     <div class="card backend-card" aria-disabled="true">
       <strong>Jira, Asana, Linear</strong> <span class="pill">Coming soon</span>
@@ -43,13 +43,22 @@
     <label class="card backend-card">
       <input type="radio" name="provider" value="meta" {% if provider != "custom" %}checked{% endif %} onchange="toggleProvider(this.value)">
       <strong>Meta</strong> <span class="pill pill-ok">Recommended</span>
-      <span class="muted">Uses the Meta Responses API. Add META_MODEL, META_BASE_URL, and META_API_KEY to your secrets file.</span>
+      <span class="muted">Uses the Meta Responses API. Enter the model, base URL, and API key below.</span>
     </label>
     <label class="card backend-card">
       <input type="radio" name="provider" value="custom" {% if provider == "custom" %}checked{% endif %} onchange="toggleProvider(this.value)">
       <strong>Custom OpenAI compatible</strong>
       <span class="muted">Use your own endpoint. The key is stored only on this machine.</span>
     </label>
+  </div>
+  <div id="meta-fields" {% if provider == "custom" %}hidden{% endif %}>
+    <label for="meta-model">Model name</label>
+    <input id="meta-model" name="meta_model" type="text" value="{{ meta_model }}" placeholder="model-id" autocomplete="off">
+    <label for="meta-base-url">Base URL</label>
+    <input id="meta-base-url" name="meta_base_url" type="url" value="{{ meta_base_url }}" placeholder="https://host:8000" autocomplete="off">
+    <label for="meta-key">API key</label>
+    <input id="meta-key" name="meta_api_key" type="password" value="" placeholder="{% if meta_has_key %}Saved on this machine{% else %}Paste key here{% endif %}" autocomplete="off">
+    {% if meta_has_key %}<p class="muted">A key is saved on this machine. Paste a new one only to replace it.</p>{% endif %}
   </div>
   <div id="custom-fields" {% if provider != "custom" %}hidden{% endif %}>
     <label for="provider-base-url">Base URL</label>
@@ -61,8 +70,8 @@
     {% if provider_has_key %}<p class="muted">A key is saved on this machine. Paste a new one only to replace it.</p>{% endif %}
   </div>
   <div>
-    <button type="button" onclick="saveProvider()">Save provider</button>
-    <button hx-post="/api/test/provider?project={{ project }}" hx-target="#meta-result" hx-swap="innerHTML" onclick="saveStep('model')">Test provider</button>
+    <button type="button" onclick="saveProvider()">Save</button>
+    <button hx-post="/api/test/provider?project={{ project }}" hx-target="#meta-result" hx-swap="innerHTML">Test</button>
   </div>
   <div id="provider-result" class="result" aria-live="polite"></div>
   <div id="meta-result" class="result" aria-live="polite"></div>
@@ -72,8 +81,16 @@
 <section class="card" id="step-2">
   <h2>Step 2: Slack</h2>
   <p>The team lead or a workspace admin creates ONE internal Slack app once from the file slack-app-manifest.yaml. Everyone else installs nothing and just gets messages from Pam. If installs need approval in your workspace, ask a workspace admin to approve it.</p>
-  <p>Add SLACK_BOT_TOKEN to your secrets file, then check the connection.</p>
-  <button hx-post="/api/test/slack?project={{ project }}" hx-target="#slack-result" hx-swap="innerHTML" onclick="saveStep('slack')">Check Slack</button>
+  <p>Paste the tokens below, choose Save, then Test.</p>
+  <label for="slack-bot">Bot token</label>
+  <input id="slack-bot" name="bot_token" type="password" value="" placeholder="{% if slack_has_bot %}Saved on this machine{% else %}Paste bot token here{% endif %}" autocomplete="off">
+  <label for="slack-app">App token (for live messages)</label>
+  <input id="slack-app" name="app_token" type="password" value="" placeholder="{% if slack_has_app %}Saved on this machine{% else %}Paste app token here{% endif %}" autocomplete="off">
+  <div>
+    <button type="button" onclick="saveSlack()">Save</button>
+    <button hx-post="/api/test/slack?project={{ project }}" hx-target="#slack-result" hx-swap="innerHTML">Test</button>
+  </div>
+  <div id="slack-save-result" class="result" aria-live="polite"></div>
   <div id="slack-result" class="result" aria-live="polite"></div>
   <h3>Tell your team</h3>
   <p>Copy and send this to the team:</p>
@@ -82,8 +99,20 @@
 
 <section class="card" id="step-3" {% if not show_ado %}hidden{% endif %}>
   <h2>Step 3: Azure DevOps</h2>
-  <p>Only needed when Azure DevOps is chosen above. Add ADO_ORG_URL, ADO_PROJECT, and ADO_PAT to your secrets file, then check the connection.</p>
-  <button hx-post="/api/test/ado?project={{ project }}" hx-target="#ado-result" hx-swap="innerHTML" onclick="saveStep('ado')">Check Azure DevOps</button>
+  <p>Only needed when Azure DevOps is chosen above. Paste the values below, choose Save, then Test.</p>
+  <label for="ado-org">Org URL</label>
+  <input id="ado-org" name="org_url" type="url" value="{{ ado_org_url }}" placeholder="https://dev.azure.com/your-org" autocomplete="off">
+  <label for="ado-project">Project</label>
+  <input id="ado-project" name="project_name" type="text" value="{{ ado_project }}" placeholder="project name" autocomplete="off">
+  <label for="ado-team">Team (optional)</label>
+  <input id="ado-team" name="team" type="text" value="{{ ado_team }}" placeholder="team name" autocomplete="off">
+  <label for="ado-pat">Access token</label>
+  <input id="ado-pat" name="pat" type="password" value="" placeholder="{% if ado_has_pat %}Saved on this machine{% else %}Paste token here{% endif %}" autocomplete="off">
+  <div>
+    <button type="button" onclick="saveAdo()">Save</button>
+    <button hx-post="/api/test/ado?project={{ project }}" hx-target="#ado-result" hx-swap="innerHTML">Test</button>
+  </div>
+  <div id="ado-save-result" class="result" aria-live="polite"></div>
   <div id="ado-result" class="result" aria-live="polite"></div>
 </section>
 
@@ -94,7 +123,7 @@
   <textarea id="people" name="people" rows="3" placeholder="Ana&#10;Sam">{{ people_names }}</textarea>
   <div>
     <button onclick="savePeople()">Save teammates</button>
-    <button hx-post="/api/test/people?project={{ project }}" hx-target="#people-result" hx-swap="innerHTML">Check teammates</button>
+    <button hx-post="/api/test/people?project={{ project }}" hx-target="#people-result" hx-swap="innerHTML">Test</button>
   </div>
   <div id="people-result" class="result" aria-live="polite"></div>
 </section>
@@ -102,14 +131,14 @@
 <section class="card" id="step-5">
   <h2>Step 5: Rules</h2>
   <p>Choose which automatic messages you want on the <a href="/rules?project={{ project }}">Rules</a> page, then check.</p>
-  <button hx-post="/api/test/rules?project={{ project }}" hx-target="#rules-result" hx-swap="innerHTML" onclick="saveStep('rules')">Check rules</button>
+  <button hx-post="/api/test/rules?project={{ project }}" hx-target="#rules-result" hx-swap="innerHTML" onclick="saveStep('rules')">Test</button>
   <div id="rules-result" class="result" aria-live="polite"></div>
 </section>
 
 <section class="card" id="step-6">
   <h2>Step 6: Safety</h2>
   <p>Dry run is {% if dry_run %}on{% else %}off{% endif %}. Daily spend cap is {{ spend_cap }}. When dry run is on, Pam shows what it would do without changing anything. Review these values, then check.</p>
-  <button hx-post="/api/test/safety?project={{ project }}" hx-target="#safety-result" hx-swap="innerHTML" onclick="saveStep('safety')">Check safety</button>
+  <button hx-post="/api/test/safety?project={{ project }}" hx-target="#safety-result" hx-swap="innerHTML" onclick="saveStep('safety')">Test</button>
   <div id="safety-result" class="result" aria-live="polite"></div>
 </section>
 
@@ -154,10 +183,59 @@
   }
   function toggleProvider(value) {
     const fields = document.getElementById("custom-fields");
+    const meta = document.getElementById("meta-fields");
     if (fields) {
       if (value === "custom") { fields.removeAttribute("hidden"); }
       else { fields.setAttribute("hidden", ""); }
     }
+    if (meta) {
+      if (value === "custom") { meta.setAttribute("hidden", ""); }
+      else { meta.removeAttribute("hidden"); }
+    }
+  }
+  function saveResult(boxId, ok, text) {
+    const box = document.getElementById(boxId);
+    if (!box) return;
+    box.innerHTML = "";
+    const pill = document.createElement("span");
+    pill.className = ok ? "pill pill-ok" : "pill pill-fail";
+    pill.textContent = text;
+    box.appendChild(pill);
+  }
+  async function saveSlack() {
+    const project = projectName();
+    const bot = document.getElementById("slack-bot");
+    const app = document.getElementById("slack-app");
+    try {
+      const resp = await fetch("/api/setup/slack", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({project: project, bot_token: bot ? bot.value : "", app_token: app ? app.value : ""})
+      });
+      const data = await resp.json().catch(function () { return {}; });
+      saveResult("slack-save-result", resp.ok && data.ok !== false, (resp.ok && data.ok !== false) ? "Saved Slack settings." : ((data && data.message) ? data.message : "Save failed. Check the fields and try again."));
+      if (bot) bot.value = "";
+      if (app) app.value = "";
+      await saveStep("slack", {data: {}});
+    } catch (err) { saveResult("slack-save-result", false, "Save failed. Check your connection and try again."); }
+  }
+  async function saveAdo() {
+    const project = projectName();
+    const org = document.getElementById("ado-org");
+    const proj = document.getElementById("ado-project");
+    const team = document.getElementById("ado-team");
+    const pat = document.getElementById("ado-pat");
+    try {
+      const resp = await fetch("/api/setup/ado", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({project: project, org_url: org ? org.value : "", project_name: proj ? proj.value : "", team: team ? team.value : "", pat: pat ? pat.value : ""})
+      });
+      const data = await resp.json().catch(function () { return {}; });
+      saveResult("ado-save-result", resp.ok && data.ok !== false, (resp.ok && data.ok !== false) ? "Saved Azure DevOps settings." : ((data && data.message) ? data.message : "Save failed. Check the fields and try again."));
+      if (pat) pat.value = "";
+      await saveStep("ado", {data: {}});
+    } catch (err) { saveResult("ado-save-result", false, "Save failed. Check your connection and try again."); }
   }
   async function saveProvider() {
     const project = projectName();
@@ -166,6 +244,9 @@
     const baseEl = document.getElementById("provider-base-url");
     const modelEl = document.getElementById("provider-model");
     const keyEl = document.getElementById("provider-key");
+    const metaBase = document.getElementById("meta-base-url");
+    const metaModel = document.getElementById("meta-model");
+    const metaKey = document.getElementById("meta-key");
     const box = document.getElementById("provider-result");
     try {
       const resp = await fetch("/api/setup/provider", {
@@ -174,9 +255,9 @@
         body: JSON.stringify({
           project: project,
           provider: provider,
-          base_url: baseEl ? baseEl.value : "",
-          model: modelEl ? modelEl.value : "",
-          api_key: keyEl ? keyEl.value : ""
+          base_url: provider === "custom" ? (baseEl ? baseEl.value : "") : (metaBase ? metaBase.value : ""),
+          model: provider === "custom" ? (modelEl ? modelEl.value : "") : (metaModel ? metaModel.value : ""),
+          api_key: provider === "custom" ? (keyEl ? keyEl.value : "") : (metaKey ? metaKey.value : "")
         })
       });
       const data = await resp.json().catch(function () { return {}; });
@@ -193,6 +274,7 @@
         box.appendChild(pill);
       }
       if (keyEl) { keyEl.value = ""; }
+      if (metaKey) { metaKey.value = ""; }
       await saveStep("model", {data: {provider: provider}});
     } catch (err) {
       if (box) { box.textContent = "Save failed. Check your connection and try again."; }

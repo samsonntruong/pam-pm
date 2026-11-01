@@ -77,9 +77,34 @@ class Config:
         if want_tier not in ("standard", "contributor"):
             want_tier = "standard"
         self.tier = want_tier
-        self.model = (model or os.environ.get("META_MODEL", "")).strip()
-        self.base_url = (base_url or os.environ.get("META_BASE_URL", "")).strip()
-        self.api_key = (api_key or os.environ.get("META_API_KEY", "")).strip()
+        env_home_early = os.environ.get("PAM_HOME", "").strip()
+        if data_dir is not None:
+            early_dir = Path(data_dir).expanduser()
+        elif env_home_early:
+            early_dir = Path(env_home_early).expanduser()
+        else:
+            early_dir = Path(user_data_dir(APP_NAME))
+        saved_model = ""
+        saved_base = ""
+        saved_key = ""
+        try:
+            from pam_pm.core import secrets as secrets_mod
+
+            saved = secrets_mod.load_meta_config(early_dir)
+            saved_model = str(saved.get("model", "") or "")
+            saved_base = str(saved.get("base_url", "") or "")
+            saved_key = secrets_mod.load_secret("META_API_KEY", early_dir)
+        except Exception:  # noqa: BLE001
+            saved_model, saved_base, saved_key = "", "", ""
+        self.model = (
+            model or os.environ.get("META_MODEL", "") or saved_model
+        ).strip()
+        self.base_url = (
+            base_url or os.environ.get("META_BASE_URL", "") or saved_base
+        ).strip()
+        self.api_key = (
+            api_key or os.environ.get("META_API_KEY", "") or saved_key
+        ).strip()
         env_tokens = os.environ.get("META_MAX_TOKENS", "").strip()
         if max_tokens is not None:
             self.max_tokens = int(max_tokens)

@@ -34,6 +34,7 @@ from pam_pm.core import auth as auth_mod
 from pam_pm.core import provider as provider_mod
 from pam_pm.core import raid as raid_mod
 from pam_pm.core import recovery as recovery_mod
+from pam_pm.core import secrets as secrets_mod
 from pam_pm.core import store as store_mod
 from pam_pm.core.config import (
     BACKEND_AZURE_DEVOPS,
@@ -785,16 +786,28 @@ def _context(request: Request, active: str) -> dict[str, Any]:
 
 
 def _check_meta() -> tuple[bool, str, str]:
-    missing = [
-        key
-        for key in ("META_MODEL", "META_BASE_URL", "META_API_KEY")
-        if not os.environ.get(key, "").strip()
-    ]
+    try:
+        effective = secrets_mod.effective_meta_config()
+    except Exception:  # noqa: BLE001
+        effective = {
+            "model": os.environ.get("META_MODEL", ""),
+            "base_url": os.environ.get("META_BASE_URL", ""),
+            "api_key": os.environ.get("META_API_KEY", ""),
+        }
+    missing: list[str] = []
+    if not str(effective.get("model", "") or "").strip():
+        missing.append("model name")
+    if not str(effective.get("base_url", "") or "").strip():
+        missing.append("base URL")
+    if not str(effective.get("api_key", "") or "").strip():
+        missing.append("API key")
     if missing:
         return (
             False,
             "Model check failed. Pam cannot reach the model.",
-            "Set " + ", ".join(missing) + " in your secrets file, then test again.",
+            "Open Step 1, add the missing "
+            + ", ".join(missing)
+            + ", choose Save, then Test again.",
         )
     return (
         True,
@@ -847,11 +860,15 @@ def _check_provider() -> tuple[bool, str, str]:
 
 
 def _check_slack() -> tuple[bool, str, str]:
-    if not os.environ.get("SLACK_BOT_TOKEN", "").strip():
+    try:
+        tokens = secrets_mod.effective_slack_tokens()
+    except Exception:  # noqa: BLE001
+        tokens = {"bot_token": os.environ.get("SLACK_BOT_TOKEN", "")}
+    if not str(tokens.get("bot_token", "") or "").strip():
         return (
             False,
             "Slack check failed. Pam cannot send messages.",
-            "Set SLACK_BOT_TOKEN in your secrets file, then test again.",
+            "Open Step 2, paste the bot token, choose Save, then Test again.",
         )
     return (
         True,
@@ -861,16 +878,29 @@ def _check_slack() -> tuple[bool, str, str]:
 
 
 def _check_ado() -> tuple[bool, str, str]:
-    missing = [
-        key
-        for key in ("ADO_ORG_URL", "ADO_PROJECT", "ADO_PAT")
-        if not os.environ.get(key, "").strip()
-    ]
+    try:
+        effective = secrets_mod.effective_ado_config()
+    except Exception:  # noqa: BLE001
+        effective = {
+            "org_url": os.environ.get("ADO_ORG_URL", ""),
+            "project": os.environ.get("ADO_PROJECT", ""),
+            "team": os.environ.get("ADO_TEAM", ""),
+            "pat": os.environ.get("ADO_PAT", ""),
+        }
+    missing: list[str] = []
+    if not str(effective.get("org_url", "") or "").strip():
+        missing.append("org URL")
+    if not str(effective.get("project", "") or "").strip():
+        missing.append("project")
+    if not str(effective.get("pat", "") or "").strip():
+        missing.append("access token")
     if missing:
         return (
             False,
             "Azure DevOps check failed. Pam cannot read the project.",
-            "Set " + ", ".join(missing) + " in your secrets file, then test again.",
+            "Open Step 3, add the missing "
+            + ", ".join(missing)
+            + ", choose Save, then Test again.",
         )
     return (
         True,
@@ -1162,6 +1192,18 @@ def setup_page(request: Request, token: str = "") -> HTMLResponse:
         saved_provider = provider_mod.load_provider(Config().ensure_data_dir())
     except Exception:  # noqa: BLE001
         saved_provider = {"provider": "meta", "base_url": "", "model": "", "has_key": False}
+    try:
+        saved_meta = secrets_mod.load_meta_config(Config().ensure_data_dir())
+    except Exception:  # noqa: BLE001
+        saved_meta = {"model": "", "base_url": "", "has_key": False}
+    try:
+        saved_slack = secrets_mod.load_slack_config(Config().ensure_data_dir())
+    except Exception:  # noqa: BLE001
+        saved_slack = {"has_bot_token": False, "has_app_token": False}
+    try:
+        saved_ado = secrets_mod.load_ado_config(Config().ensure_data_dir())
+    except Exception:  # noqa: BLE001
+        saved_ado = {"org_url": "", "project": "", "team": "", "has_pat": False}
     ctx.update(
         {
             "token": token,
@@ -1184,6 +1226,15 @@ def setup_page(request: Request, token: str = "") -> HTMLResponse:
             "provider_base_url": str(saved_provider.get("base_url", "") or ""),
             "provider_model": str(saved_provider.get("model", "") or ""),
             "provider_has_key": bool(saved_provider.get("has_key", False)),
+            "meta_model": str(saved_meta.get("model", "") or ""),
+            "meta_base_url": str(saved_meta.get("base_url", "") or ""),
+            "meta_has_key": bool(saved_meta.get("has_key", False)),
+            "slack_has_bot": bool(saved_slack.get("has_bot_token", False)),
+            "slack_has_app": bool(saved_slack.get("has_app_token", False)),
+            "ado_org_url": str(saved_ado.get("org_url", "") or ""),
+            "ado_project": str(saved_ado.get("project", "") or ""),
+            "ado_team": str(saved_ado.get("team", "") or ""),
+            "ado_has_pat": bool(saved_ado.get("has_pat", False)),
         }
     )
     return templates.TemplateResponse(request, "setup.html", ctx)  # type: ignore[return-value]
@@ -1910,21 +1961,26 @@ async def save_setup_provider(request: Request) -> Any:
         if isinstance(payload, dict):
             project = str(payload.get("project", project)).strip() or "default"
             provider = str(payload.get("provider", "meta"))
-            base_url = str(payload.get("base_url", "") or "")
-            model = str(payload.get("model", "") or "")
-            api_key = str(payload.get("api_key", "") or "")
+            base_url = str(
+                payload.get("base_url", payload.get("meta_base_url", "") or "") or ""
+            )
+            model = str(payload.get("model", payload.get("meta_model", "") or "") or "")
+            api_key = str(
+                payload.get("api_key", payload.get("meta_api_key", "") or "") or ""
+            )
     else:
         form = await request.form()
         if "project" in form:
             project = str(form.get("project", project)).strip() or "default"
         provider = str(form.get("provider", "meta"))
-        base_url = str(form.get("base_url", "") or "")
-        model = str(form.get("model", "") or "")
-        api_key = str(form.get("api_key", "") or "")
+        base_url = str(form.get("base_url", form.get("meta_base_url", "") or "") or "")
+        model = str(form.get("model", form.get("meta_model", "") or "") or "")
+        api_key = str(form.get("api_key", form.get("meta_api_key", "") or "") or "")
     canonical = provider_mod.normalize_provider(provider)
+    data_dir = Config().ensure_data_dir()
     if canonical == "custom":
         try:
-            existing_key = provider_mod.load_provider_key(Config().ensure_data_dir())
+            existing_key = provider_mod.load_provider_key(data_dir)
         except Exception:  # noqa: BLE001
             existing_key = ""
         check_key = api_key.strip() or existing_key
@@ -1939,8 +1995,13 @@ async def save_setup_provider(request: Request) -> Any:
             )
     try:
         saved = provider_mod.save_provider(
-            Config().ensure_data_dir(), canonical, base_url, model, api_key
+            data_dir, canonical, base_url, model, api_key
         )
+        meta_saved: dict[str, Any] = {}
+        if canonical == "meta":
+            meta_saved = secrets_mod.save_meta_config(
+                data_dir, model=model, base_url=base_url, api_key=api_key
+            )
     except Exception:  # noqa: BLE001
         msg = "Provider choice could not be saved."
         hint = "Check the data directory is writable, then save again."
@@ -1950,16 +2011,28 @@ async def save_setup_provider(request: Request) -> Any:
             {"ok": False, "message": msg, "hint": hint}, status_code=500
         )
     try:
-        _write_project_step(
-            project,
-            "model",
-            {
-                "provider": saved.get("provider"),
-                "base_url": saved.get("base_url", ""),
-                "model": saved.get("model", ""),
-                "has_key": saved.get("has_key", False),
-            },
-        )
+        if canonical == "meta":
+            _write_project_step(
+                project,
+                "model",
+                {
+                    "provider": "meta",
+                    "model": meta_saved.get("model", ""),
+                    "base_url": meta_saved.get("base_url", ""),
+                    "has_key": meta_saved.get("has_key", False),
+                },
+            )
+        else:
+            _write_project_step(
+                project,
+                "model",
+                {
+                    "provider": saved.get("provider"),
+                    "base_url": saved.get("base_url", ""),
+                    "model": saved.get("model", ""),
+                    "has_key": saved.get("has_key", False),
+                },
+            )
     except Exception:  # noqa: BLE001, S110
         pass
     label = provider_mod.provider_label(canonical)
@@ -1967,6 +2040,136 @@ async def save_setup_provider(request: Request) -> Any:
     if "hx-request" in request.headers:
         return HTMLResponse(_test_result_html(True, message))
     return {"ok": True, "project": project, "provider": saved}
+
+
+def _setup_payload(request: Request, payload: dict[str, Any] | None) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if isinstance(payload, dict):
+        for key, val in payload.items():
+            out[str(key)] = str(val or "")
+    for key, val in request.query_params.items():
+        out.setdefault(str(key), str(val or ""))
+    return out
+
+
+@app.post("/api/setup/slack")
+async def save_setup_slack(request: Request) -> Any:
+    project = request.query_params.get("project", "default").strip() or "default"
+    bot_token = ""
+    app_token = ""
+    ctype = request.headers.get("content-type", "")
+    if "application/json" in ctype:
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = {}
+        fields = _setup_payload(request, payload if isinstance(payload, dict) else {})
+        project = fields.get("project", project).strip() or "default"
+        bot_token = fields.get("bot_token", fields.get("SLACK_BOT_TOKEN", ""))
+        app_token = fields.get("app_token", fields.get("SLACK_APP_TOKEN", ""))
+    else:
+        form = await request.form()
+        project = str(form.get("project", project)).strip() or "default"
+        bot_token = str(form.get("bot_token", form.get("SLACK_BOT_TOKEN", "") or "") or "")
+        app_token = str(form.get("app_token", form.get("SLACK_APP_TOKEN", "") or "") or "")
+    try:
+        saved = secrets_mod.save_slack_config(
+            Config().ensure_data_dir(),
+            bot_token=bot_token,
+            app_token=app_token,
+        )
+    except Exception:  # noqa: BLE001
+        msg = "Slack settings could not be saved."
+        hint = "Check the data directory is writable, then save again."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg, hint))
+        return JSONResponse(
+            {"ok": False, "message": msg, "hint": hint}, status_code=500
+        )
+    try:
+        _write_project_step(
+            project,
+            "slack",
+            {
+                "has_bot_token": saved.get("has_bot_token", False),
+                "has_app_token": saved.get("has_app_token", False),
+            },
+        )
+    except Exception:  # noqa: BLE001, S110
+        pass
+    message = "Slack settings saved."
+    if "hx-request" in request.headers:
+        return HTMLResponse(_test_result_html(True, message))
+    return {"ok": True, "project": project, "slack": saved}
+
+
+@app.post("/api/setup/ado")
+async def save_setup_ado(request: Request) -> Any:
+    project = request.query_params.get("project", "default").strip() or "default"
+    org_url = ""
+    ado_project = ""
+    team = ""
+    pat = ""
+    ctype = request.headers.get("content-type", "")
+    if "application/json" in ctype:
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = {}
+        fields = _setup_payload(request, payload if isinstance(payload, dict) else {})
+        project = fields.get("project", project).strip() or "default"
+        org_url = fields.get("org_url", fields.get("ADO_ORG_URL", ""))
+        ado_project = (
+            fields.get("project_name", "")
+            or fields.get("ado_project", "")
+            or fields.get("ADO_PROJECT", "")
+        )
+        team = fields.get("team", fields.get("ADO_TEAM", ""))
+        pat = fields.get("pat", fields.get("ADO_PAT", ""))
+    else:
+        form = await request.form()
+        project = str(form.get("project", project)).strip() or "default"
+        org_url = str(form.get("org_url", form.get("ADO_ORG_URL", "") or "") or "")
+        ado_project = str(
+            form.get("project_name", form.get("ado_project", "") or "") or ""
+        )
+        if not ado_project:
+            ado_project = str(form.get("ADO_PROJECT", "") or "")
+        team = str(form.get("team", form.get("ADO_TEAM", "") or "") or "")
+        pat = str(form.get("pat", form.get("ADO_PAT", "") or "") or "")
+    try:
+        saved = secrets_mod.save_ado_config(
+            Config().ensure_data_dir(),
+            org_url=org_url,
+            project=ado_project,
+            team=team,
+            pat=pat,
+        )
+    except Exception:  # noqa: BLE001
+        msg = "Azure DevOps settings could not be saved."
+        hint = "Check the data directory is writable, then save again."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg, hint))
+        return JSONResponse(
+            {"ok": False, "message": msg, "hint": hint}, status_code=500
+        )
+    try:
+        _write_project_step(
+            project,
+            "ado",
+            {
+                "org_url": saved.get("org_url", ""),
+                "project": saved.get("project", ""),
+                "team": saved.get("team", ""),
+                "has_pat": saved.get("has_pat", False),
+            },
+        )
+    except Exception:  # noqa: BLE001, S110
+        pass
+    message = "Azure DevOps settings saved."
+    if "hx-request" in request.headers:
+        return HTMLResponse(_test_result_html(True, message))
+    return {"ok": True, "project": project, "ado": saved}
 
 
 @app.post("/api/rules/toggle")
