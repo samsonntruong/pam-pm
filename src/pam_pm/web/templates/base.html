@@ -50,21 +50,33 @@
   <div class="layout">
     <aside class="sidenav">
       <nav>
-        <a href="/setup" class="{% if active == 'setup' %}active{% endif %}">Setup</a>
-        <a href="/rules" class="{% if active == 'rules' %}active{% endif %}">Rules</a>
-        <a href="/triage" class="{% if active == 'triage' %}active{% endif %}">Triage</a>
-        <a href="/board" class="{% if active == 'board' %}active{% endif %}">Board</a>
-        <a href="/activity" class="{% if active == 'activity' %}active{% endif %}">Activity</a>
-        <a href="/plan" class="{% if active == 'plan' %}active{% endif %}">Plan</a>
-        <a href="/kickoff" class="{% if active == 'kickoff' %}active{% endif %}">Kickoff</a>
-        <a href="/add-task" class="{% if active == 'add-task' %}active{% endif %}">Add task</a>
-        <a href="/raid" class="{% if active == 'raid' %}active{% endif %}">RAID</a>
-        <a href="/next-sprint" class="{% if active == 'next-sprint' %}active{% endif %}">Next sprint</a>
-        <a href="/mid-sprint" class="{% if active == 'mid-sprint' %}active{% endif %}">Mid-sprint</a>
-        <a href="/review" class="{% if active == 'review' %}active{% endif %}">Review</a>
-        <a href="/listen" class="{% if active == 'listen' %}active{% endif %}">Listen</a>
-        <a href="/meetings" class="{% if active == 'meetings' %}active{% endif %}">Meetings</a>
-        <a href="/settings" class="{% if active == 'settings' %}active{% endif %}">Settings</a>
+        <section class="nav-group" aria-label="Plan">
+          <h2 class="nav-heading">Plan</h2>
+          <a href="/board" class="{% if active == 'board' %}active{% endif %}">Board</a>
+          <a href="/activity" class="{% if active == 'activity' %}active{% endif %}">Activity</a>
+          <a href="/raid" class="{% if active == 'raid' %}active{% endif %}">RAID</a>
+          <a href="/plan" class="{% if active == 'plan' %}active{% endif %}">Plan</a>
+          <a href="/review" class="{% if active == 'review' %}active{% endif %}">Review</a>
+        </section>
+        <section class="nav-group" aria-label="Run">
+          <h2 class="nav-heading">Run</h2>
+          <a href="/kickoff" class="{% if active == 'kickoff' %}active{% endif %}">Kickoff</a>
+          <a href="/triage" class="{% if active == 'triage' %}active{% endif %}">Triage</a>
+          <a href="/next-sprint" class="{% if active == 'next-sprint' %}active{% endif %}">Next sprint</a>
+          <a href="/mid-sprint" class="{% if active == 'mid-sprint' %}active{% endif %}">Mid-sprint</a>
+          <a href="/add-task" class="{% if active == 'add-task' %}active{% endif %}">Add task</a>
+        </section>
+        <section class="nav-group" aria-label="Listen">
+          <h2 class="nav-heading">Listen</h2>
+          <a href="/listen" class="{% if active == 'listen' %}active{% endif %}">Listen</a>
+          <a href="/meetings" class="{% if active == 'meetings' %}active{% endif %}">Meetings</a>
+        </section>
+        <section class="nav-group" aria-label="Manage">
+          <h2 class="nav-heading">Manage</h2>
+          <a href="/setup" class="{% if active == 'setup' %}active{% endif %}">Setup</a>
+          <a href="/rules" class="{% if active == 'rules' %}active{% endif %}">Rules</a>
+          <a href="/settings" class="{% if active == 'settings' %}active{% endif %}">Settings</a>
+        </section>
       </nav>
     </aside>
     <main class="content">

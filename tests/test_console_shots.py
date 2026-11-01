@@ -1,7 +1,8 @@
 """M6b console screenshots: light plus dark PNG per screen in docs/images.
 
 Loads setup, board, activity, plan, review, rules, settings, kickoff,
-raid, listen, and meetings through TestClient against the app's built in
+raid, listen, meetings, triage, next-sprint, add-task, mid-sprint, and
+meeting detail through TestClient against the app's built in
 sample data (fake adapters only, no network and no credentials). Then
 tries Playwright with a local
 uvicorn server for real screenshots. When Playwright or its browsers are
@@ -40,6 +41,11 @@ PAGES = {
     "raid": "/raid",
     "listen": "/listen",
     "meetings": "/meetings",
+    "triage": "/triage",
+    "next-sprint": "/next-sprint",
+    "add-task": "/add-task",
+    "mid-sprint": "/mid-sprint",
+    "meeting": "/meetings/shot-demo",
 }
 
 THEMES = ("light", "dark")
