@@ -1,12 +1,12 @@
 # Slack setup
 
-Each user creates their own internal Slack app in their own workspace from the repo manifest. Pam never ships or documents a shared distributed bot, and it never relies on `conversations.history`: it keeps its own conversation store.
+One internal Slack app per team, created once by the team lead or a workspace admin from the repo manifest. Everyone else installs nothing and just gets DMs from Pam. If the workspace restricts app installs, an admin approves it. Pam never ships or documents a shared distributed bot, and it never relies on `conversations.history`: it keeps its own conversation store.
 
 ## 1. Create the app from the manifest
 
 1. Open [api.slack.com/apps](https://api.slack.com/apps) and choose Create New App, then From an app manifest.
-2. Pick your workspace and paste the full contents of `slack-app-manifest.yaml` from the repo root.
-3. Create the app, then install it to your workspace.
+2. Pick the team's workspace and paste the full contents of `slack-app-manifest.yaml` from the repo root.
+3. Create the app, then install it to the workspace.
 
 The manifest requests Socket Mode plus these bot scopes: `app_mentions:read`, `channels:read`, `chat:write`, `files:read`, `im:history`, `im:read`, `im:write`, `users:read`, `users:read.email`. It subscribes to `app_mention` and `message.im` events.
 

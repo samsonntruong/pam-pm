@@ -22,6 +22,6 @@ Private by default. The team talks to Pam in Slack; the lead sees outcomes, not 
 - Dry-run default for all board writes.
 - Evidence log: every write carries the quoted words behind it.
 - Undo button for reversible writes on the Activity screen.
-- Per-day spend cap with a hard stop, plus per-call cached token logging.
+- Per-day spend cap with a hard stop.
 
 To report a vulnerability, see [SECURITY.md](../SECURITY.md).

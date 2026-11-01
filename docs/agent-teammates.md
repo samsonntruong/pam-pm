@@ -10,7 +10,7 @@ Today Pam interviews people and syncs the board. Agent teammates would close the
 
 - Same write layer: dry run default, evidence quote per write, Undo for reversible writes.
 - Same privacy rule: raw content stays with the agent run; the lead sees synthesized status and board writes.
-- Same cost discipline: cached prompt prefixes, per-call token logging, daily spend cap.
+- Same cost discipline: cached prompt prefixes and a daily spend cap.
 - Structured handoffs validated with pydantic; retry once on failure.
 
 ## What exists today

@@ -30,6 +30,7 @@
 
 <section class="card" id="step-3">
   <h2>Step 3: Connect Slack</h2>
+  <p>The team lead or a workspace admin creates ONE internal Slack app once from the manifest in slack-app-manifest.yaml. Everyone else installs nothing and just gets DMs from Pam. If app installs are restricted in the workspace, ask a workspace admin to approve the install.</p>
   <p>Set SLACK_BOT_TOKEN in your secrets file, then test.</p>
   <button hx-post="/api/test/slack" hx-target="#slack-result" hx-swap="innerHTML">Test Slack</button>
   <div id="slack-result" class="result" aria-live="polite"></div>
@@ -55,5 +56,8 @@
 <section class="card" id="step-7">
   <h2>Step 7: Done</h2>
   <p>Check the <a href="/board">Board</a> and <a href="/activity">Activity</a> pages to confirm data flows.</p>
+  <h3>Tell your team</h3>
+  <p>Copy and send this to the team:</p>
+  <blockquote>Pam was added to the workspace. You will get a morning check-in DM about your work. Raw answers stay private. There is nothing to install.</blockquote>
 </section>
 {% endblock %}

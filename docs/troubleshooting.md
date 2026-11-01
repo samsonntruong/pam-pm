@@ -34,4 +34,4 @@ Start with `pam doctor` and the setup wizard Test buttons. They name the exact m
 
 ## Still stuck
 
-Open an issue with the `pam doctor` output (it prints names only, never values), the failing wizard step, and which install path you used (pipx, source, or Docker).
+Open an issue with the `pam doctor` output (it prints names only, never values), the failing wizard step, and which install path you used (pipx or source).

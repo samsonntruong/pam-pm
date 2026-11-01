@@ -31,7 +31,7 @@ The problem: I lead data and AI delivery teams, and chasing status is the most r
 
 ## 2. Public GitHub Repository (paste)
 
-https://github.com/samsonntruong/pam-pm   [CONFIRM: Samson makes the repo public in the morning. Private now. Fresh clone check passed in sandbox: pytest, wheel build with templates, pip install from wheel, pam version. Docker compose and real browser screenshots are morning tasks.]
+https://github.com/samsonntruong/pam-pm   [CONFIRM: Samson makes the repo public in the morning. Private now. Fresh clone check passed: pytest, wheel build with templates, pip install from wheel, pam version. Docker compose and real browser screenshots are morning tasks.]
 
 ## 3. 3-Minute Demo Video (paste)
 

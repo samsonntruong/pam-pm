@@ -22,14 +22,7 @@ pam start
 
 If `pam` collides with another tool on your machine, use `pam-pm start`. Both entry points ship in the package.
 
-With Docker:
-
-```sh
-cp .env.example .env
-docker compose up
-```
-
-Then open the URL printed in the logs.
+For server hosting, see [deploy.md](deploy.md).
 
 ## 2. Start the console
 
@@ -54,7 +47,7 @@ Open that URL in your browser. The token is required to complete setup.
 Each step has a Test button. When all are green, the console lands on the live Board.
 
 1. Meta Model API: paste your key, base URL, and model ID. Test makes a call and shows the model and tier. Keep the Standard tier for real team text; Contributor is for development with fake data only.
-2. Slack: create your own internal app in your own workspace from `slack-app-manifest.yaml` (Socket Mode), then paste the bot token and app token. Test checks scopes and sends you a DM. Full steps: [slack-setup.md](slack-setup.md).
+2. Slack: the team lead or a workspace admin creates the one internal app once from `slack-app-manifest.yaml` (Socket Mode); everyone else installs nothing. Paste the bot token and app token. Test checks scopes and sends you a DM. Full steps: [slack-setup.md](slack-setup.md).
 3. Azure DevOps: paste the org URL and PAT, then pick project, team, and current iteration from the dropdowns. Test verifies Work Items read and write and detects the Agile or Scrum template. Full steps: [azure-devops-setup.md](azure-devops-setup.md).
 4. Roster: teammates are pulled from ADO and auto-matched to Slack users by email. Fix mismatches, then set time zones and working hours.
 5. Rules: toggle the morning check-in, follow-up on close, and blocker intake templates. Set times, days, and the review channel.

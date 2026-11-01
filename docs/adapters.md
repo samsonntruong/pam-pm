@@ -4,7 +4,7 @@ Pam talks to the outside world through four interfaces. Each interface has a rea
 
 ## ChatAdapter
 
-- `slack.py`: production Slack over Socket Mode. DMs, threads, buttons, and file download. Each user runs their own internal app; Pam keeps its own conversation store and never calls `conversations.history`.
+- `slack.py`: production Slack over Socket Mode. DMs, threads, buttons, and file download. One internal app per team, created once by the team lead or a workspace admin; Pam keeps its own conversation store and never calls `conversations.history`.
 - `fake.py`: in-memory chat for tests only. It is not a user-facing mode and the console never offers it.
 
 ## PMAdapter
