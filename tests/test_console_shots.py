@@ -1,8 +1,9 @@
 """M6b console screenshots: light plus dark PNG per screen in docs/images.
 
-Loads setup, board, activity, plan, review, rules, settings, and kickoff
-through TestClient against the app's built in sample data (fake adapters
-only, no network and no credentials). Then tries Playwright with a local
+Loads setup, board, activity, plan, review, rules, settings, kickoff,
+raid, listen, and meetings through TestClient against the app's built in
+sample data (fake adapters only, no network and no credentials). Then
+tries Playwright with a local
 uvicorn server for real screenshots. When Playwright or its browsers are
 missing, falls back to TestClient HTML plus minimal PNG placeholders.
 Missing browsers never fail this test, and the fallback never overwrites
@@ -36,6 +37,7 @@ PAGES = {
     "rules": "/rules",
     "settings": "/settings",
     "kickoff": "/kickoff",
+    "raid": "/raid",
     "listen": "/listen",
     "meetings": "/meetings",
 }

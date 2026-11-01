@@ -33,7 +33,7 @@ $ErrorActionPreference = "Stop"
 
 # Default release tag. Update this constant when tagging a release.
 # Mirrors the version in pyproject.toml and src/pam_pm/__init__.py (__version__).
-$DefaultVersion = "v0.1.0"
+$DefaultVersion = "v0.2.0"
 $UvInstallScript = "https://astral.sh/uv/install.ps1"
 $RepoArchiveBase = "https://github.com/OWNER/pam-pm/archive/refs"
 

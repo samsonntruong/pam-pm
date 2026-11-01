@@ -12,5 +12,5 @@
 ## Human (do by hand)
 
 - [ ] Make the GitHub repo public
-- [ ] Upload the demo video (2:30 or less) and add the link to README
+- [ ] Upload the release video (2:30 or less) and add the link to README
 - [ ] Submit the hackathon entry

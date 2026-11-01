@@ -44,15 +44,16 @@ Open that URL in your browser. The token is required to complete setup.
 
 ## 3. Work the wizard
 
-Each step has a Test button. When all are green, the console lands on the live Board.
+Pick a board backend first, then work the numbered steps. Each step has a Test button. When all are green, the console lands on the live Board. Progress saves per project as you go.
 
-1. Model provider: pick Meta (default, recommended) or Custom OpenAI-compatible. Meta uses META_MODEL, META_BASE_URL, and META_API_KEY from your secrets file. Custom needs a base URL, model name, and API key stored only on this machine. Test checks tool calling, structured output, and image input in plain words. Keep the Standard tier for real team text; Contributor is for development with fake data only.
+- Backend choice: Pam board (built in, nothing to configure) or Azure DevOps. Saved per project, so different projects can use different backends. See [native-board.md](native-board.md).
+1. Model provider: pick Meta (default, recommended) or Custom OpenAI-compatible. Meta uses META_MODEL, META_BASE_URL, and META_API_KEY from your secrets file. Custom needs a base URL, model name, and API key stored only on this machine. Test checks tool calling, structured output, and image input in plain words. Keep the Standard tier for real team text; Contributor is for development with fake data only. See [provider.md](provider.md).
 2. Slack: the team lead or a workspace admin creates the one internal app once from `slack-app-manifest.yaml` (Socket Mode); everyone else installs nothing. Paste the bot token and app token. Test checks scopes and sends you a DM. Full steps: [slack-setup.md](slack-setup.md).
-3. Azure DevOps: paste the org URL and PAT, then pick project, team, and current iteration from the dropdowns. Test verifies Work Items read and write and detects the Agile or Scrum template. Full steps: [azure-devops-setup.md](azure-devops-setup.md).
-4. Roster: teammates are pulled from ADO and auto-matched to Slack users by email. Fix mismatches, then set time zones and working hours.
-5. Rules: toggle the morning check-in, follow-up on close, and blocker intake templates. Set times, days, and the review channel.
-6. Safety: dry run stays on by default. Set the daily spend cap.
-7. Finish: press "send me a test check-in" and answer it in Slack.
+3. Azure DevOps: shown only when Azure DevOps is chosen above. Paste the org URL and PAT, then pick project, team, and current iteration from the dropdowns. Test verifies Work Items read and write and detects the Agile or Scrum template. Full steps: [azure-devops-setup.md](azure-devops-setup.md).
+4. People: add teammates who will get the morning message, one name per line. Names save with this step.
+5. Rules: choose which automatic messages you want on the Rules page, then check.
+6. Safety: dry run stays on by default. Review the daily spend cap, then check.
+7. Done: paste the one-time setup token printed by `pam start` to finish. The autostart box is checked by default so Pam starts at sign-in.
 
 ## Provider limits
 
@@ -70,13 +71,17 @@ pam --version
 
 ## 5. Console screens
 
-Left navigation: Setup, Rules, Board, Activity, Plan, Kickoff, Review, Settings, with a project switcher at the top.
+Left navigation: Setup, Rules, Triage, Board, Activity, Plan, Kickoff, Add task, RAID, Next sprint, Mid-sprint, Review, Listen, Meetings, Settings, with a project switcher at the top.
 
 - Rules: toggle templates per project.
-- Board: read-only ADO board with dependency links, updating live.
+- Triage: daily board scan findings with proposed fixes and Approve buttons.
+- Board: ADO or Pam board with dependency links, updating live. Pam board items are editable.
 - Activity: live feed of agent actions with evidence quotes and an Undo button for board writes.
 - Plan: upload a sticky-note photo, inspect masks and readings, Approve to create items.
 - Kickoff: paste a brief or upload a file, review owner suggestions with reasons on one approval card, Approve to create items.
-- Review: run the sprint review and create retro actions in ADO.
+- RAID: risks, assumptions, issues, and dependencies with accept, edit, close, and export.
+- Next sprint and Mid-sprint: proposal cards with Approve buttons.
+- Review: run the sprint review and create retro actions.
+- Listen and Meetings: capture meeting audio, review transcripts, generate notes, approve action items.
 
 No hand-edited config files and no hunting for IDs. If a step fails, start with `pam doctor`, then see [troubleshooting.md](troubleshooting.md).

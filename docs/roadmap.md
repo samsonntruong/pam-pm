@@ -1,6 +1,6 @@
 # Roadmap
 
-Out of MVP scope, in rough priority order. tracked here so the README stays honest about what Pam does not do yet.
+Out of scope for the current build, in rough priority order. Tracked here so the README stays honest about what Pam does not do yet.
 
 ## Near term
 
@@ -18,10 +18,10 @@ Out of MVP scope, in rough priority order. tracked here so the README stays hone
 
 - Agent teammates and orchestration. See [agent-teammates.md](agent-teammates.md).
 - Multi-project dashboards and plain-English rule creation.
-- Packaged desktop app (Mac and Windows installers, tray icon, start on login) via GitHub Actions. The MVP is already shaped for this: headless service, localhost console, OS user data directory. The only stretch allowed earlier is a pywebview window around the console.
-- Hosted version.
+- Packaged desktop app (Mac and Windows installers with code signing via GitHub Actions). The `pam desktop` window and tray beta already ships; see [desktop.md](desktop.md).
+- Hosted multi-tenant version.
 
-## Non-goals for MVP
+## Non-goals for the current build
 
-- Editable built-in kanban board: the MVP shows the ADO board read only.
 - Simulated teammates, mock boards, or replay modes in the product. Fake adapters exist only in tests.
+- Vendor lock-in: the model client stays OpenAI-compatible and the board backend stays pluggable.

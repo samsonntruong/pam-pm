@@ -9,17 +9,18 @@ from __future__ import annotations
 
 import asyncio
 import json
-import math
 import os
 import socket
-import struct
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 BACKENDS = ["pam_board", "azure_devops"]
+
+FIXTURE_WAV = Path(__file__).resolve().parent / "fixtures" / "listen" / "__test_tone.wav"
 
 
 def _free_port() -> int:
@@ -28,22 +29,6 @@ def _free_port() -> int:
     port = int(sock.getsockname()[1])
     sock.close()
     return port
-
-
-def _synth_wav(seconds: float = 1.0, freq: float = 440.0) -> bytes:
-    rate = 24000
-    frames = int(rate * seconds)
-    pcm = bytearray()
-    for i in range(frames):
-        sample = int(12000 * math.sin(2 * math.pi * freq * i / rate))
-        pcm += struct.pack("<h", sample)
-    data = bytes(pcm)
-    header = struct.pack(
-        "<4sI4s4sIHHIIHH4sI",
-        b"RIFF", 36 + len(data), b"WAVE", b"fmt ", 16, 1, 1,
-        rate, rate * 2, 2, 16, b"data", len(data),
-    )
-    return header + data
 
 
 class FakeMetaSocket:
@@ -86,9 +71,15 @@ def test_listen_page_fake_media_both_backends(tmp_path, monkeypatch, backend) ->
     db = Config().db_path()
     store_mod.set_project_backend(db, "demo", backend)
 
-    wav = _synth_wav()
-    wav_path = app_mod.STATIC_DIR / "__test_tone.wav"
-    wav_path.write_bytes(wav)
+    assert FIXTURE_WAV.exists(), f"missing fixture {FIXTURE_WAV}"
+    from fastapi.responses import FileResponse
+    from starlette.routing import Route
+
+    async def _serve_test_tone(request: Any) -> FileResponse:
+        return FileResponse(str(FIXTURE_WAV), media_type="audio/wav")
+
+    tone_route = Route("/__test_tone.wav", _serve_test_tone)
+    app_mod.app.routes.append(tone_route)
 
     script = [
         _txt({"sessionId": "srv-page"}),
@@ -141,7 +132,7 @@ def test_listen_page_fake_media_both_backends(tmp_path, monkeypatch, backend) ->
                     timeout=10000,
                 )
                 sent = page.evaluate(
-                    "() => window.pamListen.sendTestAudio('/static/__test_tone.wav')"
+                    "() => window.pamListen.sendTestAudio('/__test_tone.wav')"
                 )
                 assert sent > 0
                 page.wait_for_function(
@@ -167,8 +158,8 @@ def test_listen_page_fake_media_both_backends(tmp_path, monkeypatch, backend) ->
         server.should_exit = True
         thread.join(timeout=15)
         try:
-            wav_path.unlink()
-        except OSError:
+            app_mod.app.routes.remove(tone_route)
+        except ValueError:
             pass
 
     assert sock.sent_bytes, "page audio must reach realtime"

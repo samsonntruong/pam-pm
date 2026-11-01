@@ -40,6 +40,11 @@ testing), `-NoStart`, `-NoAutostart`, `-NoDesktop`, `-Uninstall` (keeps data),
 `-RemoveData` (with `-Uninstall` only, asks for confirmation), `-DryRun`
 (print commands only).
 
+Desktop note: on Windows and macOS the installer also sets up the desktop
+wrapper (beta) unless `-NoDesktop` / `--no-desktop` is passed. After install,
+`pam desktop` opens Pam in its own window with a tray icon instead of a
+browser tab. See [desktop.md](desktop.md).
+
 ## Upgrade
 
 Re-run the same one-liner. It reinstalls Pam in place over the old version.
