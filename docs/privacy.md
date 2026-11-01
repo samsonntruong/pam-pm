@@ -29,3 +29,14 @@ To report a vulnerability, see [SECURITY.md](../SECURITY.md).
 ## RAID logs
 
 RAID entries carry the same evidence quote rules as board writes. Lead views show full quotes. Shared exports replace quotes with Lead only. Kickoff assumption proposals are logged with their source line as evidence.
+
+## Listen meetings
+
+- Consent: tell the room before pressing Start listening. The page shows a Transcribing pill while audio flows. Stopping ends capture.
+- Audio: mic frames go to transcription and are not kept. Only final text lands in `listen_segments`. The 30 second resend buffer is memory only.
+- Notes: generated only when someone presses Generate notes. Action items are created only after Approve on the meeting card.
+- Keys: the browser never sees META_API_KEY. It stays server side in the realtime handshake and is redacted from logs.
+- Retention: meetings stay until `DELETE /api/meetings/<session_id>` removes the session, segments, and notes. No auto purge in beta.
+- Tiers: Contributor tier runs use fake data only. Do not capture real meetings on Contributor.
+
+Details: [listen.md](listen.md).

@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Meetings - Pam{% endblock %}
+{% block content %}
+<h1>Meetings</h1>
+<p class="muted">Past capture sessions for project {{ project }} ({{ project_backend_label }}). Open one to review the transcript, notes, and approval card.</p>
+
+<p><a class="btn" href="/listen?project={{ project }}">Start a meeting</a></p>
+
+<section class="card">
+  <h2>Sessions</h2>
+  {% if meetings %}
+  <table class="proposal">
+    <caption class="muted">Sessions newest first. Open one to review the transcript, notes, and delete control.</caption>
+    <thead><tr><th scope="col">Title</th><th scope="col">Session</th><th scope="col">Status</th><th scope="col">Segments</th><th scope="col">Open</th></tr></thead>
+    <tbody>
+      {% for m in meetings %}
+      <tr>
+        <td>{{ m.title or "Untitled" }}</td>
+        <td><code>{{ m.session_id }}</code></td>
+        <td><span class="pill">{{ m.status }}</span></td>
+        <td>{{ m.segment_count }}</td>
+        <td><a class="btn btn-small" href="/meetings/{{ m.session_id }}?project={{ project }}">Open</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No meetings yet. Start one from the Listen page.</p>
+  {% endif %}
+</section>
+{% endblock %}

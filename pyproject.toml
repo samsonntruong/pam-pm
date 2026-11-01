@@ -18,8 +18,10 @@ dependencies = [
   "pydantic",
   "python-dotenv",
   "platformdirs",
+  "python-multipart",
   "slack-bolt",
   "slack-sdk",
+  "websockets",
 ]
 
 [project.optional-dependencies]

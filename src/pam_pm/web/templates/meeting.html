@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Meeting - Pam{% endblock %}
+{% block content %}
+<h1>Meeting</h1>
+<p class="muted">Session <code>{{ session.session_id }}</code> for project {{ project }} ({{ project_backend_label }}). Status: <span class="pill">{{ session.status }}</span></p>
+
+<p><a class="btn" href="/meetings?project={{ project }}">Back to meetings</a>
+<a class="btn" href="/listen?project={{ project }}">Start a meeting</a></p>
+
+<section class="card">
+  <h2>Transcript</h2>
+  {% if segments %}
+  <ol aria-label="Meeting transcript">
+    {% for seg in segments %}
+    <li>{% if seg.speaker %}<strong>{{ seg.speaker }}:</strong> {% endif %}{{ seg.text }}</li>
+    {% endfor %}
+  </ol>
+  {% else %}
+  <p class="muted">No transcript yet. Capture audio from the Listen page first.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Notes</h2>
+  <p class="muted">One model call, a few seconds. Notes stay as a draft until you approve the card.</p>
+  <form hx-post="/api/meetings/{{ session.session_id }}/notes?project={{ project }}" hx-target="#notes-result" hx-swap="innerHTML">
+    <div class="form-actions">
+      <button type="submit">Generate notes</button>
+    </div>
+  </form>
+  <div id="notes-result" aria-live="polite">
+    {% if notes_html %}
+    {{ notes_html | safe }}
+    {% else %}
+    <p class="muted">No notes yet. Choose Generate notes to summarize the transcript.</p>
+    {% endif %}
+  </div>
+</section>
+
+<section class="card">
+  <h2>Delete</h2>
+  <p class="muted">Removes the session, segments, and notes. This cannot be undone.</p>
+  <div class="form-actions">
+    <button type="button" id="meeting-delete">Delete this meeting</button>
+  </div>
+  <p class="muted" id="meeting-delete-result" role="status" aria-live="polite"></p>
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+(function () {
+  var btn = document.getElementById("meeting-delete");
+  var out = document.getElementById("meeting-delete-result");
+  if (!btn) return;
+  btn.addEventListener("click", function () {
+    if (!window.confirm("Delete this meeting? This removes the session, segments, and notes.")) return;
+    btn.disabled = true;
+    if (out) out.textContent = "Deleting...";
+    var sid = "{{ session.session_id }}";
+    var project = "{{ project }}";
+    fetch("/api/meetings/" + encodeURIComponent(sid), { method: "DELETE" }).then(function (res) {
+      if (res.ok) {
+        window.location.href = "/meetings?project=" + encodeURIComponent(project);
+        return;
+      }
+      btn.disabled = false;
+      if (out) out.textContent = "Delete failed. Try again.";
+    }).catch(function () {
+      btn.disabled = false;
+      if (out) out.textContent = "Delete failed. Check your connection and try again.";
+    });
+  });
+})();
+</script>
+{% endblock %}

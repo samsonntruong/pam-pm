@@ -36,6 +36,8 @@ PAGES = {
     "rules": "/rules",
     "settings": "/settings",
     "kickoff": "/kickoff",
+    "listen": "/listen",
+    "meetings": "/meetings",
 }
 
 THEMES = ("light", "dark")

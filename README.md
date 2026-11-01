@@ -67,6 +67,8 @@ pam doctor
 
 Desktop wrapper (beta): on Windows and macOS, `pam desktop` opens Pam in its own window with a tray icon instead of a browser tab. See [docs/desktop.md](docs/desktop.md).
 
+Listen meetings (beta): capture audio in Chrome or Edge at `/listen`, review finals at `/meetings`, generate notes and approve action items from the card. See [docs/listen.md](docs/listen.md).
+
 ## What it does
 
 - Morning check-ins in Slack DM: one question at a time, with pushback on vague answers until remaining work and an ETA are stated.

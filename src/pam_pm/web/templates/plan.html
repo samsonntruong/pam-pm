@@ -3,6 +3,7 @@
 {% block content %}
 <h1>Plan</h1>
 <p class="muted">Turn a whiteboard photo into tasks for project {{ project }}. Upload a photo, review the suggestions, then create only what you want.</p>
+<p><a class="btn" href="/listen?project={{ project }}">Capture a meeting instead</a></p>
 <form hx-post="/api/plan/upload" hx-target="#plan-result" hx-swap="innerHTML" hx-encoding="multipart/form-data">
   <label for="photo">Board photo</label>
   <input id="photo" name="photo" type="file" accept="image/*">

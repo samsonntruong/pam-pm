@@ -14,7 +14,7 @@ import secrets
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -58,6 +58,8 @@ WIZARD_PROGRESS_FILENAME = "wizard_progress.json"
 
 SETUP_TOKEN = os.environ.get("PAM_SETUP_TOKEN", "").strip() or secrets.token_urlsafe(32)
 SETUP_DONE = False
+
+LISTEN_CONNECT_FN: Any = None
 
 
 def _db_path() -> Path:
@@ -3251,3 +3253,494 @@ def raid_export(request: Request) -> Any:
         body, media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="raid-{project}.csv"'},
     )
+
+
+def _listen_board_items(project: str) -> list[Any]:
+    try:
+        adapter = get_board_adapter(project)
+    except Exception:  # noqa: BLE001
+        return []
+    if adapter is None:
+        return []
+    getter = getattr(adapter, "list_items", None)
+    if not callable(getter):
+        return []
+    try:
+        return list(getter() or [])
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _notes_approval_html(
+    payload: dict[str, Any],
+    roster: list[dict[str, Any]],
+    session_id: str,
+    project: str,
+) -> str:
+    parts: list[str] = []
+    summary = html.escape(str(payload.get("summary", "") or "No transcript yet."))
+    parts.append('<section class="card"><h2>Approval card</h2>')
+    parts.append(f"<p>{summary}</p>")
+    decisions = payload.get("decisions", []) or []
+    parts.append("<h3>Decisions</h3>")
+    if decisions:
+        items = "".join(
+            f"<li>{html.escape(str(d.get('text', '')))} "
+            f"<span class=\"muted\">Evidence: "
+            f"{html.escape(str(d.get('evidence_quote', '')))}</span></li>"
+            for d in decisions if isinstance(d, dict)
+        )
+        parts.append(f"<ul>{items}</ul>")
+    else:
+        parts.append('<p class="muted">No decisions recorded.</p>')
+    actions = payload.get("action_items", []) or []
+    parts.append("<h3>Action items</h3>")
+    names = [str(e.get("name", "")) for e in roster if str(e.get("name", ""))]
+    if not actions:
+        parts.append('<p class="muted">No action items recorded.</p>')
+    else:
+        rows = []
+        for index, draft in enumerate(actions):
+            if not isinstance(draft, dict):
+                continue
+            title = html.escape(str(draft.get("title", "")))
+            current = str(draft.get("owner") or "")
+            due = html.escape(str(draft.get("due_date", "") or "none"))
+            quote = html.escape(str(draft.get("evidence_quote", "")))
+            conf = draft.get("confidence", 0.5)
+            options = ['<option value="">Unassigned</option>']
+            for label in names:
+                sel = " selected" if label == current else ""
+                options.append(
+                    f'<option value="{html.escape(label)}"{sel}>'
+                    f"{html.escape(label)}</option>"
+                )
+            if current and current not in names:
+                options.append(
+                    f'<option value="{html.escape(current)}" selected>'
+                    f"{html.escape(current)}</option>"
+                )
+            rows.append(
+                "<tr>"
+                f"<td>{title}<br><span class=\"muted\">Evidence: {quote}</span></td>"
+                f"<td><select name=\"owner-{index}\" "
+                f'aria-label="Owner for {title}">{"".join(options)}</select></td>'
+                f"<td>{due}</td>"
+                f"<td>{html.escape(str(conf))}</td>"
+                "</tr>"
+            )
+        parts.append(
+            '<table class="proposal">'
+            '<caption class="muted">Action items with owner, due date, and confidence.</caption>'
+            "<thead><tr>"
+            '<th scope="col">Title</th><th scope="col">Owner</th>'
+            '<th scope="col">Due</th><th scope="col">Confidence</th>'
+            "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
+        )
+    matches = payload.get("matches", []) or []
+    parts.append("<h3>Matches</h3>")
+    if matches:
+        items = "".join(
+            f"<li>{html.escape(str(m.get('note_title', '')))} matches "
+            f"{html.escape(str(m.get('item_id', '')))}. "
+            f"{html.escape(str(m.get('reason', '')))}</li>"
+            for m in matches if isinstance(m, dict)
+        )
+        parts.append(f"<ul>{items}</ul>")
+    else:
+        parts.append('<p class="muted">No matches to existing items.</p>')
+    raid = payload.get("proposed_raid", []) or []
+    parts.append("<h3>Proposed RAID</h3>")
+    if raid:
+        items = "".join(
+            f"<li>[{html.escape(str(r.get('kind', 'risk')))}] "
+            f"{html.escape(str(r.get('title', '')))}</li>"
+            for r in raid if isinstance(r, dict)
+        )
+        parts.append(f"<ul>{items}</ul>")
+    else:
+        parts.append('<p class="muted">No RAID entries proposed.</p>')
+    parts.append(
+        f'<form hx-post="/api/meetings/{html.escape(session_id)}/approve?project={html.escape(project)}" '
+        'hx-target="#notes-approve-result" hx-swap="innerHTML">'
+        '<label class="toggle"><input type="checkbox" name="notify" '
+        'value="on" checked>DM action owners</label>'
+        '<label class="toggle"><input type="checkbox" name="slack_post" '
+        'value="on">Post notes to Slack channel</label>'
+        '<label>Channel <input type="text" name="channel" placeholder="#standup"></label>'
+        '<p class="muted">Board writes are proposed first and logged with an evidence quote.</p>'
+        "<div class=\"form-actions\">"
+        "<button type=\"submit\">Approve and create action items</button>"
+        "</div>"
+        '<div id="notes-approve-result" class="result" aria-live="polite"></div>'
+        "</form>"
+    )
+    parts.append("</section>")
+    return "\n".join(parts)
+
+
+@app.get("/listen", response_class=HTMLResponse)
+def listen_page(request: Request) -> HTMLResponse:
+    import uuid as _uuid
+
+    ctx = _context(request, "listen")
+    ctx["listen_token"] = SETUP_TOKEN
+    ctx["listen_session"] = "listen-" + _uuid.uuid4().hex[:12]
+    ctx["listen_title"] = ""
+    return templates.TemplateResponse(request, "listen.html", ctx)  # type: ignore[return-value]
+
+
+@app.get("/meetings", response_class=HTMLResponse)
+def meetings_page(request: Request) -> HTMLResponse:
+    ctx = _context(request, "meetings")
+    project = str(ctx["project"])
+    try:
+        ctx["meetings"] = store_mod.list_meetings(_db_path(), project)
+    except Exception:  # noqa: BLE001
+        ctx["meetings"] = []
+    return templates.TemplateResponse(request, "meetings.html", ctx)  # type: ignore[return-value]
+
+
+@app.get("/meetings/{session_id}", response_class=HTMLResponse)
+def meeting_detail_page(request: Request, session_id: str) -> HTMLResponse:
+    ctx = _context(request, "meetings")
+    project = str(ctx["project"])
+    detail = None
+    try:
+        detail = store_mod.get_meeting_detail(_db_path(), session_id)
+    except Exception:  # noqa: BLE001
+        detail = None
+    if detail is None:
+        return templates.TemplateResponse(  # type: ignore[return-value]
+            request, "meeting.html",
+            {**ctx, "session": {"session_id": session_id, "status": "missing"},
+             "segments": [], "notes_html": ""},
+        )
+    notes = detail.get("notes") or {}
+    payload = notes.get("payload", {}) if isinstance(notes, dict) else {}
+    notes_html = ""
+    if payload:
+        notes_html = _notes_approval_html(
+            payload, _roster_entries(project), session_id, project
+        )
+    ctx.update({
+        "session": detail.get("session", {}),
+        "segments": detail.get("segments", []),
+        "notes_html": notes_html,
+    })
+    return templates.TemplateResponse(request, "meeting.html", ctx)  # type: ignore[return-value]
+
+
+@app.get("/api/meetings")
+def meetings_list_api(request: Request) -> Any:
+    project = _board_project(request)
+    try:
+        return {"ok": True, "meetings": store_mod.list_meetings(_db_path(), project)}
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"ok": False, "message": str(exc)[:300]}, status_code=500)
+
+
+@app.get("/api/meetings/{session_id}")
+def meeting_detail_api(request: Request, session_id: str) -> Any:
+    try:
+        detail = store_mod.get_meeting_detail(_db_path(), session_id)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"ok": False, "message": str(exc)[:300]}, status_code=500)
+    if detail is None:
+        return JSONResponse({"ok": False, "message": "Meeting not found."}, status_code=404)
+    return {"ok": True, **detail}
+
+
+@app.post("/api/meetings/{session_id}/notes")
+async def meeting_notes_route(request: Request, session_id: str) -> Any:
+    from pam_pm.agents import notes as notes_mod
+
+    project = _board_project(request)
+    try:
+        detail = store_mod.get_meeting_detail(_db_path(), session_id)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"ok": False, "message": str(exc)[:300]}, status_code=500)
+    if detail is None:
+        return JSONResponse({"ok": False, "message": "Meeting not found."}, status_code=404)
+    transcript = str(detail.get("transcript", "") or "")
+    existing = _listen_board_items(project)
+    roster = _roster_entries(project)
+    context = notes_mod.build_project_context(existing, roster)
+    result = notes_mod.extract_notes(
+        transcript, project_context=context,
+        existing_items=existing, roster=roster,
+    )
+    try:
+        store_mod.save_listen_notes(_db_path(), session_id, project, result)
+    except Exception:  # noqa: BLE001, S110
+        pass
+    if "hx-request" in request.headers:
+        return HTMLResponse(_notes_approval_html(result, roster, session_id, project))
+    return {"ok": True, "notes": result}
+
+
+@app.post("/api/meetings/{session_id}/approve")
+async def meeting_approve_route(request: Request, session_id: str) -> Any:
+    from pam_pm.agents import notes as notes_mod
+    from pam_pm.agents.kickoff import notify_owners
+
+    project = _board_project(request)
+    try:
+        saved = store_mod.get_listen_notes(_db_path(), session_id)
+    except Exception:  # noqa: BLE001
+        saved = None
+    if saved is None or not (saved.get("payload") or {}).get("action_items"):
+        msg = "No notes to approve. Generate notes first."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg))
+        return JSONResponse({"ok": False, "message": msg}, status_code=400)
+    actions = [dict(a) for a in saved["payload"]["action_items"]]
+    payload = await _board_payload(request)
+    for index, draft in enumerate(actions):
+        key = f"owner-{index}"
+        if key in payload:
+            pick = str(payload[key]).strip()
+            draft["owner"] = pick or None
+    adapter = get_board_adapter(project)
+    if adapter is None:
+        msg = "Board is not configured for this project."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg))
+        return JSONResponse({"ok": False, "message": msg}, status_code=500)
+    dry_run, _cap = _effective_safety()
+    created = notes_mod.create_action_items(
+        adapter, actions, db=_db_path(), dry_run=dry_run,
+    )
+    try:
+        store_mod.set_listen_notes_status(_db_path(), session_id, "approved")
+    except Exception:  # noqa: BLE001, S110
+        pass
+    notified = 0
+    if str(payload.get("notify", "on")).lower() in ("on", "true", "1", "yes"):
+        try:
+            from pam_pm.adapters.chat.slack import SlackAdapter
+
+            if os.environ.get("SLACK_BOT_TOKEN", "").strip():
+                notified = len(notify_owners(SlackAdapter(), created, actions))
+        except Exception:  # noqa: BLE001
+            notified = 0
+    posted = ""
+    if str(payload.get("slack_post", "off")).lower() in ("on", "true", "1", "yes"):
+        channel = str(payload.get("channel", "") or "").strip()
+        if channel:
+            try:
+                from pam_pm.adapters.chat.slack import SlackAdapter
+
+                if os.environ.get("SLACK_BOT_TOKEN", "").strip():
+                    markdown = str(saved["payload"].get("markdown", "") or "")[:3000]
+                    posted = SlackAdapter().send_dm(channel, markdown or "Meeting notes.")
+            except Exception:  # noqa: BLE001
+                posted = ""
+    message = f"Created {len(created)} action items."
+    if notified:
+        message += f" Notified {notified} owners."
+    if posted:
+        message += " Posted notes to Slack."
+    if "hx-request" in request.headers:
+        return HTMLResponse(_test_result_html(True, message))
+    return {"ok": True, "created": len(created), "notified": notified, "posted": bool(posted)}
+
+
+@app.delete("/api/meetings/{session_id}")
+def meeting_delete_api(session_id: str) -> Any:
+    try:
+        found = store_mod.delete_meeting(_db_path(), session_id)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"ok": False, "message": str(exc)[:300]}, status_code=500)
+    if not found:
+        return JSONResponse({"ok": False, "message": "Meeting not found."}, status_code=404)
+    return {"ok": True}
+
+
+def _listen_token_ok(websocket: WebSocket) -> bool:
+    token = websocket.query_params.get("token", "").strip()
+    if not token:
+        token = websocket.cookies.get("pam_setup_token", "").strip()
+    return is_valid_token(token)
+
+
+@app.websocket("/ws/listen")
+async def listen_socket(websocket: WebSocket) -> None:
+    """Relay browser audio to Meta realtime and transcripts back.
+
+    Auth is the console session token as ?token= or cookie. The Meta
+    API key never reaches the browser. Audio frames from the browser
+    are raw bytes; control frames are JSON text with a type field.
+    """
+    if not _listen_token_ok(websocket):
+        await websocket.close(code=1008)
+        return
+    await websocket.accept()
+    params = websocket.query_params
+    project = (params.get("project", "default") or "default").strip() or "default"
+    title = (params.get("title", "") or "").strip()
+    mode = (params.get("mode", "PUSH_TO_TALK") or "PUSH_TO_TALK").strip()
+    session_id = (params.get("session_id", "") or "").strip()
+    if not session_id:
+        import uuid
+
+        session_id = "listen-" + uuid.uuid4().hex[:12]
+    try:
+        store_mod.create_listen_session(_db_path(), session_id, project, title)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("listen session create failed: %s", exc)
+    from pam_pm.models import realtime as rt_mod
+
+    client = rt_mod.RealtimeClient(
+        session_id,
+        project,
+        _db_path(),
+        mode=mode,
+        connect_fn=LISTEN_CONNECT_FN,
+    )
+    try:
+        await client.connect()
+    except Exception as exc:  # noqa: BLE001
+        try:
+            await websocket.send_text(json.dumps({
+                "type": "error",
+                "message": "Could not reach transcription. Check the Meta key and try again.",
+            }))
+        except Exception:  # noqa: BLE001, S110
+            pass
+        logger.warning("listen realtime connect failed: %s", exc)
+        try:
+            await websocket.close(code=1011)
+        except Exception:  # noqa: BLE001, S110
+            pass
+        return
+    try:
+        await websocket.send_text(json.dumps({
+            "type": "status", "state": "transcribing", "session_id": session_id,
+        }))
+    except Exception:  # noqa: BLE001, S110
+        pass
+    stop = False
+
+    async def _meta_to_browser() -> None:
+        nonlocal stop
+        while not stop:
+            try:
+                update = await client.recv_event(timeout=5.0)
+            except TimeoutError:
+                if client.is_expired():
+                    break
+                continue
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("listen realtime recv failed: %s", exc)
+                try:
+                    await websocket.send_text(json.dumps({
+                        "type": "status", "state": "reconnecting",
+                    }))
+                except Exception:  # noqa: BLE001, S110
+                    pass
+                ok = await client.reconnect_with_resend(max_attempts=3)
+                if not ok:
+                    try:
+                        await websocket.send_text(json.dumps({
+                            "type": "error",
+                            "message": "Connection lost. Audio was kept for 30 seconds.",
+                        }))
+                    except Exception:  # noqa: BLE001, S110
+                        pass
+                    break
+                continue
+            if update is None:
+                break
+            if update.kind in ("partial", "final", "speaker"):
+                try:
+                    await websocket.send_text(json.dumps({
+                        "type": update.kind,
+                        "text": update.text,
+                        "turn_id": update.turn_id,
+                        "speaker": update.speaker,
+                        "start_ms": update.start_ms,
+                        "end_ms": update.end_ms,
+                        "session_id": session_id,
+                    }))
+                except Exception:  # noqa: BLE001
+                    break
+            elif update.kind == "error" and update.text:
+                try:
+                    await websocket.send_text(json.dumps({
+                        "type": "error", "message": update.text[:300],
+                    }))
+                except Exception:  # noqa: BLE001, S110
+                    pass
+
+    meta_task = asyncio.create_task(_meta_to_browser())
+    try:
+        while not stop:
+            try:
+                message = await websocket.receive()
+            except WebSocketDisconnect:
+                break
+            except Exception:  # noqa: BLE001
+                break
+            if message.get("type") == "websocket.disconnect":
+                break
+            data = message.get("bytes")
+            if data is not None:
+                try:
+                    await client.send_audio(bytes(data))
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("listen send audio failed: %s", exc)
+                    try:
+                        await websocket.send_text(json.dumps({
+                            "type": "error",
+                            "message": "Audio send failed. Try stopping and starting again.",
+                        }))
+                    except Exception:  # noqa: BLE001, S110
+                        pass
+                continue
+            text = message.get("text")
+            if text is None:
+                continue
+            try:
+                control = json.loads(text)
+            except ValueError:
+                continue
+            if not isinstance(control, dict):
+                continue
+            action = str(control.get("type", "")).strip().lower()
+            if action in ("end", "stop"):
+                stop = True
+                try:
+                    await client.end_stream()
+                except Exception:  # noqa: BLE001, S110
+                    pass
+            elif action == "silence":
+                try:
+                    await client.send_silence(int(control.get("ms", 80)))
+                except Exception:  # noqa: BLE001, S110
+                    pass
+            if client.is_expired():
+                try:
+                    await websocket.send_text(json.dumps({
+                        "type": "status", "state": "max_length",
+                        "message": "Two hour limit reached. Stopping.",
+                    }))
+                except Exception:  # noqa: BLE001, S110
+                    pass
+                stop = True
+    finally:
+        stop = True
+        if not meta_task.done():
+            meta_task.cancel()
+        try:
+            await client.close()
+        except Exception:  # noqa: BLE001, S110
+            pass
+        try:
+            store_mod.set_listen_session_status(_db_path(), session_id, "stopped")
+        except Exception:  # noqa: BLE001, S110
+            pass
+        try:
+            await websocket.close()
+        except Exception:  # noqa: BLE001, S110
+            pass

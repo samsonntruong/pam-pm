@@ -34,6 +34,7 @@
         </select>
         {% if project_backend_label %}<span class="muted backend-kind">{{ project_backend_label }}</span>{% endif %}
       </div>
+      <a class="btn btn-small" href="/listen?project={{ project }}">Listen</a>
       <button type="button" id="theme-toggle" aria-pressed="false">Dark theme</button>
     </div>
   </header>
@@ -48,6 +49,8 @@
         <a href="/kickoff" class="{% if active == 'kickoff' %}active{% endif %}">Kickoff</a>
         <a href="/raid" class="{% if active == 'raid' %}active{% endif %}">RAID</a>
         <a href="/review" class="{% if active == 'review' %}active{% endif %}">Review</a>
+        <a href="/listen" class="{% if active == 'listen' %}active{% endif %}">Listen</a>
+        <a href="/meetings" class="{% if active == 'meetings' %}active{% endif %}">Meetings</a>
         <a href="/settings" class="{% if active == 'settings' %}active{% endif %}">Settings</a>
       </nav>
     </aside>

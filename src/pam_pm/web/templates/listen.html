@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Listen - Pam{% endblock %}
+{% block content %}
+<h1>Listen</h1>
+<p class="muted">Capture a meeting for project {{ project }} ({{ project_backend_label }}). Press Start, grant mic access, and speak. Transcripts stream below. Nothing is stored until finals arrive.</p>
+
+<div id="listen-root" data-token="{{ listen_token }}" data-project="{{ project }}" data-session="{{ listen_session }}">
+  <section class="card">
+    <h2>Session</h2>
+    <div class="inline-form">
+      <label>Title
+        <input type="text" id="listen-title" name="title" value="{{ listen_title }}" placeholder="Weekly standup" maxlength="120">
+      </label>
+      <span class="pill" id="listen-status" role="status">Idle</span>
+    </div>
+    <p class="muted">Session <code id="listen-session">{{ listen_session }}</code></p>
+    <p class="muted">Best in Chrome or Edge on desktop. Use 127.0.0.1 or HTTPS so the mic is allowed. Sessions stop at the two hour limit.</p>
+    <div class="form-actions">
+      <button type="button" id="listen-start">Start listening</button>
+      <button type="button" id="listen-stop" disabled>Stop</button>
+      <a class="btn" href="/meetings?project={{ project }}">All meetings</a>
+    </div>
+    <p class="muted" id="listen-error" role="alert" aria-live="polite"></p>
+  </section>
+
+  <section class="card">
+    <h2>Live transcript</h2>
+    <p class="muted">Hearing: <span id="listen-partial" aria-live="polite"></span></p>
+    <ul id="listen-transcript" aria-live="polite" aria-label="Final transcript lines">
+      <li data-empty class="muted">Finals appear here as you speak.</li>
+    </ul>
+    <div id="listen-notes-link" class="form-actions" aria-live="polite"></div>
+  </section>
+
+  <section class="card">
+    <h2>Privacy</h2>
+    <p class="muted">Audio goes to transcription and is not kept. Only final text is stored. Tell the room before you start: Pam is transcribing this meeting for notes.</p>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/listen.js"></script>
+{% endblock %}

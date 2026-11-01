@@ -94,3 +94,101 @@ Source: dev.meta.ai docs pages for media segmentation and SAM
   400 or 404 it prints FALLBACK with the error detail truncated to 200
   chars and exits 0. Live result: not yet run in this phase; run the
   script once with real credentials to confirm masks come back.
+
+## 7. LISTEN discovery: Muse Voice Transcribe realtime (phase 2)
+
+Source: dev.meta.ai docs (speech-to-text feature page, voice API
+reference realtime/transcribe/schemas pages, model page), read Nov 2026.
+Confirmed with one live batch call (see probe note below). Realtime
+WebSocket shape is from docs plus third-party wire reports, with mode
+behavior live-verified here (see live streaming note below):
+ENDPOINTING is the verified default, PUSH_TO_TALK yields nothing for
+this audio.
+
+- Model: muse-voice-transcribe-1.0. Same model on both endpoints.
+- Realtime endpoint: wss://api.meta.ai/v1/asr/realtime (same host as
+  the Model API). Optional ?sessionId query param for correlation;
+  server generates one if omitted and returns it in the handshake
+  response.
+- Batch endpoint: POST https://api.meta.ai/v1/asr/transcribe, multipart
+  upload (request JSON part plus audio WAV part). Batch auth uses the
+  Authorization Bearer header.
+- Session setup: send the handshake as the first JSON text frame within
+  10 seconds of connecting. Auth rides inside the handshake as
+  authorization.accessToken with value "Bearer <key>"; the HTTP
+  Authorization header is ignored on realtime. Wait for the handshake
+  acknowledgement ({"sessionId": "..."}, the only server frame with no
+  type field) before sending audio. End input with {"type": "endStream"}
+  (half-closes client to server, ends the whole session, not one turn),
+  keep reading until the server closes with 1000. Closing the socket
+  instead can drop pending events.
+- Handshake fields: authorization (required), audioEncoding (required,
+  PCM_24KHZ or PCM_16KHZ), model (required), mode (default
+  ENDPOINTING, verified live; PUSH_TO_TALK returned no transcript
+  segments for the same synthetic speech), partialMode (default CUMULATIVE), emitAudioProgress
+  (default true), keywords, languageBias. Mode, keywords and
+  languageBias are fixed once the session starts.
+- Required audio format: raw PCM binary frames, signed 16-bit
+  little-endian mono. PCM_24KHZ is 48,000 bytes/sec and the native
+  rate; PCM_16KHZ is 32,000 bytes/sec, resampled server side. No
+  container header, timestamps, or sequence numbers; frame boundaries
+  carry no meaning. Docs example paces 80 ms frames (3840 bytes at
+  24 kHz). Pace at about real time; keep sending PCM silence during
+  live pauses. Batch instead takes a RIFF/WAVE container, mono 16-bit
+  PCM at 16 or 24 kHz (ffmpeg: -ac 1 -ar 24000 -c:a pcm_s16le).
+- Partial and final transcripts: partials are transcript events while
+  speech continues. CUMULATIVE (default) sends the full current
+  hypothesis each time, so replace the previous partial; a new partial
+  can revise or remove earlier text. DELTA sends only new text to
+  append (meant for batch SSE). Completion signal depends on mode:
+  PUSH_TO_TALK uses a transcript event with final true; ENDPOINTING
+  and DIARIZATION use speechComplete per turnId. speechEnd is only the
+  boundary, not the text; the text arrives in speechComplete and may
+  differ from the last partial (punctuation, caps). Partials carry no
+  turnId; attribute them to the turn opened by the most recent
+  speechStart. Turns can overlap, so key state on turnId.
+- Timestamps: turn-level only (startMs/endMs on batch turns,
+  audioProcessedMs progress on events). Word-level timestamps,
+  confidence scores, sound or emotion detection, and transcript
+  reformatting are not available.
+- Speaker labels: DIARIZATION mode adds speaker events (label A, B,
+  ...) while a turn is active; each labels the span back to the
+  previous speechStart or speaker event. One speaker event per turn;
+  same label can repeat across a session. Labels are session-scoped,
+  not verified names, and do not persist across sessions. DIARIZATION
+  supports 20+ speakers but is not tuned for low-latency voice
+  commands; use ENDPOINTING there.
+- Languages: 25 supported with code-switching (Arabic, Bengali, Dutch,
+  English, French, German, Hebrew, Hindi, Indonesian, Italian,
+  Japanese, Kannada, Korean, Malay, Mandarin Chinese, Marathi, Polish,
+  Portuguese, Spanish, Tagalog, Tamil, Telugu, Thai, Turkish,
+  Vietnamese). languageBias is a list of language names (for example
+  ["English", "French"]); it steers, not forces. Omit for auto
+  detect. keywords biases toward product names and terms without
+  guaranteeing spelling.
+- Limits: realtime session max 60 minutes, then reconnect (no resume
+  token; join transcripts app side). Handshake within 10 s. Do not run
+  more than 5 s ahead of processing; idle input without endStream and
+  stalled output close the session. Batch caps: 32 MB body (413),
+  10 minutes audio (400). Rate limits per tenant: 256 concurrent
+  streams, 16,000 streams started per hour, shared by both endpoints
+  (realtime rejects with close 1013, batch with 429). Close codes:
+  1000 normal, 1011 backend fault (retry with backoff; new session when
+  reason is max duration), 1013 rate limited. Fatal closes are preceded
+  by an error event (type error with message and sessionId) when
+  possible.
+- Price: $3.00 per 1,000 audio minutes, $0.18 per hour, same for
+  streaming and batch, ZDR at parity. Billed on audio actually
+  processed, rounded down to whole seconds. Requests failing before
+  any transcript and 429s are not billed.
+- Live probe (1 call, /tmp/listen_probe.py, Nov 2026): POST
+  /v1/asr/transcribe with a 3 s synthetic 24 kHz mono tone WAV (no
+  words) returned 200 with transcript "", audioDurationMs 3040,
+  turns []. Confirms model id, Bearer auth, and WAV format on the
+  batch endpoint.
+- Live streaming (1 call, /tmp/listen_live_verify.py, Nov 2026):
+  RealtimeClient default mode ENDPOINTING with synthetic espeak-ng
+  speech returned cumulative partials and one speechComplete final
+  per turnId, persisted to SQLite via the store helpers (1 segment).
+  PUSH_TO_TALK returned no transcript segments for the same audio,
+  so ENDPOINTING is the default and PUSH_TO_TALK is opt in only.
