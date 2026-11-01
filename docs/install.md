@@ -7,13 +7,13 @@ profile and downloads Python 3.12 itself.
 Windows (PowerShell):
 
 ```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/OWNER/pam-pm/main/install.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/samsonntruong/pam-pm/main/install.ps1 | iex"
 ```
 
 macOS or Linux:
 
 ```sh
-curl -LsSf https://raw.githubusercontent.com/OWNER/pam-pm/main/install.sh | sh
+curl -LsSf https://raw.githubusercontent.com/samsonntruong/pam-pm/main/install.sh | sh
 ```
 
 Your browser opens the Pam setup console. Follow the wizard.

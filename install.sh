@@ -4,7 +4,7 @@
 # This script never asks for or handles secrets. Enter credentials in the web wizard.
 #
 # One-liner:
-#   curl -LsSf https://raw.githubusercontent.com/OWNER/pam-pm/main/install.sh | sh
+#   curl -LsSf https://raw.githubusercontent.com/samsonntruong/pam-pm/main/install.sh | sh
 #
 # Options:
 #   --version TAG   Release tag to install (default: 3a default below, update when tagging)
@@ -26,7 +26,7 @@ HOME="${HOME:-$(eval echo ~)}"
 # Mirrors the version in pyproject.toml and src/pam_pm/__init__.py (__version__).
 DEFAULT_VERSION="v0.2.0"
 UV_INSTALL_SCRIPT="https://astral.sh/uv/install.sh"
-REPO_ARCHIVE_BASE="https://github.com/OWNER/pam-pm/archive/refs"
+REPO_ARCHIVE_BASE="https://github.com/samsonntruong/pam-pm/archive/refs"
 
 VERSION=""
 REF=""
@@ -228,7 +228,7 @@ PYEOF
     raw_ref="$VERSION"
     if [ -n "$REF" ]; then raw_ref="$REF"; fi
     if command -v curl >/dev/null 2>&1; then
-        curl -LsSf "https://raw.githubusercontent.com/OWNER/pam-pm/$raw_ref/src/pam_pm/web/static/$name" -o "$dest" 2>/dev/null && return 0
+        curl -LsSf "https://raw.githubusercontent.com/samsonntruong/pam-pm/$raw_ref/src/pam_pm/web/static/$name" -o "$dest" 2>/dev/null && return 0
     fi
     return 1
 }

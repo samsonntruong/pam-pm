@@ -9,7 +9,7 @@ Requires Python 3.12 or newer.
 With pipx (recommended):
 
 ```sh
-pipx install git+https://github.com/OWNER/pam-pm.git
+pipx install git+https://github.com/samsonntruong/pam-pm.git
 pam start
 ```
 

@@ -19,13 +19,13 @@ You need nothing installed: no Python, no git, no admin rights. You will need a 
 Windows (PowerShell):
 
 ```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/OWNER/pam-pm/main/install.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/samsonntruong/pam-pm/main/install.ps1 | iex"
 ```
 
 macOS or Linux:
 
 ```sh
-curl -LsSf https://raw.githubusercontent.com/OWNER/pam-pm/main/install.sh | sh
+curl -LsSf https://raw.githubusercontent.com/samsonntruong/pam-pm/main/install.sh | sh
 ```
 
 Your browser opens the Pam setup console. Follow the wizard.
@@ -45,7 +45,7 @@ Details and troubleshooting: [docs/install.md](docs/install.md).
 Alternative installs:
 
 ```sh
-pipx install git+https://github.com/OWNER/pam-pm.git
+pipx install git+https://github.com/samsonntruong/pam-pm.git
 pam start
 ```
 

@@ -73,7 +73,7 @@ Screens:
 15. Settings: provider, safety, spend cap, and project options.
 
 ### 5.3 How it launches
-- One-command installer (`install.ps1` / `install.sh`), or `pipx install git+https://github.com/OWNER/pam-pm.git` then `pam start` (PyPI release is roadmap).
+- One-command installer (`install.ps1` / `install.sh`), or `pipx install git+https://github.com/samsonntruong/pam-pm.git` then `pam start` (PyPI release is roadmap).
 - Docker option: see `docs/deploy.md`.
 - The console binds to 127.0.0.1 only and requires a one-time setup token printed at start. Secrets are stored in a local data directory with restrictive file permissions, never in the repo. Network bind needs a console password.
 - No inbound ports are needed: Slack uses Socket Mode and the board is polled.
