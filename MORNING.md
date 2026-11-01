@@ -1,51 +1,49 @@
-# MORNING.md: status for Samson, Nov 1 morning
+# MORNING.md: phase 2 final status for Samson
 
-Overnight build done through M6 docs. Repo is private at samsonntruong/pam-pm, branch main, all pushed.
+Phase 2 is complete through WP8. Repo is private at samsonntruong/pam-pm, branch main at v0.2.0 tag, all pushed. Phase-2 branch merged. Read VIDEO_SCRIPT.md first, then record the video, make the repo public, submit.
 
 ## What works
-- Repo skeleton, packaging, CLI with pam and pam-pm entry points, Docker files, CI.
-- Core engine: masking, cost meter, store with evidence log and undo, writes with dry run default.
-- Prompt caching from day one: one build_messages function, stable prefix, volatile last, per call cached logging, prefix stability test.
-- ModelClient on Meta Responses API with chat fallback, tool_choice auto, 4000 plus max tokens, retry with backoff, 4 parallel cap.
-- Interviewer with pushback on vague answers, 6 turn cap, structured result.
-- Rules engine with scheduler, ADO poller watermark, morning checkin, follow up on close, blocker intake.
-- ADO state map: Agile uses Closed, Scrum uses Done, close_item and is_closed helpers.
-- Web console on 127.0.0.1:8765 with setup wizard Test buttons, rules, board read only, activity with evidence and Undo, review, plan with photo upload and Approve.
-- Review synthesis with 6000 plus tokens, retro actions tagged retro-action, vision with SAM first then fallback to full image read.
-- 56 tests pass plus fresh clone check with wheel build and template check.
+- One-command install: install.ps1 and install.sh with uv 0.11.1, verified end to end in sandbox (install, pam version, server start). Correct form is `uv tool install "pam-pm @ source"`, proven live.
+- Setup wizard with zero terminal steps: backend choice, provider, Slack and ADO credentials all save from the browser to 0600 files in the data directory. Full wizard walk passes on the real installed artifact with no env vars: saves plus Test buttons plus complete all green.
+- Two P0 bugs found and fixed by fresh-install testing: uv package spec mismatch and a setup token that could never validate (cli imported web.app too early).
+- Native Pam board: editable kanban, sprints, CSV, dependency links, Move to menu, realtime SSE, read-only ADO view with link-outs.
+- Pam-owned features on both backends: kickoff from a document, RAID log, triage rule, next-sprint proposal, at-Pam add task, mid-sprint adjustment, provider picker (Meta default plus custom endpoint).
+- Listen (beta): realtime transcription verified live with synthetic speech, notes plus approval card, meetings list, consent flow, no audio stored by default.
+- Desktop wrapper (beta): pam desktop window plus tray, [desktop] extra, installers default it on Win and Mac.
+- Autostart and recovery: autostart on all OS, WAL outbox exactly once, misfire catch-up, offline banner, kill-and-restart tests.
+- Web console: 15 screens with Settings, global theme, light and dark, detector exit 0, 20-plus real screenshots.
+- 278 tests pass with no credentials, ruff clean, gitleaks clean on full history, fresh-install check green.
 
-## Tested for real
-- Meta Responses API probe with tool and 1px image: pass, 539 in 113 cached 302 out, cost 0.000103 dollars.
-- SAM 3.1 listed in models: pass, request shape still TBD, fallback path implemented.
-- ADO: list projects teams iterations pass, create and delete items pass, Dependency Forward and Reverse link names verified, waiter blocker link pass, poll sees new items pass, Agile Closed verified with probe item 4 created and closed then deleted.
-- Slack: auth test pass, DM to test user pass, app token api test fails with missing scope because app tokens cannot call Web API, Socket Mode live test skipped overnight.
-- which pam: free, both pam and pam-pm registered.
-- Fresh clone check in sandbox: pytest, wheel build, template presence, pip install from wheel, pam version: all pass.
-- No Docker in sandbox: docker command not found, host Docker path untested.
+## Tested live
+- Meta Responses API probes, tool calling, image input, SAM segmentation returning masks and boxes on synthetic images.
+- ADO full loop: list, create, delete, Dependency links, Agile Closed mapping, waiter blocker link, poll watermark.
+- Slack auth plus DM delivery (a few test DMs went to the test user during verification).
+- Realtime transcription: partials building to a full sentence on synthetic speech in ENDPOINTING mode, final persisted. PUSH_TO_TALK yields nothing, so ENDPOINTING is the default.
+- Fresh install plus full wizard on the real packaged artifact with test credentials in dry run, timed and green.
+- install.ps1 analyzer zero warnings, install.sh end to end, server start on 127.0.0.1:8765.
 
 ## Tested with fakes only
-- All three rules end to end, blocker notify on close, interviewer pushback, review and retro, photo plan proposal.
-- Web screens load via TestClient. Console screenshots in docs/images are 1x1 placeholders because Playwright browsers are not installed in the sandbox. Retake them with a real browser before the video.
-- Full multi person Slack run with humans answering. Morning task with the video.
+- All rules end to end, interviewer pushback, review and retro, kickoff owner flow, RAID cascades, triage model gating, notes extraction, desktop single instance and tray (mocked GUI).
+- Multi person live Slack story with humans answering (no teammate tokens were available to the builder).
+- Live SIGKILL against production services (simulated kill plus restart is covered by tests on both backends).
+- Windows and macOS install-test workflow runs plus Docker compose build (no Docker or Mac in the sandbox, token cannot read Actions to confirm CI).
 
-## Failed or cut
-- Slack app token check script gives FAIL missing_scope. It is a script bug, not a credential bug. Fix: validate xapp prefix and skip Web API call, verify Socket Mode with a live connection in the morning.
-- SAM 3.1 request shape not confirmed. Fallback to whole image read is in place. Time box it to 1 hour in the morning or ship fallback.
-- Docker compose up not run here. Run it on your machine before making public.
-- Gitleaks binary not installed here. Test fixtures contain fake tokens like xoxb-fake123 for redaction unit tests. Run gitleaks before going public and add an allowlist for tests if it flags them.
-- No em dashes in source. Design docs in docs/design still mention Samson by name as build owner. That is the author name, kept intentionally.
+## Cut or deferred
+- Nothing cut from WP1 to WP4, WP3b, WP7, WP8, tests, or README. WP3c desktop is beta as specified.
+- Fly.io managed-host guide is marked untested (no paid account used). VPS plus Caddy guide follows the standard pattern.
+- Docker compose up was not run here (no Docker in the sandbox).
 
-## Spend so far
-- Muse Code measured 0.1649 dollars over 11 tasks, 14.8M input tokens at 94.3 percent cached.
-- T0a first task usage not captured, estimate 0.01. Real Meta checks 0.0001. Total about 0.18 of the 100 cap.
-- No spend alerts needed. Reserve held for product test runs and video recording.
+## Spend and caching
+- Phase 1 build about 0.18. Phase 2 Muse Code tasks about 1.35. Real probes about 0.001. Combined total about 1.54 of the 100 cap. No alerts needed.
+- Cached share 93 to 95 percent across build tasks. Product calls log cached tokens per call per META_API_NOTES rules.
 
-## You must do in the morning
-1. Add two people to the Slack workspace and the ADO org with matching emails so roster auto match works.
-2. Run pam start, complete the wizard with real accounts, press each Test button until green.
-3. Run the blocker loop live: morning checkin, vague answer challenged, blocker intake with link, owner ETA, close and notify, review and retro.
-4. Record the video live, 3 minutes or less: setup, photo plan, checkin, blocker, blocker clears, review.
-5. Retake console screenshots with a real browser into docs/images.
-6. Run docker compose up on your machine, then the fresh clone check script.
-7. Run gitleaks, then make the repo public yourself, upload the video, paste SUBMISSION.md.
-8. Revoke the pam-build Meta key, GitHub token, ADO PAT, Slack tokens after submitting.
+## Samson checklist (only human items remain)
+1. Add two people to the Slack workspace and the ADO org with matching emails, or add PAM_TEST_SLACK_USER_TOKEN_1 to 3 for the scripted live story.
+2. Try Pam yourself for a few minutes: install with the one-liner, run the wizard, answer a check-in vaguely and watch the pushback.
+3. Record the video from VIDEO_SCRIPT.md (2:50 or less): one-liner install, wizard choosing Pam board, kickoff, check-in pushback, blocker with link then clear, RAID log, review plus next sprint. Record live on Standard.
+4. Retake any console screenshots you want with real data (current ones use neutral invented names).
+5. Check CI on GitHub (Actions tab): ci.yml plus install-test.yml on Windows and Linux.
+6. Run gitleaks yourself if you want a second opinion (clean here on 29 plus commits).
+7. Set the repo description and topics (ai, scrum, slack, azure-devops, agents, muse-spark, project-management): the build token lacks permission (403), so do it in repo Settings.
+8. Make the repo public yourself, upload the video to YouTube, paste SUBMISSION.md into the form.
+9. After submitting: revoke the pam-build Meta key, GitHub token, ADO PAT, Slack tokens. Optionally remove the pam-builder route and the phase2-watchdog cron job.
