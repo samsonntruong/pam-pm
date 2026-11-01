@@ -1,22 +1,29 @@
 #!/usr/bin/env python3
-"""M0 SAM 3.1 request shape discovery. At most one API call.
+"""M0 SAM 3.1 request shape discovery. At most two API calls.
 
-Tries GET {BASE}/models to discover SAM availability. On any 400 or 404,
-prints the fallback decision (use whole image to Muse Spark vision) and
-exits 0 with a FALLBACK note. Never burns more than one call.
+Call 1: GET {BASE}/models to discover SAM availability.
+Call 2: POST {BASE}/responses with model sam-3.1 on a small synthetic
+test image made in code (invented shapes, no real people).
+
+On any 400 or 404, prints the fallback decision (use whole image to
+Muse Spark vision) with a FALLBACK note and exits 0. Never burns more
+than two calls.
 
 Secrets are read only via PAM_SECRETS_FILE env or ~/pam-secrets.env.
 Never prints secret values. All output is redacted.
 """
 
 import argparse
+import base64
 import json
 import os
 import re
+import struct
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from pathlib import Path
 
 REDACT_PATTERNS = [
@@ -91,7 +98,7 @@ def load_secrets():
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(
-        description="M0 SAM check: discover SAM 3.1 shape with one call."
+        description="M0 SAM check: discover SAM 3.1 shape, max two calls."
     )
     p.add_argument("--base-url", default="", help="Override META_BASE_URL.")
     p.add_argument("--model", default="", help="Override META_VISION_MODEL.")
@@ -128,6 +135,93 @@ def do_get(url, api_key, timeout):
         return 0, {}, str(e)[:2000]
 
 
+def do_post(url, api_key, payload, timeout):
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method="POST",
+        headers={
+            "Authorization": "Bearer " + api_key,
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+            try:
+                return resp.status, json.loads(body), ""
+            except json.JSONDecodeError:
+                return resp.status, {}, body[:2000]
+    except urllib.error.HTTPError as e:
+        try:
+            raw = e.read().decode("utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            raw = ""
+        try:
+            parsed = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            parsed = {}
+        return e.code, parsed, raw[:2000]
+    except Exception as e:  # noqa: BLE001
+        return 0, {}, str(e)[:2000]
+
+
+def _png_chunk(tag, payload):
+    return (
+        struct.pack(">I", len(payload))
+        + tag
+        + payload
+        + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
+    )
+
+
+def make_test_png(size=48):
+    """Build a tiny synthetic PNG in code: white field, red square center.
+
+    Invented shapes only, no real people. Returns raw PNG bytes.
+    """
+    w = h = size
+    lo, hi = size // 4, size * 3 // 4
+    raw = bytearray()
+    for y in range(h):
+        raw.append(0)
+        for x in range(w):
+            if lo <= x < hi and lo <= y < hi:
+                raw += bytes((220, 40, 40))
+            else:
+                raw += bytes((245, 245, 245))
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + _png_chunk(b"IHDR", ihdr)
+        + _png_chunk(b"IDAT", zlib.compress(bytes(raw)))
+        + _png_chunk(b"IEND", b"")
+    )
+    return png
+
+
+def response_has_masks(data, raw):
+    """Return True if the response text carries SAM mask tokens."""
+    hay = ""
+    try:
+        hay += json.dumps(data)
+    except (TypeError, ValueError):
+        hay += str(data)
+    hay += str(raw or "")
+    return "<|mask" in hay
+
+
+def response_has_boxes(data, raw):
+    hay = ""
+    try:
+        hay += json.dumps(data)
+    except (TypeError, ValueError):
+        hay += str(data)
+    hay += str(raw or "")
+    return "<|box" in hay
+
+
 def print_fallback(reason):
     print(redact(f"SAM probe result: {reason}"))
     print(
@@ -162,7 +256,7 @@ def main(argv=None):
 
     base = base_url.strip().rstrip("/")
     models_url = base + "/models"
-    print(redact("probe: GET /models (one call max)"))
+    print(redact("probe: GET /models (call 1 of max 2)"))
     status, data, raw = do_get(models_url, api_key, args.timeout)
 
     if status == 0:
@@ -197,10 +291,85 @@ def main(argv=None):
     want = model.lower()
     found = any(want in n.lower() or n.lower() in want for n in names)
     if found:
-        print(redact(f"PASS: {model} listed in /models; shape still TBD from docs"))
+        print(redact(f"listed: {model} present in /models"))
     else:
-        print_fallback(f"{model} not listed in /models")
-        print(redact("PASS with FALLBACK note: sam check done, one call used"))
+        print(redact(f"listed: {model} not listed in /models"))
+
+    png = make_test_png()
+    b64 = base64.b64encode(png).decode("ascii")
+    payload = {
+        "model": model,
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "red square"},
+                    {
+                        "type": "input_image",
+                        "image_url": "data:image/png;base64," + b64,
+                    },
+                ],
+            }
+        ],
+    }
+    shape = {
+        "model": model,
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "red square"},
+                    {
+                        "type": "input_image",
+                        "image_url": f"data:image/png;base64,<{len(b64)} chars>",
+                    },
+                ],
+            }
+        ],
+    }
+    print(redact("request_shape: " + json.dumps(shape, sort_keys=True)))
+
+    responses_url = base + "/responses"
+    print(redact("probe: POST /responses (call 2 of max 2)"))
+    print(redact(f"endpoint tried: POST {responses_url}"))
+    status2, data2, raw2 = do_post(responses_url, api_key, payload, args.timeout)
+    print(redact(f"segmentation status: {status2}"))
+
+    if status2 == 0:
+        print(redact(f"FAIL: request error: {raw2}"))
+        return 1
+    if status2 in (400, 404):
+        detail = ""
+        if isinstance(data2, dict) and data2:
+            detail = str(data2.get("error", data2))
+        detail = (detail or raw2 or "")[:200]
+        print(redact(f"FALLBACK: POST /responses returned {status2}: {detail}"))
+        print_fallback(f"{status2} on POST /responses")
+        return 0
+    if status2 == 401:
+        print(redact("FAIL: 401 unauthorized. Check META_API_KEY by name only."))
+        return 1
+    if status2 == 429:
+        print(redact("FAIL: 429 rate limited. Retry later with backoff."))
+        return 1
+    if status2 != 200:
+        err = ""
+        if isinstance(data2, dict):
+            err = str(data2.get("error", data2))[:500]
+        print(redact(f"FAIL: POST /responses returned {status2}: {err or raw2[:500]}"))
+        return 1
+
+    masks = response_has_masks(data2, raw2)
+    boxes = response_has_boxes(data2, raw2)
+    print(redact(f"masks_came_back: {str(masks).lower()}"))
+    print(redact(f"boxes_came_back: {str(boxes).lower()}"))
+    if masks:
+        print(redact("PASS: sam segmentation returned masks, two calls used"))
+    else:
+        print_fallback("POST /responses 200 with zero mask matches")
+        print(redact("PASS with FALLBACK note: sam check done, two calls used"))
     return 0
 
 

@@ -68,3 +68,29 @@ The estimates are rough; the Meta usage table in DEVLOG.md replaces them with me
 - LiteLLM Meta provider documentation (behaviours above)
 - harn-vm Meta capability file (tool_choice and thinking behaviours)
 - Third-party pricing pages for Muse Spark 1.3 and Contributor tier
+
+## 6. SAM 3.1 discovery (phase 2)
+
+Source: dev.meta.ai docs pages for media segmentation and SAM
+(overview, segmenting with prompts, reading segmentation output).
+
+- Endpoint: POST https://api.meta.ai/v1/responses, same base URL and
+  Bearer auth (META_API_KEY) as Muse Spark. Model id sam-3.1.
+- Request shape: Responses API, one user message, content holds one
+  input_text concept prompt (short noun phrase naming one thing, for
+  example red square) plus one input_image part with image_url as a
+  public URL or base64 data URL. One concept per request. Streaming
+  with stream true is recommended for video; non-streaming returns the
+  full result in one response.
+- Response shape: segmentation output arrives as special-token text in
+  the output_text lane, one line per frame. Each record is an object id
+  plus one box token then one mask token, for example
+  <0f> plus box and mask tokens with w and h in source pixels and mask
+  raster as height,width plus base85 payload. Zero matches is valid:
+  the stream completes with empty output_text.
+- Probe: scripts/check_sam.py keeps GET /models (call 1) and adds one
+  POST /responses call (call 2 max) on a synthetic 48x48 PNG made in
+  code (white field, red square center) with prompt red square. On any
+  400 or 404 it prints FALLBACK with the error detail truncated to 200
+  chars and exits 0. Live result: not yet run in this phase; run the
+  script once with real credentials to confirm masks come back.

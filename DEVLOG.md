@@ -23,6 +23,7 @@ Build log for Pam. Three lines per entry.
 | Slack | M0 check_slack real run | Auth and DM pass, app token scope note, button SKIPPED for morning run |
 | Muse Code | WP-1 slack script fix | App token local prefix check, slack check fully PASS |
 | Gitleaks 8.24.2 | WP-1 secret scan | 10 commits scanned, no leaks found |
+| Muse Code | WP-1 SAM discovery | Responses shape confirmed live, masks and boxes back on synthetic image |
 
 ## Entries
 
