@@ -158,13 +158,23 @@
 
 <script id="wizard-progress" type="application/json">{{ progress_json | safe }}</script>
 <script>
+  function setupToken() {
+    try {
+      const url = new URL(window.location.href);
+      const q = url.searchParams.get("token");
+      if (q) return q;
+    } catch (err) { /* ignore, fall back to input */ }
+    const input = document.getElementById("token");
+    return input && input.value ? input.value : "";
+  }
   function projectName() {
     const url = new URL(window.location.href);
     return url.searchParams.get("project") || "{{ project }}";
   }
   async function saveStep(step, extra) {
     const project = projectName();
-    const payload = Object.assign({project: project, step: step, data: {}}, extra || {});
+    const payload = Object.assign({project: project, step: step, data: {}, token: setupToken()}, extra || {});
+    if (!payload.token) { payload.token = setupToken(); }
     try {
       localStorage.setItem("pam-wizard-" + project, JSON.stringify(payload));
     } catch (err) { /* storage full or blocked, server copy still saves */ }
@@ -210,7 +220,7 @@
       const resp = await fetch("/api/setup/slack", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({project: project, bot_token: bot ? bot.value : "", app_token: app ? app.value : ""})
+        body: JSON.stringify({project: project, bot_token: bot ? bot.value : "", app_token: app ? app.value : "", token: setupToken()})
       });
       const data = await resp.json().catch(function () { return {}; });
       saveResult("slack-save-result", resp.ok && data.ok !== false, (resp.ok && data.ok !== false) ? "Saved Slack settings." : ((data && data.message) ? data.message : "Save failed. Check the fields and try again."));
@@ -229,7 +239,7 @@
       const resp = await fetch("/api/setup/ado", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({project: project, org_url: org ? org.value : "", project_name: proj ? proj.value : "", team: team ? team.value : "", pat: pat ? pat.value : ""})
+        body: JSON.stringify({project: project, org_url: org ? org.value : "", project_name: proj ? proj.value : "", team: team ? team.value : "", pat: pat ? pat.value : "", token: setupToken()})
       });
       const data = await resp.json().catch(function () { return {}; });
       saveResult("ado-save-result", resp.ok && data.ok !== false, (resp.ok && data.ok !== false) ? "Saved Azure DevOps settings." : ((data && data.message) ? data.message : "Save failed. Check the fields and try again."));
@@ -257,7 +267,8 @@
           provider: provider,
           base_url: provider === "custom" ? (baseEl ? baseEl.value : "") : (metaBase ? metaBase.value : ""),
           model: provider === "custom" ? (modelEl ? modelEl.value : "") : (metaModel ? metaModel.value : ""),
-          api_key: provider === "custom" ? (keyEl ? keyEl.value : "") : (metaKey ? metaKey.value : "")
+          api_key: provider === "custom" ? (keyEl ? keyEl.value : "") : (metaKey ? metaKey.value : ""),
+          token: setupToken()
         })
       });
       const data = await resp.json().catch(function () { return {}; });
@@ -297,7 +308,7 @@
       const resp = await fetch("/api/setup/backend", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({project: project, backend: value})
+        body: JSON.stringify({project: project, backend: value, token: setupToken()})
       });
       const data = await resp.json().catch(function () { return {}; });
       if (!resp.ok || (data && data.ok === false)) throw new Error("save failed");

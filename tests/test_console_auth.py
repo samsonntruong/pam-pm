@@ -34,6 +34,7 @@ def _client() -> TestClient:
 
 def test_local_token_mode_unchanged(monkeypatch) -> None:
     """With no password stored, the setup token flow keeps working."""
+    monkeypatch.delenv("PAM_SETUP_TOKEN", raising=False)
     monkeypatch.setattr(app_mod, "SETUP_TOKEN", "local-token-for-test")
     assert app_mod.is_valid_token("local-token-for-test") is True
     assert app_mod.is_valid_token("wrong") is False

@@ -8,7 +8,9 @@ import secrets
 import webbrowser
 
 from pam_pm import __version__
-from pam_pm.web.app import HOST, PORT
+
+HOST = "127.0.0.1"
+PORT = 8765
 
 
 def build_parser() -> argparse.ArgumentParser:

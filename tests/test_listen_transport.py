@@ -204,6 +204,7 @@ def test_client_resend_after_reconnect(tmp_path, monkeypatch) -> None:
 def test_ws_listen_rejects_bad_token(monkeypatch) -> None:
     import pam_pm.web.app as app_mod
 
+    monkeypatch.delenv("PAM_SETUP_TOKEN", raising=False)
     monkeypatch.setattr(app_mod, "SETUP_TOKEN", "good-token")
     client = TestClient(app_mod.app)
     with pytest.raises(Exception), client.websocket_connect(  # noqa: B017
@@ -217,6 +218,7 @@ def test_ws_listen_relays_audio_and_transcript(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setenv("META_API_KEY", "test-key")
     monkeypatch.setenv("PAM_HOME", str(tmp_path))
+    monkeypatch.delenv("PAM_SETUP_TOKEN", raising=False)
     monkeypatch.setattr(app_mod, "SETUP_TOKEN", "good-token")
     sock = FakeMetaSocket([
         _txt({"sessionId": "srv-ws"}),

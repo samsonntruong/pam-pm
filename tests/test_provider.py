@@ -9,6 +9,18 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+def _setup_token() -> str:
+    try:
+        import pam_pm.web.app as _m
+
+        return _m.get_setup_token()
+    except Exception:  # noqa: BLE001
+        import os
+
+        return os.environ.get("PAM_SETUP_TOKEN", "")
+
+
+
 @pytest.fixture()
 def isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("PAM_HOME", str(tmp_path))
@@ -122,13 +134,12 @@ def test_save_provider_on_both_backends(isolated) -> None:
     client, tmp_path, _ = isolated
     for project, backend in (("pamp", "pam_board"), ("adop", "azure_devops")):
         resp = client.post(
-            "/api/setup/backend", json={"project": project, "backend": backend}
+            "/api/setup/backend", json={"token": _setup_token(), "project": project, "backend": backend}
         )
         assert resp.status_code == 200
         resp = client.post(
             "/api/setup/provider",
-            json={
-                "project": project,
+            json={"token": _setup_token(), "project": project,
                 "provider": "custom",
                 "base_url": "https://custom.local",
                 "model": "cm-1",

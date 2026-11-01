@@ -65,7 +65,29 @@ PROJECTS = ["default", "atlas", "demo"]
 WIZARD_ORDER = ["model", "slack", "ado", "people", "rules", "safety", "done"]
 WIZARD_PROGRESS_FILENAME = "wizard_progress.json"
 
-SETUP_TOKEN = os.environ.get("PAM_SETUP_TOKEN", "").strip() or secrets.token_urlsafe(32)
+_SETUP_TOKEN_FALLBACK = ""
+SETUP_TOKEN = ""
+
+
+def get_setup_token() -> str:
+    """Return the current setup token, resolving late.
+
+    Reads PAM_SETUP_TOKEN from the environment on every call so a value
+    set after import (for example by pam start) is honored. Falls back
+    to an explicitly patched SETUP_TOKEN global (tests) and finally to
+    a lazily created module-global random value.
+    """
+    env = os.environ.get("PAM_SETUP_TOKEN", "").strip()
+    if env:
+        return env
+    current = str(globals().get("SETUP_TOKEN", "") or "").strip()
+    if current:
+        return current
+    global _SETUP_TOKEN_FALLBACK
+    if not _SETUP_TOKEN_FALLBACK:
+        _SETUP_TOKEN_FALLBACK = secrets.token_urlsafe(32)
+        globals()["SETUP_TOKEN"] = _SETUP_TOKEN_FALLBACK
+    return _SETUP_TOKEN_FALLBACK
 SETUP_DONE = False
 
 LISTEN_CONNECT_FN: Any = None
@@ -559,9 +581,61 @@ def _plan_result_html(photo: dict[str, Any], proposal: list[dict[str, Any]]) -> 
 
 
 def is_valid_token(token: str | None) -> bool:
-    if not token or not SETUP_TOKEN:
+    expected = get_setup_token()
+    if not token or not expected:
         return False
-    return secrets.compare_digest(str(token), SETUP_TOKEN)
+    return secrets.compare_digest(str(token), expected)
+
+
+async def _setup_token_ok(request: Request) -> bool:
+    """Check the setup token from query, header, cookie, or body."""
+    candidate = request.query_params.get("token", "").strip()
+    if candidate and is_valid_token(candidate):
+        return True
+    candidate = request.headers.get("x-setup-token", "").strip()
+    if candidate and is_valid_token(candidate):
+        return True
+    try:
+        candidate = request.cookies.get("pam_setup_token", "").strip()
+    except Exception:  # noqa: BLE001
+        candidate = ""
+    if candidate and is_valid_token(candidate):
+        return True
+    ctype = request.headers.get("content-type", "")
+    if "application/json" in ctype:
+        try:
+            payload = await request.json()
+        except Exception:  # noqa: BLE001
+            payload = None
+        if isinstance(payload, dict):
+            candidate = str(payload.get("token", "") or "").strip()
+            if candidate and is_valid_token(candidate):
+                return True
+        return False
+    try:
+        form = await request.form()
+        candidate = str(form.get("token", "") or "").strip()
+        if candidate and is_valid_token(candidate):
+            return True
+    except Exception:  # noqa: BLE001, S110
+        pass
+    try:
+        payload = await request.json()
+    except Exception:  # noqa: BLE001
+        payload = None
+    if isinstance(payload, dict):
+        candidate = str(payload.get("token", "") or "").strip()
+        if candidate and is_valid_token(candidate):
+            return True
+    return False
+
+
+def _setup_token_denied(request: Request) -> Any:
+    msg = "That setup token did not match."
+    hint = "Paste the token printed when you ran pam start and try again."
+    if "hx-request" in request.headers:
+        return HTMLResponse(_test_result_html(False, msg, hint))
+    return JSONResponse({"ok": False, "message": msg, "hint": hint})
 
 
 AUTH_EXEMPT_PATHS = frozenset({"/", "/health", "/login"})
@@ -1863,6 +1937,8 @@ def get_setup_progress(request: Request) -> dict[str, Any]:
 
 @app.post("/api/setup/progress")
 async def save_setup_progress(request: Request) -> Any:
+    if not await _setup_token_ok(request):
+        return _setup_token_denied(request)
     project = request.query_params.get("project", "").strip()
     step = request.query_params.get("step", "").strip()
     data: dict[str, Any] = {}
@@ -1907,6 +1983,8 @@ async def save_setup_progress(request: Request) -> Any:
 
 @app.post("/api/setup/backend")
 async def save_setup_backend(request: Request) -> Any:
+    if not await _setup_token_ok(request):
+        return _setup_token_denied(request)
     project = request.query_params.get("project", "default").strip() or "default"
     backend = request.query_params.get("backend", "").strip()
     ctype = request.headers.get("content-type", "")
@@ -1947,6 +2025,8 @@ async def save_setup_backend(request: Request) -> Any:
 
 @app.post("/api/setup/provider")
 async def save_setup_provider(request: Request) -> Any:
+    if not await _setup_token_ok(request):
+        return _setup_token_denied(request)
     project = request.query_params.get("project", "default").strip() or "default"
     provider = "meta"
     base_url = ""
@@ -2054,6 +2134,8 @@ def _setup_payload(request: Request, payload: dict[str, Any] | None) -> dict[str
 
 @app.post("/api/setup/slack")
 async def save_setup_slack(request: Request) -> Any:
+    if not await _setup_token_ok(request):
+        return _setup_token_denied(request)
     project = request.query_params.get("project", "default").strip() or "default"
     bot_token = ""
     app_token = ""
@@ -2105,6 +2187,8 @@ async def save_setup_slack(request: Request) -> Any:
 
 @app.post("/api/setup/ado")
 async def save_setup_ado(request: Request) -> Any:
+    if not await _setup_token_ok(request):
+        return _setup_token_denied(request)
     project = request.query_params.get("project", "default").strip() or "default"
     org_url = ""
     ado_project = ""
@@ -2308,6 +2392,13 @@ async def setup_complete(request: Request) -> Any:
         )
     if not token:
         token = request.query_params.get("token", "").strip()
+    if not token:
+        token = request.headers.get("x-setup-token", "").strip()
+    if not token:
+        try:
+            token = request.cookies.get("pam_setup_token", "").strip()
+        except Exception:  # noqa: BLE001
+            token = ""
     if not is_valid_token(token):
         msg = "That setup token did not match."
         hint = "Paste the token printed when you ran pam start and try again."
@@ -4239,7 +4330,7 @@ def listen_page(request: Request) -> HTMLResponse:
     import uuid as _uuid
 
     ctx = _context(request, "listen")
-    ctx["listen_token"] = SETUP_TOKEN
+    ctx["listen_token"] = get_setup_token()
     ctx["listen_session"] = "listen-" + _uuid.uuid4().hex[:12]
     ctx["listen_title"] = ""
     return templates.TemplateResponse(request, "listen.html", ctx)  # type: ignore[return-value]

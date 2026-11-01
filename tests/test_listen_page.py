@@ -67,6 +67,7 @@ def test_listen_page_fake_media_both_backends(tmp_path, monkeypatch, backend) ->
 
     monkeypatch.setenv("PAM_HOME", str(tmp_path))
     monkeypatch.setenv("META_API_KEY", "test-key")
+    monkeypatch.delenv("PAM_SETUP_TOKEN", raising=False)
     monkeypatch.setattr(app_mod, "SETUP_TOKEN", "page-token")
     db = Config().db_path()
     store_mod.set_project_backend(db, "demo", backend)

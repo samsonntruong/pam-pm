@@ -32,6 +32,7 @@ def wiz_client(tmp_path, monkeypatch, caplog):
     for key in ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("PAM_HOME", str(tmp_path))
+    monkeypatch.setenv("PAM_SETUP_TOKEN", "wizard-test-setup-token-1")
     import pam_pm.web.app as app_mod
 
     app_mod.SETUP_DONE = False
@@ -56,7 +57,7 @@ def test_save_then_test_green_no_leaks(wiz_client, caplog) -> None:
     resp = client.post(
         "/api/setup/provider",
         json={
-            "project": "secwiz",
+            "token": "wizard-test-setup-token-1", "project": "secwiz",
             "provider": "meta",
             "model": model,
             "base_url": base,
@@ -68,7 +69,7 @@ def test_save_then_test_green_no_leaks(wiz_client, caplog) -> None:
 
     resp = client.post(
         "/api/setup/slack",
-        json={"project": "secwiz", "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
+        json={"token": "wizard-test-setup-token-1", "project": "secwiz", "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
     )
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
@@ -76,7 +77,7 @@ def test_save_then_test_green_no_leaks(wiz_client, caplog) -> None:
     resp = client.post(
         "/api/setup/ado",
         json={
-            "project": "secwiz",
+            "token": "wizard-test-setup-token-1", "project": "secwiz",
             "org_url": org,
             "project_name": project,
             "team": team,

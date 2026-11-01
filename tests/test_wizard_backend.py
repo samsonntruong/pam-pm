@@ -17,6 +17,7 @@ def isolated_client(tmp_path, monkeypatch):
     monkeypatch.setenv("META_BASE_URL", "https://fake.local")
     monkeypatch.setenv("META_API_KEY", "fake-key")
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-fake")
+    monkeypatch.setenv("PAM_SETUP_TOKEN", "wizard-test-setup-token-1")
     import pam_pm.web.app as app_mod
 
     app_mod.SETUP_DONE = False
@@ -39,7 +40,7 @@ def test_pam_board_finishes_with_no_ado(isolated_client: TestClient) -> None:
     assert board.get_item(item.id).title == "Kickoff task"
 
     resp = isolated_client.post(
-        "/api/setup/backend", json={"project": "pamp", "backend": "pam_board"}
+        "/api/setup/backend", json={"token": "wizard-test-setup-token-1", "project": "pamp", "backend": "pam_board"}
     )
     assert resp.status_code == 200
     assert resp.json()["backend"] == "pam_board"
@@ -63,7 +64,7 @@ def test_pam_board_finishes_with_no_ado(isolated_client: TestClient) -> None:
 
     save = isolated_client.post(
         "/api/setup/progress",
-        json={"project": "pamp", "step": "people", "data": {"people": "Ana\nSam"}},
+        json={"token": "wizard-test-setup-token-1", "project": "pamp", "step": "people", "data": {"people": "Ana\nSam"}},
     )
     assert save.status_code == 200
     assert isolated_client.post("/api/test/people?project=pamp").json()["ok"] is True
@@ -141,7 +142,7 @@ def test_ado_choice_shows_ado_step(isolated_client: TestClient) -> None:
     assert fake.create_item("ADO task").title == "ADO task"
 
     resp = isolated_client.post(
-        "/api/setup/backend", json={"project": "adop", "backend": "azure_devops"}
+        "/api/setup/backend", json={"token": "wizard-test-setup-token-1", "project": "adop", "backend": "azure_devops"}
     )
     assert resp.json()["backend"] == "azure_devops"
     page = isolated_client.get("/setup?project=adop").text
@@ -155,7 +156,7 @@ def test_ado_choice_shows_ado_step(isolated_client: TestClient) -> None:
 def test_resume_works_after_close(isolated_client: TestClient, tmp_path) -> None:
     first = isolated_client.post(
         "/api/setup/progress",
-        json={"project": "resume", "step": "slack", "data": {}},
+        json={"token": "wizard-test-setup-token-1", "project": "resume", "step": "slack", "data": {}},
     )
     assert first.status_code == 200
     progress_file = tmp_path / "wizard_progress.json"

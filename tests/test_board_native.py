@@ -11,6 +11,18 @@ from fastapi.testclient import TestClient
 from pam_pm.adapters.pm.base import Comment, Iteration, Link, PMAdapter, WorkItem
 
 
+def _setup_token() -> str:
+    try:
+        import pam_pm.web.app as _m
+
+        return _m.get_setup_token()
+    except Exception:  # noqa: BLE001
+        import os
+
+        return os.environ.get("PAM_SETUP_TOKEN", "")
+
+
+
 class FakeNative(PMAdapter):
     """In-memory native board with closeable sprints."""
 
@@ -303,11 +315,11 @@ def boards(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
     client = TestClient(app_mod.app)
     client.post(
         "/api/setup/backend",
-        json={"project": "nativeproj", "backend": "pam_board"},
+        json={"token": _setup_token(), "project": "nativeproj", "backend": "pam_board"},
     )
     client.post(
         "/api/setup/backend",
-        json={"project": "adoproj", "backend": "azure_devops"},
+        json={"token": _setup_token(), "project": "adoproj", "backend": "azure_devops"},
     )
     yield SimpleNamespace(client=client, native=native, ado=ado, app=app_mod)
     app_mod.reset_board_state()
@@ -444,7 +456,7 @@ def test_csv_round_trip(boards) -> None:  # type: ignore[no-untyped-def]
     boards.app.set_board_adapter("native2", FakeNative())
     boards.client.post(
         "/api/setup/backend",
-        json={"project": "native2", "backend": "pam_board"},
+        json={"token": _setup_token(), "project": "native2", "backend": "pam_board"},
     )
     imported = boards.client.post(
         "/api/board/import?project=native2", json={"csv": export.text}
