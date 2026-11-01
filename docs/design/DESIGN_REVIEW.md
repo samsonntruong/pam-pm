@@ -622,3 +622,92 @@ brightness 0.12 vs light 0.96.
 
 Detector result: `impeccable detect --json src/pam_pm/web/` exit 0,
 zero findings. `ruff check src tests` exit 0, `pytest` 329 passed.
+
+## 11. Fresh spacing pass over all 16 screens
+
+Method: single-context inline critique plus audit per screen with a
+spacing lens, same collapsed method as sections 9 and 10 so scores
+compare. Mode: Operate, all 10 heuristics apply. Before scores are
+the section 10 after scores. Changed since the last audit: board
+(kanban restyle), sidenav everywhere (collapsible dropdowns), header
+(logo, no text), setup (ADO card, icon chips, pill removed),
+settings (Team memory section). Questions skipped: the user
+pre-scoped this pass to spacing, CSS only, no redesign, no route
+changes. Dark default, Inter, blue accents, brand icon colors, and
+collapsible nav all kept.
+
+Evidence: critique plus audit references read first; source read for
+every template and `style.css`; all 16 routes rendered through
+TestClient (all 200, no em dashes); `impeccable detect --json` over
+`src/pam_pm/web/` exit 0; Playwright chromium recaptured affected
+PNGs at 1280x800. No servers left running.
+
+Scoreboard (before to after, this pass; all hold):
+
+| Screen | Critique before | Critique after | Audit before | Audit after |
+|---|---|---|---|---|
+| Setup wizard | 24/40 Acceptable | 24/40 Acceptable | 14/20 Good | 14/20 Good |
+| Board | 25/40 Acceptable | 25/40 Acceptable | 13/20 Acceptable | 13/20 Acceptable |
+| Activity | 23/40 Acceptable | 23/40 Acceptable | 15/20 Good | 15/20 Good |
+| RAID | 24/40 Acceptable | 24/40 Acceptable | 15/20 Good | 15/20 Good |
+| Plan | 20/40 Acceptable | 20/40 Acceptable | 13/20 Acceptable | 13/20 Acceptable |
+| Review | 21/40 Acceptable | 21/40 Acceptable | 13/20 Acceptable | 13/20 Acceptable |
+| Rules | 25/40 Acceptable | 25/40 Acceptable | 16/20 Good | 16/20 Good |
+| Settings | 26/40 Acceptable | 26/40 Acceptable | 15/20 Good | 15/20 Good |
+| Kickoff | 23/40 Acceptable | 23/40 Acceptable | 15/20 Good | 15/20 Good |
+| Triage | 29/40 Good | 29/40 Good | 17/20 Good | 17/20 Good |
+| Next sprint | 29/40 Good | 29/40 Good | 17/20 Good | 17/20 Good |
+| Add task | 27/40 Acceptable | 27/40 Acceptable | 17/20 Good | 17/20 Good |
+| Mid sprint | 29/40 Good | 29/40 Good | 17/20 Good | 17/20 Good |
+| Listen | 27/40 Acceptable | 27/40 Acceptable | 15/20 Good | 15/20 Good |
+| Meetings | 24/40 Acceptable | 24/40 Acceptable | 15/20 Good | 15/20 Good |
+| Meeting detail | 25/40 Acceptable | 25/40 Acceptable | 16/20 Good | 16/20 Good |
+
+Per-screen spacing verdicts:
+
+- Setup: icons now align with labels in both themes; picker grid
+  rhythm holds after the pill removal. No score move (minor).
+- Board: restyle audited clean (col-head, badge, tag, foot rhythm
+  consistent; 4-col horizontal scroll deliberate). No change.
+- Activity, RAID, Plan, Review, Rules, Triage, Next sprint,
+  Mid sprint, Listen, Meetings, Meeting detail: no spacing
+  regressions; rhythm, insets, and separators match siblings.
+- Settings: Team memory summary, forms, and delete rows now match
+  sibling card rhythm. Holds 26/40; the fix keeps H4 and H8 from
+  slipping on the new markup.
+- Kickoff, Add task: detached textareas now share the detached
+  input rhythm (0 gap to 0.3rem). Minor, no score move.
+
+Fixes made (CSS only, `style.css`):
+
+- [P1, fixed] Mobile sidenav row-wrap predated grouping: open and
+  closed dropdowns sat side by side and squeezed links. Nav stays
+  column under 800px now.
+- [P1, fixed] Team memory summary `dl` had browser margins and a
+  40px `dd` indent. Reset with grid rhythm; terms match the
+  card-fields pattern.
+- [P1, fixed] Team memory delete list had bullets, the 40px indent,
+  and cramped rows with stray input and button margins. List reset
+  plus a flex row with gap; margins zeroed in the row.
+- [P2, fixed] Team memory detached labels and token fields had no
+  rhythm rules (setup-only selectors). Labels attach; fields match
+  the setup 28rem width.
+- [P2, fixed] Picker brand icons sat on the baseline in the light
+  theme (dark had the chip shift). One theme-agnostic vertical
+  align; the dark chip is untouched.
+- [P2, fixed] Detached `form > textarea` had no margins, so labels
+  touched fields on kickoff, add-task, and settings. Mirrors the
+  `form > input` rhythm.
+
+Audited, no change: board restyle internals, header logo block,
+sidenav desktop gaps and chevron alignment, ADO card grid, Pam card
+after pill removal, all untouched screens.
+
+Screenshots: `tests/test_console_shots.py` recaptured 13 PNGs
+(activity, add-task both themes, board, kickoff both themes,
+listen both themes, plan, review, settings both themes, setup).
+Board dark, activity dark, and the run and meeting PNGs were
+byte-identical and untouched.
+
+Detector result: `impeccable detect --json src/pam_pm/web/` exit 0,
+zero findings. `ruff check src tests` exit 0, `pytest` 361 passed.

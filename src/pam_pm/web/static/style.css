@@ -800,7 +800,7 @@ main.content > p:has(> a.btn) { display: flex; gap: 0.5rem; flex-wrap: wrap; }
 .topbar { flex-wrap: wrap; gap: 0.5rem; }
 
 @media (max-width: 800px) {
-  .sidenav nav { flex-direction: row; flex-wrap: wrap; }
+  .sidenav nav { flex-direction: column; flex-wrap: nowrap; }
   .sidenav a { padding: 0.4rem 0.6rem; }
 }
 
@@ -930,3 +930,32 @@ main.content > p:has(> a.btn) { display: flex; gap: 0.5rem; flex-wrap: wrap; }
   padding: 2px;
   vertical-align: -4px;
 }
+
+/* Spacing pass 11: regressions from kanban restyle, collapsible nav, icon chips, team memory. */
+
+/* Picker icons align with their labels in both themes; dark keeps its chip. */
+.backend-card strong img[src^="/static/icons/"] { vertical-align: -3px; }
+
+/* Detached textareas get the same rhythm as detached inputs (kickoff, add-task, settings). */
+form > textarea { display: block; margin: 0.3rem 0 0.8rem; }
+
+/* Team memory summary: flush terms, no browser dd indent. */
+.memory-summary { margin: 0.6rem 0; display: grid; gap: 0.4rem; }
+.memory-summary > div { display: grid; gap: 0.1rem; }
+.memory-summary dt { font-weight: 600; font-size: 0.9rem; color: var(--muted); }
+.memory-summary dd { margin: 0; }
+
+/* Team memory forms: labels attach, token fields match setup width. */
+#settings-memory > form > label[for] {
+  display: block;
+  font-weight: 600;
+  font-size: 0.9rem;
+  margin: 0.6rem 0 0.25rem;
+}
+#settings-memory > form > input { width: 100%; max-width: 28rem; }
+
+/* Team memory delete rows: reset list, align name, token, button. */
+.memory-delete { list-style: none; margin: 0.6rem 0; padding: 0; display: grid; gap: 0.5rem; }
+.memory-delete form { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.memory-delete form span { font-weight: 600; }
+.memory-delete form input, .memory-delete form button { margin: 0; }
