@@ -50,33 +50,33 @@
   <div class="layout">
     <aside class="sidenav">
       <nav>
-        <section class="nav-group" aria-label="Plan">
-          <h2 class="nav-heading">Plan</h2>
+        <details class="nav-group" data-group="plan" {% if active in ['board', 'activity', 'raid', 'plan', 'review'] %}open{% endif %}>
+          <summary class="nav-heading">Plan</summary>
           <a href="/board" class="{% if active == 'board' %}active{% endif %}">Board</a>
           <a href="/activity" class="{% if active == 'activity' %}active{% endif %}">Activity</a>
           <a href="/raid" class="{% if active == 'raid' %}active{% endif %}">RAID</a>
           <a href="/plan" class="{% if active == 'plan' %}active{% endif %}">Plan</a>
           <a href="/review" class="{% if active == 'review' %}active{% endif %}">Review</a>
-        </section>
-        <section class="nav-group" aria-label="Run">
-          <h2 class="nav-heading">Run</h2>
+        </details>
+        <details class="nav-group" data-group="run" {% if active in ['kickoff', 'triage', 'next-sprint', 'mid-sprint', 'add-task'] %}open{% endif %}>
+          <summary class="nav-heading">Run</summary>
           <a href="/kickoff" class="{% if active == 'kickoff' %}active{% endif %}">Kickoff</a>
           <a href="/triage" class="{% if active == 'triage' %}active{% endif %}">Triage</a>
           <a href="/next-sprint" class="{% if active == 'next-sprint' %}active{% endif %}">Next sprint</a>
           <a href="/mid-sprint" class="{% if active == 'mid-sprint' %}active{% endif %}">Mid-sprint</a>
           <a href="/add-task" class="{% if active == 'add-task' %}active{% endif %}">Add task</a>
-        </section>
-        <section class="nav-group" aria-label="Listen">
-          <h2 class="nav-heading">Listen</h2>
+        </details>
+        <details class="nav-group" data-group="listen" {% if active in ['listen', 'meetings'] %}open{% endif %}>
+          <summary class="nav-heading">Listen</summary>
           <a href="/listen" class="{% if active == 'listen' %}active{% endif %}">Listen</a>
           <a href="/meetings" class="{% if active == 'meetings' %}active{% endif %}">Meetings</a>
-        </section>
-        <section class="nav-group" aria-label="Manage">
-          <h2 class="nav-heading">Manage</h2>
+        </details>
+        <details class="nav-group" data-group="manage" {% if active in ['setup', 'rules', 'settings'] %}open{% endif %}>
+          <summary class="nav-heading">Manage</summary>
           <a href="/setup" class="{% if active == 'setup' %}active{% endif %}">Setup</a>
           <a href="/rules" class="{% if active == 'rules' %}active{% endif %}">Rules</a>
           <a href="/settings" class="{% if active == 'settings' %}active{% endif %}">Settings</a>
-        </section>
+        </details>
       </nav>
     </aside>
     <main class="content">
@@ -158,6 +158,33 @@
       });
       document.body.addEventListener("htmx:responseError", function (evt) {
         plainError(evt.detail && evt.detail.target, "Sorry, that did not work. Try again in a moment.");
+      });
+    })();
+  </script>
+  <script>
+    (function () {
+      var KEY = "pam-nav-open";
+      function load() {
+        try { return JSON.parse(localStorage.getItem(KEY) || "{}"); }
+        catch (err) { return {}; }
+      }
+      function save(state) {
+        try { localStorage.setItem(KEY, JSON.stringify(state)); }
+        catch (err) { /* private mode keeps the default open group */ }
+      }
+      var groups = document.querySelectorAll("details.nav-group[data-group]");
+      if (!groups.length) return;
+      var stored = load();
+      groups.forEach(function (el) {
+        var name = el.getAttribute("data-group");
+        if (name && Object.prototype.hasOwnProperty.call(stored, name)) {
+          el.open = !!stored[name];
+        }
+        el.addEventListener("toggle", function () {
+          var cur = load();
+          cur[name] = el.open;
+          save(cur);
+        });
       });
     })();
   </script>

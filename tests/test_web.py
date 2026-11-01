@@ -115,11 +115,11 @@ ACTIVE_BY_URL = {
 def test_sidenav_has_four_labeled_groups() -> None:
     text = client.get("/setup").text
     for heading, links in NAV_GROUPS.items():
-        assert f'<h2 class="nav-heading">{heading}</h2>' in text, heading
+        assert f'<summary class="nav-heading">{heading}</summary>' in text, heading
         for link in links:
             assert f'href="{link}"' in text, link
     assert text.count('class="nav-group"') == 4
-    positions = [text.index(f">{h}</h2>") for h in NAV_GROUPS]
+    positions = [text.index(f">{h}</summary>") for h in NAV_GROUPS]
     assert positions == sorted(positions), "group order changed"
 
 

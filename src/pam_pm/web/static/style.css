@@ -121,13 +121,35 @@ select, input[type="text"], input[type="number"] {
 
 .nav-heading {
   margin: 0;
-  padding: 0 0.7rem;
+  padding: 0.25rem 0.7rem;
   font-size: 0.75rem;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted);
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-radius: 6px;
+  user-select: none;
 }
+
+.nav-heading::-webkit-details-marker { display: none; }
+.nav-heading::marker { content: ""; }
+.nav-heading:hover { background: var(--bg); color: var(--text); }
+.nav-heading::after {
+  content: "";
+  width: 0.45rem;
+  height: 0.45rem;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg);
+  flex-shrink: 0;
+}
+
+details.nav-group[open] > .nav-heading::after { transform: rotate(225deg); }
 
 .sidenav a {
   padding: 0.5rem 0.7rem;
