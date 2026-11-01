@@ -53,6 +53,8 @@ Build log for Pam. Three lines per entry.
 | Muse Code | Full UI audit | Spacing pass on 16 screens, README dark screenshot, detector clean, 329 pass |
 | Muse Code | Logo B deoverlap plus wire-in | Graph lifted clear of wordmark, header plus favicon plus README, 340 pass |
 | Muse Code | Cross-platform parity | Autostart quoting, launchd bootstrap, Windows paths, 340 pass |
+| Muse Code | Logo chipless dual-theme | Chip removed, header text gone, white plus navy variants, 340 pass |
+| Muse Code | Clickable desktop icon | Start Menu shortcut, Pam.app, .desktop file, no packaging or certs, 349 pass |
 
 ## Entries
 
