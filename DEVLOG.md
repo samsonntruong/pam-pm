@@ -14,6 +14,8 @@ Build log for Pam. Three lines per entry.
 | Muse Code | M1c interviewer | Six turn pushback, structured result, end to end fake pass, 26 tests total |
 | Muse Code | M2a rules | Engine, scheduler, poller watermark, morning followup blocker templates |
 | Muse Code | M2b state map | Agile Closed vs Scrum Done, close_item, is_closed, check_ado fix |
+| Muse Code | M3a web console | Setup wizard, rules, activity SSE, board, cli start doctor, 44 pass |
+| Muse Code | M3b review plan | synthesize_review 6000 tokens, propose sprint, vision SAM fallback, 55 pass |
 | Azure DevOps | M2 ADO blocker probe | Link PASS, poll PASS, Agile uses Closed not Done, probe items deleted |
 | Muse Spark 1.3 Contributor | M0 check_meta real call | Responses API probe with tool and image, 539 in 113 cached 302 out, cost $0.000103 |
 | Muse Spark 1.3 Contributor | M0 check_sam real call | Listed models, confirmed sam-3.1 present, fallback TBD |
@@ -51,3 +53,9 @@ Interviewer challenges vague answers, six turn cap, structured result, end to en
 Rules engine with scheduler and poller watermark plus three templates pass 5 fake tests.
 Real ADO link and poll pass, Agile state is Closed not Done so templates need a state map.
 31 tests pass total, M2a spend about $0.016, total about $0.09, continuing to state fix.
+
+### M3 console review plan done
+
+State map fix pass, web console with wizard rules activity board plus review and plan pass.
+Vision uses SAM with fallback to full image read, review uses 6000 tokens or more.
+55 tests pass with ruff clean, added spend about $0.071, total about $0.16, cached share 94 to 95 percent.

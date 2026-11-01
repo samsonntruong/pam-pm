@@ -22,7 +22,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-browser", action="store_true", help="Do not open a browser"
     )
     sub.add_parser("doctor", help="Check meta, slack, ado, and cache prefix")
-    sub.add_parser("review", help="Review placeholder")
+    sub.add_parser("review", help="Print the sprint review markdown")
     return parser
 
 
@@ -107,6 +107,32 @@ def cmd_doctor(_args: argparse.Namespace) -> None:
         print("doctor: issues found")
 
 
+def cmd_review(_args: argparse.Namespace) -> None:
+    from pam_pm.agents.lead import synthesize_review
+
+    items = [
+        {"id": "101", "title": "Login form", "state": "To Do"},
+        {"id": "102", "title": "API keys", "state": "Doing"},
+    ]
+    interviews = {
+        "101": {
+            "status": "To Do",
+            "evidence_quote": "Login form is done, only tests remain.",
+            "confidence": 0.8,
+        },
+        "102": {
+            "status": "Doing",
+            "evidence_quote": "Waiting on API keys from Sam.",
+            "confidence": 0.4,
+        },
+    }
+    events = [
+        {"operation": "comment", "item_id": "102", "detail": "Note blocker on 102."}
+    ]
+    result = synthesize_review(items, interviews, events)
+    print(result["review_markdown"])
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -118,7 +144,7 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "doctor":
         cmd_doctor(args)
     elif args.command == "review":
-        print("review: not implemented yet")
+        cmd_review(args)
     else:
         parser.print_help()
 

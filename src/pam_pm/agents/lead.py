@@ -4,6 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from pam_pm.agents.prompts.builder import build_messages
+
+REVIEW_ROLE = "lead"
+REVIEW_MAX_TOKENS = 6000
+LOW_CONFIDENCE_THRESHOLD = 0.5
+RETRO_TAG = "retro-action"
+
 
 def _confidence_of(entry: Any) -> float:
     if isinstance(entry, dict):
@@ -39,20 +46,23 @@ def _entry_text(entry: Any, name: str, default: str = "") -> str:
     return str(getattr(entry, name, default) or default)
 
 
+def _pairs_of(interviews: Any) -> list[tuple[Any, Any]]:
+    if isinstance(interviews, dict):
+        return list(interviews.items())
+    if isinstance(interviews, (list, tuple)):
+        return [(None, entry) for entry in interviews]
+    if interviews is None:
+        return []
+    return [(None, interviews)]
+
+
 def synthesize_daily(items: Any, interviews: Any) -> dict[str, Any]:
     """Separate facts from interpretation and flag low confidence.
 
     High confidence entries (0.5 and above) become facts. Lower entries
     become interpretations and are listed in low_confidence flags.
     """
-    if isinstance(interviews, dict):
-        pairs = list(interviews.items())
-    elif isinstance(interviews, (list, tuple)):
-        pairs = [(None, entry) for entry in interviews]
-    elif interviews is None:
-        pairs = []
-    else:
-        pairs = [(None, interviews)]
+    pairs = _pairs_of(interviews)
     facts: list[dict[str, Any]] = []
     interpretations: list[dict[str, Any]] = []
     low_confidence: list[str] = []
@@ -65,7 +75,7 @@ def synthesize_daily(items: Any, interviews: Any) -> dict[str, Any]:
             "evidence_quote": _entry_text(entry, "evidence_quote"),
             "confidence": confidence,
         }
-        if confidence < 0.5:
+        if confidence < LOW_CONFIDENCE_THRESHOLD:
             interpretations.append(record)
             low_confidence.append(item_id)
         else:
@@ -78,9 +88,254 @@ def synthesize_daily(items: Any, interviews: Any) -> dict[str, Any]:
     }
 
 
+def _items_context(items: Any) -> str:
+    if items is None:
+        return "Sprint review. No board items."
+    if isinstance(items, (str, dict)):
+        raw = [items]
+    elif isinstance(items, (list, tuple)):
+        raw = list(items)
+    else:
+        raw = [items]
+    lines = ["Sprint review. Board items:"]
+    for index, entry in enumerate(raw):
+        item_id = _entry_id(None, entry, index)
+        title = _entry_text(entry, "title", item_id)
+        state = _entry_text(entry, "state")
+        lines.append(f"- {item_id}: {title} [{state}]")
+    return "\n".join(lines)
+
+
+def _events_text(events: Any) -> list[str]:
+    if events is None:
+        return []
+    if isinstance(events, dict):
+        raw = [events]
+    elif isinstance(events, (list, tuple)):
+        raw = list(events)
+    else:
+        raw = [events]
+    lines: list[str] = []
+    for entry in raw:
+        if isinstance(entry, str):
+            text = entry.strip()
+        elif isinstance(entry, dict):
+            op = str(entry.get("operation", "") or "")
+            item = str(entry.get("item_id", "") or "")
+            detail = str(entry.get("detail", "") or "")
+            text = f"{op} {item} {detail}".strip()
+        else:
+            text = str(entry).strip()
+        if text:
+            lines.append(text)
+    return lines
+
+
+def _retro_actions(
+    summary: dict[str, Any], events: Any
+) -> list[dict[str, Any]]:
+    """Derive retro actions from low confidence items and blockers.
+
+    Only interview evidence and event text feed the actions. Nothing is
+    invented: each action quotes or names its source item or event.
+    """
+    actions: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for record in summary.get("interpretations", []):
+        item_id = str(record.get("item_id", ""))
+        status = str(record.get("status", "") or "unknown")
+        quote = str(record.get("evidence_quote", "") or "")
+        key = f"followup:{item_id}"
+        if key in seen:
+            continue
+        seen.add(key)
+        detail = f"Confidence is low on {item_id} ({status})."
+        if quote:
+            detail += f' Evidence: "{quote}".'
+        actions.append(
+            {
+                "title": f"Follow up on {item_id}: clarify status",
+                "owner": None,
+                "description": detail,
+                "tags": [RETRO_TAG],
+            }
+        )
+    for record in summary.get("facts", []) + summary.get("interpretations", []):
+        item_id = str(record.get("item_id", ""))
+        combined = (
+            str(record.get("status", ""))
+            + " "
+            + str(record.get("evidence_quote", ""))
+        ).lower()
+        key = f"blocker:{item_id}"
+        if "block" not in combined or key in seen:
+            continue
+        seen.add(key)
+        quote = str(record.get("evidence_quote", "") or "")
+        detail = f"Unblock {item_id}."
+        if quote:
+            detail += f' Evidence: "{quote}".'
+        actions.append(
+            {
+                "title": f"Unblock {item_id}",
+                "owner": None,
+                "description": detail,
+                "tags": [RETRO_TAG],
+            }
+        )
+    for line in _events_text(events):
+        if "block" not in line.lower():
+            continue
+        key = f"event:{line[:60]}"
+        if key in seen:
+            continue
+        seen.add(key)
+        actions.append(
+            {
+                "title": "Clear blocker from event log",
+                "owner": None,
+                "description": f"Event note: {line[:200]}.",
+                "tags": [RETRO_TAG],
+            }
+        )
+    return actions
+
+
+def _render_review_markdown(
+    summary: dict[str, Any], events: Any, actions: list[dict[str, Any]]
+) -> str:
+    lines = ["# Sprint review", ""]
+    lines.append("## Facts")
+    facts = summary.get("facts", [])
+    if facts:
+        for record in facts:
+            item_id = record.get("item_id", "")
+            status = record.get("status", "") or "unknown"
+            quote = record.get("evidence_quote", "")
+            lines.append(f"- {item_id}: {status}. Evidence: \"{quote}\".")
+    else:
+        lines.append("No high confidence facts. No interview evidence above threshold.")
+    lines += ["", "## Interpretations"]
+    interps = summary.get("interpretations", [])
+    if interps:
+        for record in interps:
+            item_id = record.get("item_id", "")
+            status = record.get("status", "") or "unknown"
+            quote = record.get("evidence_quote", "")
+            conf = record.get("confidence", 0.0)
+            lines.append(
+                f"- {item_id}: {status} (low confidence {conf}). "
+                f'Evidence: "{quote}".'
+            )
+    else:
+        lines.append("No low confidence interpretations.")
+    lines += ["", "## Low confidence flags"]
+    low = summary.get("low_confidence", [])
+    if low:
+        for item_id in low:
+            lines.append(f"- {item_id}: needs follow up, evidence is weak.")
+    else:
+        lines.append("None. All entries meet the confidence threshold.")
+    event_lines = _events_text(events)
+    lines += ["", "## Events"]
+    if event_lines:
+        for line in event_lines[:20]:
+            lines.append(f"- {line[:200]}")
+    else:
+        lines.append("No events recorded.")
+    lines += ["", "## Retro actions"]
+    if actions:
+        for action in actions:
+            lines.append(f"- {action.get('title', '')} [retro-action]")
+    else:
+        lines.append("No retro actions. Nothing flagged.")
+    return "\n".join(lines) + "\n"
+
+
+def _model_text(data: Any) -> str:
+    if hasattr(data, "text"):
+        return str(getattr(data, "text", "") or "")
+    if isinstance(data, dict):
+        return str(data.get("text", "") or "")
+    if isinstance(data, str):
+        return data
+    return str(data or "")
+
+
+def synthesize_review(
+    items: Any,
+    interviews: Any,
+    events: Any = None,
+    model_client: Any = None,
+    max_tokens: int = REVIEW_MAX_TOKENS,
+) -> dict[str, Any]:
+    """Build a sprint review: markdown plus tagged retro actions.
+
+    Facts come from high confidence interviews, interpretations from low
+    confidence ones, and low confidence ids are flagged. The prompt is
+    assembled with build_messages and large max_tokens (6000 or more).
+    When no model client is given, the markdown is rendered locally from
+    interview evidence only, so no status is ever invented.
+    """
+    summary = synthesize_daily(items, interviews)
+    actions = _retro_actions(summary, events)
+    conversation: list[dict[str, Any]] = []
+    for record in summary["facts"] + summary["interpretations"]:
+        conversation.append(
+            {
+                "role": "user",
+                "content": (
+                    f"{record['item_id']}: {record['status'] or 'unknown'}. "
+                    f"Evidence: \"{record['evidence_quote']}\". "
+                    f"Confidence: {record['confidence']}."
+                ),
+            }
+        )
+    for line in _events_text(events)[:20]:
+        conversation.append({"role": "user", "content": f"Event: {line[:200]}"})
+    volatile = {"low_confidence": ",".join(summary["low_confidence"]) or "none"}
+    payload = build_messages(REVIEW_ROLE, _items_context(items), conversation, volatile)
+    tokens = max(int(max_tokens or 0), REVIEW_MAX_TOKENS)
+    markdown = ""
+    model_path = "local"
+    if model_client is not None:
+        try:
+            raw = model_client.chat(
+                payload["messages"], tools=payload["tools"], max_tokens=tokens
+            )
+        except TypeError:
+            raw = model_client.chat(payload["messages"], payload["tools"])
+        markdown = _model_text(raw).strip()
+        model_path = "live"
+    if not markdown:
+        markdown = _render_review_markdown(summary, events, actions)
+        model_path = "local"
+    return {
+        "review_markdown": markdown,
+        "markdown": markdown,
+        "retro_actions": actions,
+        "facts": summary["facts"],
+        "interpretations": summary["interpretations"],
+        "low_confidence": summary["low_confidence"],
+        "max_tokens": tokens,
+        "model_path": model_path,
+    }
+
+
 class LeadAgent:
     """Synthesis helper that delegates to synthesize_daily."""
 
     def synthesize_daily(self, items: Any, interviews: Any) -> dict[str, Any]:
         """Separate facts from interpretation with confidence flags."""
         return synthesize_daily(items, interviews)
+
+    def synthesize_review(
+        self,
+        items: Any,
+        interviews: Any,
+        events: Any = None,
+        model_client: Any = None,
+        max_tokens: int = REVIEW_MAX_TOKENS,
+    ) -> dict[str, Any]:
+        """Build a sprint review with markdown plus retro actions."""
+        return synthesize_review(items, interviews, events, model_client, max_tokens)

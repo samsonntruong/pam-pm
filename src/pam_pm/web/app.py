@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
+import logging
 import os
 import secrets
 from pathlib import Path
@@ -14,8 +16,14 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from pam_pm.adapters.pm.sqlite_board import SQLiteBoard
+from pam_pm.agents.lead import synthesize_review
+from pam_pm.agents.planner import approve_proposal, propose_sprint
 from pam_pm.core import store as store_mod
 from pam_pm.core.config import Config
+from pam_pm.models.vision import plan_from_photo
+
+logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "templates"
@@ -144,6 +152,134 @@ class EventBus:
 
 
 bus = EventBus(SAMPLE_EVENTS)
+
+LAST_REVIEW: dict[str, Any] = {
+    "markdown": "",
+    "retro_actions": [],
+    "low_confidence": [],
+}
+
+LAST_PLAN: dict[str, Any] = {
+    "readings": [],
+    "masks": [],
+    "path": "",
+    "proposal": [],
+    "approved": [],
+}
+
+_DEMO_BOARD: SQLiteBoard | None = None
+
+
+def _demo_board() -> SQLiteBoard:
+    global _DEMO_BOARD
+    if _DEMO_BOARD is None:
+        _DEMO_BOARD = SQLiteBoard()
+    return _DEMO_BOARD
+
+
+def _sample_interviews() -> dict[str, dict[str, Any]]:
+    return {
+        "101": {
+            "status": "To Do",
+            "evidence_quote": "Login form is done, only tests remain.",
+            "confidence": 0.8,
+        },
+        "102": {
+            "status": "Doing",
+            "evidence_quote": "Waiting on API keys from Sam.",
+            "confidence": 0.7,
+        },
+        "103": {
+            "status": "Done",
+            "evidence_quote": "Deploy follows the migration step.",
+            "confidence": 0.4,
+        },
+    }
+
+
+def _run_review_now() -> dict[str, Any]:
+    result = synthesize_review(SAMPLE_ITEMS, _sample_interviews(), bus.history())
+    LAST_REVIEW["markdown"] = result["review_markdown"]
+    LAST_REVIEW["retro_actions"] = result["retro_actions"]
+    LAST_REVIEW["low_confidence"] = result["low_confidence"]
+    logger.info(
+        "review run: %d retro actions, %d low confidence",
+        len(result["retro_actions"]),
+        len(result["low_confidence"]),
+    )
+    return result
+
+
+def _review_result_html(result: dict[str, Any]) -> str:
+    parts = [f"<pre class=\"review-markdown\">{html.escape(result['review_markdown'])}</pre>"]
+    parts.append('<section class="card"><h2>Retro actions</h2>')
+    actions = result.get("retro_actions", [])
+    if not actions:
+        parts.append('<p class="muted">No retro actions. Nothing flagged.</p>')
+    for index, action in enumerate(actions):
+        title = html.escape(str(action.get("title", "")))
+        desc = html.escape(str(action.get("description", "")))
+        parts.append(
+            "<article class=\"card\">"
+            f"<h3>{title}</h3>"
+            f"<p class=\"muted\">{desc}</p>"
+            f"<button hx-post=\"/api/review/retro/create?index={index}\" "
+            f"hx-target=\"#retro-result-{index}\" hx-swap=\"innerHTML\">"
+            "Create in ADO</button>"
+            f"<span id=\"retro-result-{index}\" class=\"result\" aria-live=\"polite\"></span>"
+            "</article>"
+        )
+    parts.append("</section>")
+    return "\n".join(parts)
+
+
+def _plan_result_html(photo: dict[str, Any], proposal: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    masks = photo.get("masks", [])
+    path = html.escape(str(photo.get("path", "")))
+    parts.append('<section class="card"><h2>Masks preview</h2>')
+    if masks:
+        items = "".join(f"<li>Mask {html.escape(str(m))}</li>" for m in masks)
+        parts.append(f"<p>Vision path: {path}. Masks: {len(masks)}.</p><ul>{items}</ul>")
+    else:
+        parts.append(
+            f"<p>Vision path: {path}. No masks, full image read used.</p>"
+        )
+    parts.append("</section>")
+    parts.append('<section class="card"><h2>Readings</h2>')
+    readings = photo.get("readings", [])
+    if readings:
+        items = "".join(f"<li>{html.escape(str(r))}</li>" for r in readings)
+        parts.append(f"<ul>{items}</ul>")
+    else:
+        parts.append('<p class="muted">No readings found in the photo.</p>')
+    parts.append("</section>")
+    parts.append('<section class="card"><h2>Proposal</h2>')
+    if proposal:
+        rows = "".join(
+            "<tr>"
+            f"<td>{html.escape(str(d.get('title', '')))}</td>"
+            f"<td>{html.escape(str(d.get('type', '')))}</td>"
+            f"<td>{html.escape(str(d.get('owner') or 'Unassigned'))}</td>"
+            f"<td>{html.escape(str(d.get('estimate') if d.get('estimate') is not None else '-'))}</td>"
+            "</tr>"
+            for d in proposal
+        )
+        parts.append(
+            "<table class=\"proposal\"><thead><tr>"
+            "<th>Title</th><th>Type</th><th>Owner</th><th>Estimate</th>"
+            "</tr></thead><tbody>"
+            f"{rows}</tbody></table>"
+        )
+    else:
+        parts.append('<p class="muted">No proposal. Upload a photo with notes.</p>')
+    parts.append(
+        '<button hx-post="/api/plan/approve" hx-target="#approve-result" '
+        'hx-swap="innerHTML">Approve</button>'
+        '<div id="approve-result" class="result" aria-live="polite"></div>'
+        "</section>"
+    )
+    return "\n".join(parts)
 
 
 def is_valid_token(token: str | None) -> bool:
@@ -296,12 +432,15 @@ def board_page(request: Request) -> HTMLResponse:
 @app.get("/plan", response_class=HTMLResponse)
 def plan_page(request: Request) -> HTMLResponse:
     ctx = _context(request, "plan")
+    ctx["plan"] = LAST_PLAN
     return templates.TemplateResponse(request, "plan.html", ctx)  # type: ignore[return-value]
 
 
 @app.get("/review", response_class=HTMLResponse)
 def review_page(request: Request) -> HTMLResponse:
     ctx = _context(request, "review")
+    ctx["review_markdown"] = LAST_REVIEW.get("markdown", "")
+    ctx["retro_actions"] = LAST_REVIEW.get("retro_actions", [])
     return templates.TemplateResponse(request, "review.html", ctx)  # type: ignore[return-value]
 
 
@@ -401,3 +540,130 @@ async def setup_complete(request: Request) -> Any:
         return JSONResponse({"ok": False, "message": "Invalid setup token"})
     SETUP_DONE = True
     return {"ok": True, "message": "Setup complete"}
+
+
+@app.post("/api/review/run")
+async def run_review(request: Request) -> Any:
+    result = _run_review_now()
+    if "hx-request" in request.headers:
+        return HTMLResponse(_review_result_html(result))
+    return {
+        "ok": True,
+        "markdown": result["review_markdown"],
+        "retro_actions": result["retro_actions"],
+        "low_confidence": result["low_confidence"],
+    }
+
+
+async def _retro_index(request: Request) -> int | None:
+    query = request.query_params.get("index", "").strip()
+    if query:
+        try:
+            return int(query)
+        except ValueError:
+            return None
+    ctype = request.headers.get("content-type", "")
+    if "application/json" in ctype:
+        try:
+            payload = await request.json()
+        except ValueError:
+            return None
+        if isinstance(payload, dict) and "index" in payload:
+            try:
+                return int(str(payload["index"]))
+            except ValueError:
+                return None
+        return None
+    form = await request.form()
+    raw = str(form.get("index", "")).strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+@app.post("/api/review/retro/create")
+async def create_retro_action(request: Request) -> Any:
+    actions = LAST_REVIEW.get("retro_actions", [])
+    if not actions:
+        _run_review_now()
+        actions = LAST_REVIEW.get("retro_actions", [])
+    index = await _retro_index(request)
+    if index is None or index < 0 or index >= len(actions):
+        msg = "Unknown retro action. Run a review first."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg))
+        return JSONResponse({"ok": False, "message": msg}, status_code=404)
+    action = actions[index]
+    item = _demo_board().create_item(
+        str(action.get("title", "Retro action")),
+        {
+            "type": "Task",
+            "state": "To Do",
+            "description": str(action.get("description", "")),
+            "tags": ["retro-action"],
+        },
+    )
+    logger.info("retro action created: %s -> item %s", action.get("title"), item.id)
+    if "hx-request" in request.headers:
+        return HTMLResponse(
+            _test_result_html(True, f"Created item {item.id} tagged retro-action")
+        )
+    return {"ok": True, "id": item.id, "tags": ["retro-action"]}
+
+
+@app.post("/api/plan/upload")
+async def upload_plan_photo(request: Request) -> Any:
+    form = await request.form()
+    upload = form.get("photo")
+    data = b""
+    if upload is not None and hasattr(upload, "read"):
+        try:
+            raw = await upload.read()  # type: ignore[no-untyped-call]
+        except Exception:  # noqa: BLE001
+            raw = b""
+        if isinstance(raw, (bytes, bytearray)):
+            data = bytes(raw)
+    photo = plan_from_photo(data if data else b"")
+    proposal = propose_sprint(photo.get("readings") or photo.get("notes_text", ""))
+    LAST_PLAN["readings"] = photo.get("readings", [])
+    LAST_PLAN["masks"] = photo.get("masks", [])
+    LAST_PLAN["path"] = photo.get("path", "")
+    LAST_PLAN["proposal"] = proposal
+    LAST_PLAN["approved"] = []
+    logger.info(
+        "plan upload: path=%s readings=%d proposal=%d",
+        photo.get("path"),
+        len(photo.get("readings", [])),
+        len(proposal),
+    )
+    if "hx-request" in request.headers:
+        return HTMLResponse(_plan_result_html(photo, proposal))
+    return {
+        "ok": True,
+        "readings": photo.get("readings", []),
+        "masks": photo.get("masks", []),
+        "path": photo.get("path", ""),
+        "proposal": proposal,
+    }
+
+
+@app.post("/api/plan/approve")
+async def approve_plan(request: Request) -> Any:
+    _ = request
+    proposal = LAST_PLAN.get("proposal", [])
+    if not proposal:
+        msg = "No proposal to approve. Upload a photo first."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg))
+        return JSONResponse({"ok": False, "message": msg}, status_code=400)
+    created = approve_proposal(proposal, _demo_board())
+    done = [{"id": item.id, "title": item.title} for item in created]
+    LAST_PLAN["approved"] = done
+    logger.info("plan approved: %d items created", len(done))
+    if "hx-request" in request.headers:
+        ids = ", ".join(item["id"] for item in done)
+        return HTMLResponse(_test_result_html(True, f"Created items: {ids}"))
+    return {"ok": True, "created": done}

@@ -2,5 +2,26 @@
 {% block title %}Review - Pam{% endblock %}
 {% block content %}
 <h1>Review</h1>
-<p class="muted">Review queue for project {{ project }}. Coming in a later milestone.</p>
+<p class="muted">Sprint review for project {{ project }}. Facts come from interviews, low confidence items are flagged.</p>
+<button hx-post="/api/review/run" hx-target="#review-result" hx-swap="innerHTML">Run review</button>
+<div id="review-result" aria-live="polite">
+  {% if review_markdown %}
+  <pre class="review-markdown">{{ review_markdown }}</pre>
+  {% endif %}
+  <section class="card">
+    <h2>Retro actions</h2>
+    {% if retro_actions %}
+    {% for action in retro_actions %}
+    <article class="card">
+      <h3>{{ action.title }}</h3>
+      <p class="muted">{{ action.description }}</p>
+      <button hx-post="/api/review/retro/create?index={{ loop.index0 }}" hx-target="#retro-result-{{ loop.index0 }}" hx-swap="innerHTML">Create in ADO</button>
+      <span id="retro-result-{{ loop.index0 }}" class="result" aria-live="polite"></span>
+    </article>
+    {% endfor %}
+    {% else %}
+    <p class="muted">Run a review to see retro actions.</p>
+    {% endif %}
+  </section>
+</div>
 {% endblock %}
