@@ -21,11 +21,15 @@ SECRET_FILES = {
     "SLACK_BOT_TOKEN": "slack_bot_token.txt",
     "SLACK_APP_TOKEN": "slack_app_token.txt",
     "ADO_PAT": "ado_pat.txt",
+    "JIRA_API_TOKEN": "jira_api_token.txt",
+    "LINEAR_API_KEY": "linear_api_key.txt",
 }
 
 META_FILENAME = "meta.json"
 SLACK_FILENAME = "slack.json"
 ADO_FILENAME = "ado.json"
+JIRA_FILENAME = "jira.json"
+LINEAR_FILENAME = "linear.json"
 
 
 def _data_dir(explicit: str | Path | None = None) -> Path:
@@ -265,3 +269,93 @@ def effective_ado_config(
     team = os.environ.get("ADO_TEAM", "").strip() or saved["team"]
     pat = effective_secret("ADO_PAT", data_dir)
     return {"org_url": org, "project": proj, "team": team, "pat": pat}
+
+
+def save_jira_config(
+    data_dir: str | Path | None = None,
+    base_url: str = "",
+    email: str = "",
+    project: str = "",
+    api_token: str = "",
+) -> dict[str, Any]:
+    saved = _read_json(JIRA_FILENAME, data_dir)
+    new_base = (base_url or "").strip() or str(saved.get("base_url", "") or "")
+    new_email = (email or "").strip() or str(saved.get("email", "") or "")
+    new_project = (project or "").strip() or str(saved.get("project", "") or "")
+    has_token = save_secret("JIRA_API_TOKEN", api_token, data_dir)
+    payload = {
+        "base_url": new_base.strip().rstrip("/"),
+        "email": new_email.strip(),
+        "project": new_project.strip().upper(),
+        "has_token": bool(has_token),
+    }
+    _write_json(JIRA_FILENAME, payload, data_dir)
+    logger.info(
+        "jira config saved: base_url=%s email=%s project=%s has_token=%s",
+        payload["base_url"],
+        payload["email"],
+        payload["project"],
+        payload["has_token"],
+    )
+    return dict(payload)
+
+
+def load_jira_config(data_dir: str | Path | None = None) -> dict[str, Any]:
+    saved = _read_json(JIRA_FILENAME, data_dir)
+    return {
+        "base_url": str(saved.get("base_url", "") or "").strip().rstrip("/"),
+        "email": str(saved.get("email", "") or "").strip(),
+        "project": str(saved.get("project", "") or "").strip().upper(),
+        "has_token": has_secret("JIRA_API_TOKEN", data_dir),
+    }
+
+
+def effective_jira_config(
+    data_dir: str | Path | None = None,
+) -> dict[str, str]:
+    saved = load_jira_config(data_dir)
+    base = (
+        os.environ.get("JIRA_BASE_URL", "").strip().rstrip("/") or saved["base_url"]
+    )
+    mail = os.environ.get("JIRA_EMAIL", "").strip() or saved["email"]
+    proj = os.environ.get("JIRA_PROJECT", "").strip().upper() or saved["project"]
+    token = effective_secret("JIRA_API_TOKEN", data_dir)
+    return {"base_url": base, "email": mail, "project": proj, "api_token": token}
+
+
+def save_linear_config(
+    data_dir: str | Path | None = None,
+    team: str = "",
+    api_key: str = "",
+) -> dict[str, Any]:
+    saved = _read_json(LINEAR_FILENAME, data_dir)
+    new_team = (team or "").strip() or str(saved.get("team", "") or "")
+    has_key = save_secret("LINEAR_API_KEY", api_key, data_dir)
+    payload = {
+        "team": new_team.strip(),
+        "has_key": bool(has_key),
+    }
+    _write_json(LINEAR_FILENAME, payload, data_dir)
+    logger.info(
+        "linear config saved: team=%s has_key=%s",
+        payload["team"],
+        payload["has_key"],
+    )
+    return dict(payload)
+
+
+def load_linear_config(data_dir: str | Path | None = None) -> dict[str, Any]:
+    saved = _read_json(LINEAR_FILENAME, data_dir)
+    return {
+        "team": str(saved.get("team", "") or "").strip(),
+        "has_key": has_secret("LINEAR_API_KEY", data_dir),
+    }
+
+
+def effective_linear_config(
+    data_dir: str | Path | None = None,
+) -> dict[str, str]:
+    saved = load_linear_config(data_dir)
+    team = os.environ.get("LINEAR_TEAM", "").strip() or saved["team"]
+    key = effective_secret("LINEAR_API_KEY", data_dir)
+    return {"team": team, "api_key": key}

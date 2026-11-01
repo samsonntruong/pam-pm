@@ -6,7 +6,7 @@
 {% if editable %}
 <p class="muted">Live board for project {{ project }}. Drag cards between columns or use Move to. Every change is saved with evidence and can be undone from Activity.</p>
 {% else %}
-<p class="muted">Read only view for project {{ project }}. Pam cannot edit here.{% if ado_url %} <a href="{{ ado_url }}">Open in Azure DevOps</a> to make changes.{% endif %}</p>
+<p class="muted">Read only view for project {{ project }}. Pam cannot edit here.{% if external_board_url %} <a href="{{ external_board_url }}">Open in {{ backend_label }}</a> to make changes.{% endif %}</p>
 {% endif %}
 
 <div class="board-toolbar" role="toolbar" aria-label="Board tools">
@@ -122,7 +122,7 @@
               </ul>
             </details>
             {% elif item.external_url %}
-            <a class="btn btn-small" href="{{ item.external_url }}">Open in Azure DevOps</a>
+            <a class="btn btn-small" href="{{ item.external_url }}">Open in {{ backend_label }}</a>
             {% endif %}
           </div>
         </article>

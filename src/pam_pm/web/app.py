@@ -38,6 +38,8 @@ from pam_pm.core import secrets as secrets_mod
 from pam_pm.core import store as store_mod
 from pam_pm.core.config import (
     BACKEND_AZURE_DEVOPS,
+    BACKEND_JIRA,
+    BACKEND_LINEAR,
     BACKEND_PAM_BOARD,
     Config,
     backend_label,
@@ -983,6 +985,68 @@ def _check_ado() -> tuple[bool, str, str]:
     )
 
 
+def _check_jira() -> tuple[bool, str, str]:
+    try:
+        effective = secrets_mod.effective_jira_config()
+    except Exception:  # noqa: BLE001
+        effective = {
+            "base_url": os.environ.get("JIRA_BASE_URL", ""),
+            "email": os.environ.get("JIRA_EMAIL", ""),
+            "project": os.environ.get("JIRA_PROJECT", ""),
+            "api_token": os.environ.get("JIRA_API_TOKEN", ""),
+        }
+    missing: list[str] = []
+    if not str(effective.get("base_url", "") or "").strip():
+        missing.append("site URL")
+    if not str(effective.get("email", "") or "").strip():
+        missing.append("email")
+    if not str(effective.get("project", "") or "").strip():
+        missing.append("project key")
+    if not str(effective.get("api_token", "") or "").strip():
+        missing.append("API token")
+    if missing:
+        return (
+            False,
+            "Jira check failed. Pam cannot read the project.",
+            "Open the Jira step, add the missing "
+            + ", ".join(missing)
+            + ", choose Save, then Test again.",
+        )
+    return (
+        True,
+        "Jira check passed. Pam can read the project.",
+        "",
+    )
+
+
+def _check_linear() -> tuple[bool, str, str]:
+    try:
+        effective = secrets_mod.effective_linear_config()
+    except Exception:  # noqa: BLE001
+        effective = {
+            "team": os.environ.get("LINEAR_TEAM", ""),
+            "api_key": os.environ.get("LINEAR_API_KEY", ""),
+        }
+    missing: list[str] = []
+    if not str(effective.get("team", "") or "").strip():
+        missing.append("team key")
+    if not str(effective.get("api_key", "") or "").strip():
+        missing.append("API key")
+    if missing:
+        return (
+            False,
+            "Linear check failed. Pam cannot read the team.",
+            "Open the Linear step, add the missing "
+            + ", ".join(missing)
+            + ", choose Save, then Test again.",
+        )
+    return (
+        True,
+        "Linear check passed. Pam can read the team.",
+        "",
+    )
+
+
 def _people_names(project: str = "default") -> list[str]:
     progress = _read_project_progress(project)
     steps = progress.get("steps", {})
@@ -1278,6 +1342,14 @@ def setup_page(request: Request, token: str = "") -> HTMLResponse:
         saved_ado = secrets_mod.load_ado_config(Config().ensure_data_dir())
     except Exception:  # noqa: BLE001
         saved_ado = {"org_url": "", "project": "", "team": "", "has_pat": False}
+    try:
+        saved_jira = secrets_mod.load_jira_config(Config().ensure_data_dir())
+    except Exception:  # noqa: BLE001
+        saved_jira = {"base_url": "", "email": "", "project": "", "has_token": False}
+    try:
+        saved_linear = secrets_mod.load_linear_config(Config().ensure_data_dir())
+    except Exception:  # noqa: BLE001
+        saved_linear = {"team": "", "has_key": False}
     ctx.update(
         {
             "token": token,
@@ -1286,6 +1358,8 @@ def setup_page(request: Request, token: str = "") -> HTMLResponse:
             "backend": backend,
             "backend_label": backend_label(backend),
             "show_ado": backend == BACKEND_AZURE_DEVOPS,
+            "show_jira": backend == BACKEND_JIRA,
+            "show_linear": backend == BACKEND_LINEAR,
             "progress": progress,
             "progress_json": json.dumps(progress),
             "wizard_order": WIZARD_ORDER,
@@ -1294,6 +1368,8 @@ def setup_page(request: Request, token: str = "") -> HTMLResponse:
             "people_names": people_entry.get("people", ""),
             "pam_board_value": BACKEND_PAM_BOARD,
             "ado_value": BACKEND_AZURE_DEVOPS,
+            "jira_value": BACKEND_JIRA,
+            "linear_value": BACKEND_LINEAR,
             "autostart_label": autostart_mod.CHECKBOX_LABEL,
             "autostart_enabled": _autostart_enabled(),
             "provider": str(saved_provider.get("provider", "meta")),
@@ -1309,6 +1385,12 @@ def setup_page(request: Request, token: str = "") -> HTMLResponse:
             "ado_project": str(saved_ado.get("project", "") or ""),
             "ado_team": str(saved_ado.get("team", "") or ""),
             "ado_has_pat": bool(saved_ado.get("has_pat", False)),
+            "jira_base_url": str(saved_jira.get("base_url", "") or ""),
+            "jira_email": str(saved_jira.get("email", "") or ""),
+            "jira_project": str(saved_jira.get("project", "") or ""),
+            "jira_has_token": bool(saved_jira.get("has_token", False)),
+            "linear_team": str(saved_linear.get("team", "") or ""),
+            "linear_has_key": bool(saved_linear.get("has_key", False)),
         }
     )
     return templates.TemplateResponse(request, "setup.html", ctx)  # type: ignore[return-value]
@@ -1390,6 +1472,8 @@ BOARD_REFRESH_OPS = frozenset(
 _BOARD_OVERRIDES: dict[str, Any] = {}
 _NATIVE_BOARDS: dict[str, SQLiteBoard] = {}
 _ADO_BOARD: Any | None = None
+_JIRA_BOARD: Any | None = None
+_LINEAR_BOARD: Any | None = None
 
 
 def set_board_adapter(project: str, adapter: Any) -> None:
@@ -1399,7 +1483,7 @@ def set_board_adapter(project: str, adapter: Any) -> None:
 
 def reset_board_state() -> None:
     """Clear pinned adapters and cached boards (tests call this)."""
-    global _ADO_BOARD
+    global _ADO_BOARD, _JIRA_BOARD, _LINEAR_BOARD
     _BOARD_OVERRIDES.clear()
     for board in _NATIVE_BOARDS.values():
         try:
@@ -1407,12 +1491,15 @@ def reset_board_state() -> None:
         except Exception:  # noqa: BLE001, S110
             pass
     _NATIVE_BOARDS.clear()
-    if _ADO_BOARD is not None:
-        try:
-            _ADO_BOARD.close()
-        except Exception:  # noqa: BLE001, S110
-            pass
+    for cached in (_ADO_BOARD, _JIRA_BOARD, _LINEAR_BOARD):
+        if cached is not None:
+            try:
+                cached.close()
+            except Exception:  # noqa: BLE001, S110
+                pass
     _ADO_BOARD = None
+    _JIRA_BOARD = None
+    _LINEAR_BOARD = None
 
 
 def _safe_project(value: str) -> str:
@@ -1425,18 +1512,37 @@ def _safe_project(value: str) -> str:
 def get_board_adapter(project: str) -> Any | None:
     """Return the board adapter for a project, or None when missing.
 
-    Native projects get a per-project SQLite board file. ADO projects
-    share one client, or None when ADO is not configured.
+    Native projects get a per-project SQLite board file. Other
+    backends share one client each, or None when not configured.
     """
-    global _ADO_BOARD
+    global _ADO_BOARD, _JIRA_BOARD, _LINEAR_BOARD
     name = _safe_project(project)
     if name in _BOARD_OVERRIDES:
         return _BOARD_OVERRIDES[name]
-    if _project_backend(name) == BACKEND_PAM_BOARD:
+    backend = _project_backend(name)
+    if backend == BACKEND_PAM_BOARD:
         if name not in _NATIVE_BOARDS:
             path = Config().ensure_data_dir() / f"board_{name}.db"
             _NATIVE_BOARDS[name] = SQLiteBoard(path)
         return _NATIVE_BOARDS[name]
+    if backend == BACKEND_JIRA:
+        if _JIRA_BOARD is None:
+            try:
+                from pam_pm.adapters.pm.jira import JiraAdapter
+
+                _JIRA_BOARD = JiraAdapter()
+            except Exception:  # noqa: BLE001
+                return None
+        return _JIRA_BOARD
+    if backend == BACKEND_LINEAR:
+        if _LINEAR_BOARD is None:
+            try:
+                from pam_pm.adapters.pm.linear import LinearAdapter
+
+                _LINEAR_BOARD = LinearAdapter()
+            except Exception:  # noqa: BLE001
+                return None
+        return _LINEAR_BOARD
     if _ADO_BOARD is None:
         try:
             from pam_pm.adapters.pm.azure_devops import ADOAdapter
@@ -1511,6 +1617,37 @@ def _ado_item_url(item_id: str) -> str:
     org = os.environ.get("ADO_ORG_URL", "").strip().rstrip("/")
     proj = os.environ.get("ADO_PROJECT", "").strip()
     return f"{org}/{proj}/_workitems/edit/{item_id}"
+
+
+def _external_board_url(backend: str) -> str:
+    if backend == BACKEND_JIRA:
+        try:
+            base = secrets_mod.effective_jira_config().get("base_url", "")
+        except Exception:  # noqa: BLE001
+            base = os.environ.get("JIRA_BASE_URL", "")
+        base = str(base or "").strip().rstrip("/")
+        return f"{base}/projects" if base else ""
+    if backend == BACKEND_LINEAR:
+        return "https://linear.app"
+    return _ado_board_url()
+
+
+def _external_item_url(backend: str, item: WorkItem) -> str:
+    if backend == BACKEND_JIRA:
+        try:
+            base = secrets_mod.effective_jira_config().get("base_url", "")
+        except Exception:  # noqa: BLE001
+            base = os.environ.get("JIRA_BASE_URL", "")
+        base = str(base or "").strip().rstrip("/")
+        if not base:
+            return ""
+        fields = dict(getattr(item, "fields", {}) or {})
+        key = str(fields.get("key", "") or item.id).strip()
+        return f"{base}/browse/{key}" if key else ""
+    if backend == BACKEND_LINEAR:
+        fields = dict(getattr(item, "fields", {}) or {})
+        return str(fields.get("url", "") or "")
+    return _ado_item_url(str(item.id))
 
 
 def _serialize_item(
@@ -1676,10 +1813,21 @@ def _board_snapshot(project: str) -> dict[str, Any]:
         "error": "",
     }
     if adapter is None:
-        snapshot["error"] = (
-            "Azure DevOps is not configured yet. Set ADO_ORG_URL, "
-            "ADO_PROJECT, and ADO_PAT, then reload."
-        )
+        if backend == BACKEND_JIRA:
+            snapshot["error"] = (
+                "Jira is not configured yet. Set JIRA_BASE_URL, JIRA_EMAIL, "
+                "JIRA_PROJECT, and JIRA_API_TOKEN, then reload."
+            )
+        elif backend == BACKEND_LINEAR:
+            snapshot["error"] = (
+                "Linear is not configured yet. Set LINEAR_TEAM and "
+                "LINEAR_API_KEY, then reload."
+            )
+        else:
+            snapshot["error"] = (
+                "Azure DevOps is not configured yet. Set ADO_ORG_URL, "
+                "ADO_PROJECT, and ADO_PAT, then reload."
+            )
         return snapshot
     try:
         raw_items = adapter.list_items(limit=500)
@@ -1698,7 +1846,7 @@ def _board_snapshot(project: str) -> dict[str, Any]:
     native = backend == BACKEND_PAM_BOARD
     cards = []
     for item in raw_items:
-        url = "" if native else _ado_item_url(str(item.id))
+        url = "" if native else _external_item_url(backend, item)
         cards.append(_serialize_item(item, names, url))
     snapshot["items"] = cards
     snapshot["links"] = _board_links(adapter, raw_items)
@@ -1732,7 +1880,10 @@ def board_page(request: Request) -> HTMLResponse:
     ctx["capabilities"] = snap["capabilities"]
     ctx["backend"] = snap["backend"]
     ctx["board_error"] = snap["error"]
-    ctx["ado_url"] = "" if snap["editable"] else _ado_board_url()
+    ctx["backend_label"] = snap["backend_label"]
+    ctx["external_board_url"] = (
+        "" if snap["editable"] else _external_board_url(snap["backend"])
+    )
     ctx["backlog"] = [c for c in cards if not c["iteration_id"]]
     sprints = []
     for entry in snap["iterations"]:
@@ -1907,6 +2058,10 @@ async def test_connection(which: str, request: Request) -> Any:
         ok, message, hint = _check_slack()
     elif name == "ado":
         ok, message, hint = _check_ado()
+    elif name == "jira":
+        ok, message, hint = _check_jira()
+    elif name == "linear":
+        ok, message, hint = _check_linear()
     elif name == "people":
         ok, message, hint = _check_people(project)
     elif name == "rules":
@@ -1920,7 +2075,7 @@ async def test_connection(which: str, request: Request) -> Any:
             {
                 "ok": False,
                 "message": "Unknown target.",
-                "hint": "Use one of: model, slack, ado, people, rules, safety.",
+                "hint": "Use one of: model, slack, ado, jira, linear, people, rules, safety.",
             },
             status_code=404,
         )
@@ -2254,6 +2409,128 @@ async def save_setup_ado(request: Request) -> Any:
     if "hx-request" in request.headers:
         return HTMLResponse(_test_result_html(True, message))
     return {"ok": True, "project": project, "ado": saved}
+
+
+@app.post("/api/setup/jira")
+async def save_setup_jira(request: Request) -> Any:
+    if not await _setup_token_ok(request):
+        return _setup_token_denied(request)
+    project = request.query_params.get("project", "default").strip() or "default"
+    base_url = ""
+    email = ""
+    jira_project = ""
+    api_token = ""
+    ctype = request.headers.get("content-type", "")
+    if "application/json" in ctype:
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = {}
+        fields = _setup_payload(request, payload if isinstance(payload, dict) else {})
+        project = fields.get("project", project).strip() or "default"
+        base_url = fields.get("base_url", fields.get("JIRA_BASE_URL", ""))
+        email = fields.get("email", fields.get("JIRA_EMAIL", ""))
+        jira_project = fields.get(
+            "project_key", fields.get("project", fields.get("JIRA_PROJECT", ""))
+        )
+        api_token = fields.get("api_token", fields.get("JIRA_API_TOKEN", ""))
+    else:
+        form = await request.form()
+        project = str(form.get("project", project)).strip() or "default"
+        base_url = str(form.get("base_url", form.get("JIRA_BASE_URL", "") or "") or "")
+        email = str(form.get("email", form.get("JIRA_EMAIL", "") or "") or "")
+        jira_project = str(
+            form.get("project_key", form.get("project", "") or "") or ""
+        ) or str(form.get("JIRA_PROJECT", "") or "")
+        api_token = str(
+            form.get("api_token", form.get("JIRA_API_TOKEN", "") or "") or ""
+        )
+    try:
+        saved = secrets_mod.save_jira_config(
+            Config().ensure_data_dir(),
+            base_url=base_url,
+            email=email,
+            project=jira_project,
+            api_token=api_token,
+        )
+    except Exception:  # noqa: BLE001
+        msg = "Jira settings could not be saved."
+        hint = "Check the data directory is writable, then save again."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg, hint))
+        return JSONResponse(
+            {"ok": False, "message": msg, "hint": hint}, status_code=500
+        )
+    try:
+        _write_project_step(
+            project,
+            "jira",
+            {
+                "base_url": saved.get("base_url", ""),
+                "email": saved.get("email", ""),
+                "project": saved.get("project", ""),
+                "has_token": saved.get("has_token", False),
+            },
+        )
+    except Exception:  # noqa: BLE001, S110
+        pass
+    message = "Jira settings saved."
+    if "hx-request" in request.headers:
+        return HTMLResponse(_test_result_html(True, message))
+    return {"ok": True, "project": project, "jira": saved}
+
+
+@app.post("/api/setup/linear")
+async def save_setup_linear(request: Request) -> Any:
+    if not await _setup_token_ok(request):
+        return _setup_token_denied(request)
+    project = request.query_params.get("project", "default").strip() or "default"
+    team = ""
+    api_key = ""
+    ctype = request.headers.get("content-type", "")
+    if "application/json" in ctype:
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = {}
+        fields = _setup_payload(request, payload if isinstance(payload, dict) else {})
+        project = fields.get("project", project).strip() or "default"
+        team = fields.get("team", fields.get("LINEAR_TEAM", ""))
+        api_key = fields.get("api_key", fields.get("LINEAR_API_KEY", ""))
+    else:
+        form = await request.form()
+        project = str(form.get("project", project)).strip() or "default"
+        team = str(form.get("team", form.get("LINEAR_TEAM", "") or "") or "")
+        api_key = str(form.get("api_key", form.get("LINEAR_API_KEY", "") or "") or "")
+    try:
+        saved = secrets_mod.save_linear_config(
+            Config().ensure_data_dir(),
+            team=team,
+            api_key=api_key,
+        )
+    except Exception:  # noqa: BLE001
+        msg = "Linear settings could not be saved."
+        hint = "Check the data directory is writable, then save again."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg, hint))
+        return JSONResponse(
+            {"ok": False, "message": msg, "hint": hint}, status_code=500
+        )
+    try:
+        _write_project_step(
+            project,
+            "linear",
+            {
+                "team": saved.get("team", ""),
+                "has_key": saved.get("has_key", False),
+            },
+        )
+    except Exception:  # noqa: BLE001, S110
+        pass
+    message = "Linear settings saved."
+    if "hx-request" in request.headers:
+        return HTMLResponse(_test_result_html(True, message))
+    return {"ok": True, "project": project, "linear": saved}
 
 
 @app.post("/api/rules/toggle")
@@ -2791,8 +3068,12 @@ def board_item_detail(request: Request, item_id: str) -> Any:
                 )
         except Exception:  # noqa: BLE001
             comments = []
-    native = _project_backend(project) == BACKEND_PAM_BOARD
-    url = "" if native else _ado_item_url(str(item.id))
+    detail_backend = _project_backend(project)
+    url = (
+        ""
+        if detail_backend == BACKEND_PAM_BOARD
+        else _external_item_url(detail_backend, item)
+    )
     data = _serialize_item(item, _iteration_names(adapter), url)
     data["link_count"] = len(links)
     return {

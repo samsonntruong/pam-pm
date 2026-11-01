@@ -12,10 +12,19 @@ DEFAULT_DAILY_SPEND_CAP = 2.0
 
 BACKEND_PAM_BOARD = "pam_board"
 BACKEND_AZURE_DEVOPS = "azure_devops"
-BACKEND_CHOICES = (BACKEND_PAM_BOARD, BACKEND_AZURE_DEVOPS)
+BACKEND_JIRA = "jira"
+BACKEND_LINEAR = "linear"
+BACKEND_CHOICES = (
+    BACKEND_PAM_BOARD,
+    BACKEND_AZURE_DEVOPS,
+    BACKEND_JIRA,
+    BACKEND_LINEAR,
+)
 
 _PAM_ALIASES = {"pam", "pam_board", "native", "native_board", "sqlite", "sqlite_board"}
 _ADO_ALIASES = {"ado", "azure", "azure_devops", "azure-devops", "devops"}
+_JIRA_ALIASES = {"jira", "jira_cloud"}
+_LINEAR_ALIASES = {"linear"}
 
 
 def normalize_backend(value: object) -> str:
@@ -29,6 +38,10 @@ def normalize_backend(value: object) -> str:
         return BACKEND_PAM_BOARD
     if text in _ADO_ALIASES or not text:
         return BACKEND_AZURE_DEVOPS
+    if text in _JIRA_ALIASES:
+        return BACKEND_JIRA
+    if text in _LINEAR_ALIASES:
+        return BACKEND_LINEAR
     if text in BACKEND_CHOICES:
         return text
     return BACKEND_AZURE_DEVOPS
@@ -36,8 +49,13 @@ def normalize_backend(value: object) -> str:
 
 def backend_label(value: object) -> str:
     """Return the display label for a backend value."""
-    if normalize_backend(value) == BACKEND_PAM_BOARD:
+    backend = normalize_backend(value)
+    if backend == BACKEND_PAM_BOARD:
         return "Pam board"
+    if backend == BACKEND_JIRA:
+        return "Jira"
+    if backend == BACKEND_LINEAR:
+        return "Linear"
     return "Azure DevOps"
 
 

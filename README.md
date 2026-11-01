@@ -140,3 +140,5 @@ Near term: PyPI release, daily lead digest, per-person snooze and quiet hours po
 Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Security reports: [SECURITY.md](SECURITY.md). License: MIT, see [LICENSE](LICENSE).
 
 Status: alpha. The API, console screens, and rule templates may change without notice. See [CHANGELOG.md](CHANGELOG.md).
+
+All trademarks are property of their respective owners; marks identify the services only.

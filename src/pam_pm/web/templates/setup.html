@@ -2,7 +2,7 @@
 {% block title %}Setup - Pam{% endblock %}
 {% block content %}
 <h1>Setup</h1>
-<p class="muted">Seven short steps in order: Model, Slack, Azure DevOps if chosen, People, Rules, Safety, Done. Progress saves after each step so you can close the browser and come back later.</p>
+<p class="muted">Seven short steps in order: Model, Slack, backend setup when your board needs credentials, People, Rules, Safety, Done. Progress saves after each step so you can close the browser and come back later.</p>
 
 {% if setup_done %}
 <p><span class="pill pill-ok">Pass: Setup is complete</span></p>
@@ -27,8 +27,18 @@
       <strong>Azure DevOps</strong>
       <span class="muted">Use your existing project. Enter the org URL, project, and access token in Step 3.</span>
     </label>
+    <label class="card backend-card">
+      <input type="radio" name="backend" value="{{ jira_value }}" {% if backend == jira_value %}checked{% endif %} onchange="saveBackend(this.value)">
+      <strong><img src="/static/icons/jira.svg" alt="" width="16" height="16"> Jira</strong>
+      <span class="muted">Use your Jira Cloud site. Enter the site URL, email, project key, and API token below.</span>
+    </label>
+    <label class="card backend-card">
+      <input type="radio" name="backend" value="{{ linear_value }}" {% if backend == linear_value %}checked{% endif %} onchange="saveBackend(this.value)">
+      <strong><img src="/static/icons/linear.svg" alt="" width="16" height="16"> Linear</strong>
+      <span class="muted">Use your Linear team. Enter the team key and API key below.</span>
+    </label>
     <div class="card backend-card" aria-disabled="true">
-      <strong>Jira, Asana, Linear</strong> <span class="pill">Coming soon</span>
+      <strong>Asana, Monday</strong> <span class="pill">Coming soon</span>
       <span class="muted">Not built yet. See <a href="docs/adapters.md">docs/adapters.md</a> for details.</span>
       <span><input type="radio" disabled> <span class="muted">Unavailable</span></span>
     </div>
@@ -114,6 +124,40 @@
   </div>
   <div id="ado-save-result" class="result" aria-live="polite"></div>
   <div id="ado-result" class="result" aria-live="polite"></div>
+</section>
+
+<section class="card" id="step-3-jira" {% if not show_jira %}hidden{% endif %}>
+  <h2>Step 3: Jira</h2>
+  <p>Only needed when Jira is chosen above. Paste the values below, choose Save, then Test.</p>
+  <label for="jira-base">Site URL</label>
+  <input id="jira-base" name="base_url" type="url" value="{{ jira_base_url }}" placeholder="https://your-site.atlassian.net" autocomplete="off">
+  <label for="jira-email">Email</label>
+  <input id="jira-email" name="email" type="email" value="{{ jira_email }}" placeholder="you@example.com" autocomplete="off">
+  <label for="jira-project">Project key</label>
+  <input id="jira-project" name="project_key" type="text" value="{{ jira_project }}" placeholder="PROJ" autocomplete="off">
+  <label for="jira-token">API token</label>
+  <input id="jira-token" name="api_token" type="password" value="" placeholder="{% if jira_has_token %}Saved on this machine{% else %}Paste token here{% endif %}" autocomplete="off">
+  <div>
+    <button type="button" onclick="saveJira()">Save</button>
+    <button hx-post="/api/test/jira?project={{ project }}" hx-target="#jira-result" hx-swap="innerHTML">Test</button>
+  </div>
+  <div id="jira-save-result" class="result" aria-live="polite"></div>
+  <div id="jira-result" class="result" aria-live="polite"></div>
+</section>
+
+<section class="card" id="step-3-linear" {% if not show_linear %}hidden{% endif %}>
+  <h2>Step 3: Linear</h2>
+  <p>Only needed when Linear is chosen above. Paste the values below, choose Save, then Test.</p>
+  <label for="linear-team">Team key</label>
+  <input id="linear-team" name="team" type="text" value="{{ linear_team }}" placeholder="ENG" autocomplete="off">
+  <label for="linear-key">API key</label>
+  <input id="linear-key" name="api_key" type="password" value="" placeholder="{% if linear_has_key %}Saved on this machine{% else %}Paste key here{% endif %}" autocomplete="off">
+  <div>
+    <button type="button" onclick="saveLinear()">Save</button>
+    <button hx-post="/api/test/linear?project={{ project }}" hx-target="#linear-result" hx-swap="innerHTML">Test</button>
+  </div>
+  <div id="linear-save-result" class="result" aria-live="polite"></div>
+  <div id="linear-result" class="result" aria-live="polite"></div>
 </section>
 
 <section class="card" id="step-4">
@@ -247,6 +291,40 @@
       await saveStep("ado", {data: {}});
     } catch (err) { saveResult("ado-save-result", false, "Save failed. Check your connection and try again."); }
   }
+  async function saveJira() {
+    const project = projectName();
+    const base = document.getElementById("jira-base");
+    const mail = document.getElementById("jira-email");
+    const proj = document.getElementById("jira-project");
+    const token = document.getElementById("jira-token");
+    try {
+      const resp = await fetch("/api/setup/jira", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({project: project, base_url: base ? base.value : "", email: mail ? mail.value : "", project_key: proj ? proj.value : "", api_token: token ? token.value : "", token: setupToken()})
+      });
+      const data = await resp.json().catch(function () { return {}; });
+      saveResult("jira-save-result", resp.ok && data.ok !== false, (resp.ok && data.ok !== false) ? "Saved Jira settings." : ((data && data.message) ? data.message : "Save failed. Check the fields and try again."));
+      if (token) token.value = "";
+      await saveStep("jira", {data: {}});
+    } catch (err) { saveResult("jira-save-result", false, "Save failed. Check your connection and try again."); }
+  }
+  async function saveLinear() {
+    const project = projectName();
+    const team = document.getElementById("linear-team");
+    const key = document.getElementById("linear-key");
+    try {
+      const resp = await fetch("/api/setup/linear", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({project: project, team: team ? team.value : "", api_key: key ? key.value : "", token: setupToken()})
+      });
+      const data = await resp.json().catch(function () { return {}; });
+      saveResult("linear-save-result", resp.ok && data.ok !== false, (resp.ok && data.ok !== false) ? "Saved Linear settings." : ((data && data.message) ? data.message : "Save failed. Check the fields and try again."));
+      if (key) key.value = "";
+      await saveStep("linear", {data: {}});
+    } catch (err) { saveResult("linear-save-result", false, "Save failed. Check your connection and try again."); }
+  }
   async function saveProvider() {
     const project = projectName();
     const picked = document.querySelector('input[name="provider"]:checked');
@@ -315,9 +393,19 @@
       const label = (data && data.label) ? data.label : value;
       if (box) backendPill(box, "pill pill-ok", "Saved. Tasks will live on " + label + ".");
       const ado = document.getElementById("step-3");
+      const jira = document.getElementById("step-3-jira");
+      const linear = document.getElementById("step-3-linear");
       if (ado) {
-        if (value === "{{ pam_board_value }}") { ado.setAttribute("hidden", ""); }
-        else { ado.removeAttribute("hidden"); }
+        if (value === "{{ ado_value }}") { ado.removeAttribute("hidden"); }
+        else { ado.setAttribute("hidden", ""); }
+      }
+      if (jira) {
+        if (value === "{{ jira_value }}") { jira.removeAttribute("hidden"); }
+        else { jira.setAttribute("hidden", ""); }
+      }
+      if (linear) {
+        if (value === "{{ linear_value }}") { linear.removeAttribute("hidden"); }
+        else { linear.setAttribute("hidden", ""); }
       }
       await saveStep("backend", {data: {backend: value}});
     } catch (err) {

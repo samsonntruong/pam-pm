@@ -413,7 +413,7 @@
     );
     if (item.external_url) {
       parts.push(
-        '<p><a href="' + esc(item.external_url) + '">Open in Azure DevOps</a></p>'
+        '<p><a href="' + esc(item.external_url) + '">Open in ' + esc(meta.backend_label || "Azure DevOps") + '</a></p>'
       );
     }
     if (item.description) {
