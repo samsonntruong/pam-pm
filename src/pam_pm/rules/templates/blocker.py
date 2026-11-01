@@ -51,24 +51,115 @@ def _item_state(item: Any) -> str:
     return str(getattr(item, "state", "") or "")
 
 
+OWNER_KEYS = (
+    "assigned_to",
+    "owner",
+    "System.AssignedTo",
+    "user_id",
+    "assignee",
+)
+
+
+def _owner_text(value: Any) -> str:
+    if value is None or value == "":
+        return ""
+    if isinstance(value, dict):
+        for key in ("displayName", "uniqueName", "name", "id"):
+            cand = value.get(key)
+            if cand:
+                return str(cand)
+        return ""
+    return str(value)
+
+
 def _owner_of(item: Any) -> str:
     if isinstance(item, dict):
         fields = item.get("fields", {})
         if not isinstance(fields, dict):
             fields = {}
-        for key in ("assigned_to", "owner", "user_id"):
-            value = fields.get(key) or item.get(key)
+        for key in OWNER_KEYS:
+            value = _owner_text(fields.get(key)) or _owner_text(item.get(key))
             if value:
-                return str(value)
+                return value
         return ""
     fields = getattr(item, "fields", None)
     if not isinstance(fields, dict):
         fields = {}
-    for key in ("assigned_to", "owner", "user_id"):
+    for key in OWNER_KEYS:
+        value = _owner_text(fields.get(key))
+        if value:
+            return value
+    return ""
+
+
+def _board_states(board: Any) -> list[str]:
+    try:
+        states = list(board.list_states())
+    except Exception:  # noqa: BLE001
+        return []
+    return [str(entry) for entry in states if str(entry)]
+
+
+def _open_state(board: Any) -> str:
+    states = _board_states(board)
+    if states:
+        return states[0]
+    return "To Do"
+
+
+def _active_state(board: Any) -> str:
+    states = _board_states(board)
+    if len(states) >= 2:
+        return states[1]
+    if states:
+        return states[0]
+    return "Active"
+
+
+def _iteration_of(item: Any) -> str:
+    fields: dict[str, Any] = {}
+    if isinstance(item, dict):
+        raw = item.get("fields", {})
+        if isinstance(raw, dict):
+            fields = raw
+        for key in (
+            "iteration_id",
+            "iteration",
+            "System.IterationId",
+            "System.IterationPath",
+        ):
+            value = fields.get(key) or item.get(key)
+            if value:
+                return str(value)
+        return ""
+    raw = getattr(item, "fields", None)
+    if isinstance(raw, dict):
+        fields = raw
+    for key in (
+        "iteration_id",
+        "iteration",
+        "System.IterationId",
+        "System.IterationPath",
+    ):
         value = fields.get(key)
         if value:
             return str(value)
     return ""
+
+
+def _maybe_copy_iteration(board: Any, blocked: Any, blocking_id: str) -> None:
+    if not getattr(board, "supports_iterations", True):
+        return
+    iteration = _iteration_of(blocked)
+    if not iteration:
+        return
+    setter = getattr(board, "set_item_iteration", None)
+    if not callable(setter):
+        return
+    try:
+        setter(blocking_id, iteration)
+    except Exception:  # noqa: BLE001
+        return
 
 
 def _collect_answers(chat: Any, reporter: str) -> list[str]:
@@ -124,7 +215,7 @@ def blocker_intake(
         if blocked is None:
             blocked = board.create_item(
                 f"Blocked work for {reporter}",
-                {"state": "Doing", "assigned_to": reporter},
+                {"state": _active_state(board), "assigned_to": reporter},
             )
             if service is not None:
                 service.propose(
@@ -160,10 +251,11 @@ def blocker_intake(
             blocking = cand
             break
     if blocking is None:
-        fields: dict[str, Any] = {"state": "To Do"}
+        fields: dict[str, Any] = {"state": _open_state(board)}
         if owner:
             fields["assigned_to"] = owner
         blocking = board.create_item(title, fields)
+        _maybe_copy_iteration(board, blocked, _item_id(blocking))
         if service is not None:
             service.propose(
                 {

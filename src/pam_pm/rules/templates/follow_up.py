@@ -51,23 +51,44 @@ def _item_title(item: Any) -> str:
     return str(title or _item_id(item))
 
 
+OWNER_KEYS = (
+    "assigned_to",
+    "owner",
+    "System.AssignedTo",
+    "user_id",
+    "assignee",
+)
+
+
+def _owner_text(value: Any) -> str:
+    if value is None or value == "":
+        return ""
+    if isinstance(value, dict):
+        for key in ("displayName", "uniqueName", "name", "id"):
+            cand = value.get(key)
+            if cand:
+                return str(cand)
+        return ""
+    return str(value)
+
+
 def _owner_of(item: Any) -> str:
     if isinstance(item, dict):
         fields = item.get("fields", {})
         if not isinstance(fields, dict):
             fields = {}
-        for key in ("assigned_to", "owner", "user_id", "assignee"):
-            value = fields.get(key) or item.get(key)
+        for key in OWNER_KEYS:
+            value = _owner_text(fields.get(key)) or _owner_text(item.get(key))
             if value:
-                return str(value)
+                return value
         return ""
     fields = getattr(item, "fields", None)
     if not isinstance(fields, dict):
         fields = {}
-    for key in ("assigned_to", "owner", "user_id", "assignee"):
-        value = fields.get(key)
+    for key in OWNER_KEYS:
+        value = _owner_text(fields.get(key))
         if value:
-            return str(value)
+            return value
     return ""
 
 

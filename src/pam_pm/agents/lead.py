@@ -322,6 +322,110 @@ def synthesize_review(
     }
 
 
+def _board_states(board: Any) -> list[str]:
+    try:
+        states = list(board.list_states())
+    except Exception:  # noqa: BLE001
+        return []
+    return [str(entry) for entry in states if str(entry)]
+
+
+def _open_state(board: Any) -> str:
+    states = _board_states(board)
+    if states:
+        return states[0]
+    return "To Do"
+
+
+def _item_id(item: Any) -> str:
+    if isinstance(item, dict):
+        return str(item.get("id", item.get("item_id", "")) or "")
+    return str(getattr(item, "id", getattr(item, "item_id", "")) or "")
+
+
+def _action_field(action: Any, name: str, default: Any = "") -> Any:
+    if isinstance(action, dict):
+        value = action.get(name, default)
+        return default if value is None else value
+    value = getattr(action, name, default)
+    return default if value is None else value
+
+
+def _resolve_writes(writes: Any, db: Any, dry_run: bool) -> Any:
+    if writes is not None:
+        return writes
+    if db is None:
+        return None
+    from pam_pm.core.writes import WriteService
+
+    return WriteService(db, dry_run=dry_run)
+
+
+def create_retro_items(
+    board: Any,
+    actions: Any,
+    *,
+    writes: Any = None,
+    db: Any = None,
+    dry_run: bool = True,
+    iteration_id: str | None = None,
+    evidence_quote: str = "",
+) -> list[Any]:
+    """Create board items for retro actions via a PMAdapter.
+
+    Each action becomes one item in the board open state (New on the
+    native board, mapped open state on ADO) tagged retro-action, with
+    owner and description carried over. Items move to iteration_id when
+    given and the board supports iterations. Each creation is logged
+    through writes with its evidence quote when a write service is
+    given. Returns the created items in action order.
+    """
+    if board is None:
+        raise ValueError("board is required to create retro items")
+    service = _resolve_writes(writes, db, dry_run)
+    state = _open_state(board)
+    drafts = list(actions) if isinstance(actions, (list, tuple)) else [actions]
+    created: list[Any] = []
+    for draft in drafts:
+        title = str(_action_field(draft, "title", "") or "").strip() or "Retro action"
+        owner = _action_field(draft, "owner", "")
+        description = str(_action_field(draft, "description", "") or "") or title
+        tags = _action_field(draft, "tags", "")
+        fields: dict[str, Any] = {
+            "state": state,
+            "description": description,
+            "tags": tags or [RETRO_TAG],
+        }
+        if owner and str(owner).strip():
+            fields["assigned_to"] = str(owner).strip()
+        item = board.create_item(title, fields)
+        if iteration_id and getattr(board, "supports_iterations", True):
+            setter = getattr(board, "set_item_iteration", None)
+            if callable(setter):
+                try:
+                    item = setter(_item_id(item), iteration_id)
+                except Exception:  # noqa: BLE001, S110
+                    pass
+        created.append(item)
+        if service is not None:
+            quote = (evidence_quote or description or title).strip()[:500]
+            service.propose(
+                {
+                    "operation": "create_item",
+                    "item_id": _item_id(item),
+                    "evidence_quote": quote or title[:500],
+                    "status": "proposed",
+                    "detail": f"retro action from review: {title[:200]}",
+                }
+            )
+    return created
+
+
+def approve_retro_actions(board: Any, actions: Any, **kwargs: Any) -> list[Any]:
+    """Alias for create_retro_items kept for planner symmetry."""
+    return create_retro_items(board, actions, **kwargs)
+
+
 class LeadAgent:
     """Synthesis helper that delegates to synthesize_daily."""
 
@@ -339,3 +443,9 @@ class LeadAgent:
     ) -> dict[str, Any]:
         """Build a sprint review with markdown plus retro actions."""
         return synthesize_review(items, interviews, events, model_client, max_tokens)
+
+    def create_retro_items(
+        self, board: Any, actions: Any, **kwargs: Any
+    ) -> list[Any]:
+        """Create board items for retro actions."""
+        return create_retro_items(board, actions, **kwargs)

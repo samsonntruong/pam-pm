@@ -98,23 +98,87 @@ def propose_sprint(notes: Any) -> list[dict[str, Any]]:
     return proposal
 
 
-def approve_proposal(proposal: Any, board: Any) -> list[Any]:
+def _board_states(board: Any) -> list[str]:
+    try:
+        states = list(board.list_states())
+    except Exception:  # noqa: BLE001
+        return []
+    return [str(entry) for entry in states if str(entry)]
+
+
+def _open_state(board: Any) -> str:
+    states = _board_states(board)
+    if states:
+        return states[0]
+    return DEFAULT_STATE
+
+
+def _map_state(board: Any, state: str) -> str:
+    states = _board_states(board)
+    if states and state not in states:
+        return states[0]
+    return state or _open_state(board)
+
+
+def _item_id(item: Any) -> str:
+    if isinstance(item, dict):
+        return str(item.get("id", item.get("item_id", "")) or "")
+    return str(getattr(item, "id", getattr(item, "item_id", "")) or "")
+
+
+def _draft_iteration(draft: Any) -> str:
+    if not isinstance(draft, dict):
+        return ""
+    for key in ("iteration_id", "iteration", "sprint"):
+        value = draft.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+def _resolve_writes(writes: Any, db: Any, dry_run: bool) -> Any:
+    if writes is not None:
+        return writes
+    if db is None:
+        return None
+    from pam_pm.core.writes import WriteService
+
+    return WriteService(db, dry_run=dry_run)
+
+
+def approve_proposal(
+    proposal: Any,
+    board: Any,
+    *,
+    writes: Any = None,
+    db: Any = None,
+    dry_run: bool = True,
+    evidence_quote: str = "",
+) -> list[Any]:
     """Create board items for an approved proposal via a PMAdapter.
 
     Each draft becomes one item through board.create_item with ADO style
-    fields (type, assigned_to, remaining, description). Returns the
+    fields (type, assigned_to, remaining, description). The draft state
+    is mapped to the board open state when the board does not list it,
+    so the same proposal works on the native board (New) and on ADO
+    (New on Agile, To Do on Scrum). Drafts carrying iteration_id,
+    iteration, or sprint are moved to that sprint when the board
+    supports iterations. Each creation is logged through writes with
+    its evidence quote when a write service is given. Returns the
     created items in proposal order. An empty proposal creates nothing.
     """
     if board is None:
         raise ValueError("board is required to approve a proposal")
+    service = _resolve_writes(writes, db, dry_run)
     drafts = list(proposal) if isinstance(proposal, (list, tuple)) else [proposal]
     created: list[Any] = []
     for draft in drafts:
         if isinstance(draft, dict):
             title = str(draft.get("title", "") or "").strip() or "Untitled"
+            raw_state = str(draft.get("state", DEFAULT_STATE) or DEFAULT_STATE)
             fields: dict[str, Any] = {
                 "type": str(draft.get("type", DEFAULT_ITEM_TYPE) or DEFAULT_ITEM_TYPE),
-                "state": str(draft.get("state", DEFAULT_STATE) or DEFAULT_STATE),
+                "state": _map_state(board, raw_state),
                 "description": str(draft.get("description", title) or title),
             }
             owner = draft.get("owner")
@@ -130,10 +194,30 @@ def approve_proposal(proposal: Any, board: Any) -> list[Any]:
             title = _note_title(draft, len(created))
             fields = {
                 "type": DEFAULT_ITEM_TYPE,
-                "state": DEFAULT_STATE,
+                "state": _open_state(board),
                 "description": title,
             }
-        created.append(board.create_item(title, fields))
+        item = board.create_item(title, fields)
+        iteration = _draft_iteration(draft)
+        if iteration and getattr(board, "supports_iterations", True):
+            setter = getattr(board, "set_item_iteration", None)
+            if callable(setter):
+                try:
+                    item = setter(_item_id(item), iteration)
+                except Exception:  # noqa: BLE001, S110
+                    pass
+        created.append(item)
+        if service is not None:
+            quote = (evidence_quote or title).strip()[:500] or title[:500]
+            service.propose(
+                {
+                    "operation": "create_item",
+                    "item_id": _item_id(item),
+                    "evidence_quote": quote,
+                    "status": "proposed",
+                    "detail": f"approved from sticky notes: {title[:200]}",
+                }
+            )
     return created
 
 
@@ -144,6 +228,6 @@ class Planner:
         """Propose sprint items from note readings."""
         return propose_sprint(notes)
 
-    def approve(self, proposal: Any, board: Any) -> list[Any]:
+    def approve(self, proposal: Any, board: Any, **kwargs: Any) -> list[Any]:
         """Create board items for an approved proposal."""
-        return approve_proposal(proposal, board)
+        return approve_proposal(proposal, board, **kwargs)

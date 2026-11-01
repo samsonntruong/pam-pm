@@ -31,24 +31,45 @@ def _id_of(item: Any) -> str:
     return str(getattr(item, "id", getattr(item, "item_id", "")) or "")
 
 
+OWNER_KEYS = (
+    "assigned_to",
+    "owner",
+    "System.AssignedTo",
+    "user_id",
+    "assignee",
+)
+
+
+def _owner_text(value: Any) -> str:
+    if value is None or value == "":
+        return ""
+    if isinstance(value, dict):
+        for key in ("displayName", "uniqueName", "name", "id"):
+            cand = value.get(key)
+            if cand:
+                return str(cand)
+        return ""
+    return str(value)
+
+
 def _owner_of(item: Any) -> str:
     fields: dict[str, Any] = {}
     if isinstance(item, dict):
         raw = item.get("fields", {})
         if isinstance(raw, dict):
             fields = raw
-        for key in ("assigned_to", "owner", "user_id", "assignee"):
-            value = fields.get(key) or item.get(key)
+        for key in OWNER_KEYS:
+            value = _owner_text(fields.get(key)) or _owner_text(item.get(key))
             if value:
-                return str(value)
+                return value
         return ""
     raw = getattr(item, "fields", None)
     if isinstance(raw, dict):
         fields = raw
-    for key in ("assigned_to", "owner", "user_id", "assignee"):
-        value = fields.get(key)
+    for key in OWNER_KEYS:
+        value = _owner_text(fields.get(key))
         if value:
-            return str(value)
+            return value
     return ""
 
 

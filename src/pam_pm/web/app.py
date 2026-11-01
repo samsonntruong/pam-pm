@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import html
+import io
 import json
 import logging
 import os
@@ -12,10 +14,11 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from pam_pm.adapters.pm.base import WorkItem, is_closed
 from pam_pm.adapters.pm.sqlite_board import SQLiteBoard
 from pam_pm.agents.lead import synthesize_review
 from pam_pm.agents.planner import approve_proposal, propose_sprint
@@ -645,23 +648,407 @@ def activity_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "activity.html", ctx)  # type: ignore[return-value]
 
 
+BOARD_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("new", "New"),
+    ("active", "Active"),
+    ("blocked", "Blocked"),
+    ("done", "Done"),
+)
+
+BOARD_ITEM_FIELDS: tuple[str, ...] = (
+    "state",
+    "description",
+    "tags",
+    "due_date",
+    "owner",
+    "estimate",
+    "remaining",
+    "priority",
+    "iteration_id",
+)
+
+BOARD_CSV_FIELDS: tuple[str, ...] = (
+    "id",
+    "title",
+    "state",
+    "owner",
+    "estimate",
+    "remaining",
+    "priority",
+    "tags",
+    "due_date",
+    "iteration_id",
+    "description",
+)
+
+BOARD_REFRESH_OPS = frozenset(
+    {
+        "create",
+        "update",
+        "move",
+        "add_link",
+        "set_sprint",
+        "create_sprint",
+        "close_sprint",
+        "comment",
+    }
+)
+
+_BOARD_OVERRIDES: dict[str, Any] = {}
+_NATIVE_BOARDS: dict[str, SQLiteBoard] = {}
+_ADO_BOARD: Any | None = None
+
+
+def set_board_adapter(project: str, adapter: Any) -> None:
+    """Pin a board adapter for one project (tests use fakes here)."""
+    _BOARD_OVERRIDES[_safe_project(project)] = adapter
+
+
+def reset_board_state() -> None:
+    """Clear pinned adapters and cached boards (tests call this)."""
+    global _ADO_BOARD
+    _BOARD_OVERRIDES.clear()
+    for board in _NATIVE_BOARDS.values():
+        try:
+            board.close()
+        except Exception:  # noqa: BLE001, S110
+            pass
+    _NATIVE_BOARDS.clear()
+    if _ADO_BOARD is not None:
+        try:
+            _ADO_BOARD.close()
+        except Exception:  # noqa: BLE001, S110
+            pass
+    _ADO_BOARD = None
+
+
+def _safe_project(value: str) -> str:
+    want = (value or "default").strip() or "default"
+    if len(want) <= 64 and all(
+        c.isalnum() or c in ("-", "_", ".") for c in want
+    ):
+        return want
+    return "default"
+
+
+def get_board_adapter(project: str) -> Any | None:
+    """Return the board adapter for a project, or None when missing.
+
+    Native projects get a per-project SQLite board file. ADO projects
+    share one client, or None when ADO is not configured.
+    """
+    global _ADO_BOARD
+    name = _safe_project(project)
+    if name in _BOARD_OVERRIDES:
+        return _BOARD_OVERRIDES[name]
+    if _project_backend(name) == BACKEND_PAM_BOARD:
+        if name not in _NATIVE_BOARDS:
+            path = Config().ensure_data_dir() / f"board_{name}.db"
+            _NATIVE_BOARDS[name] = SQLiteBoard(path)
+        return _NATIVE_BOARDS[name]
+    if _ADO_BOARD is None:
+        try:
+            from pam_pm.adapters.pm.azure_devops import ADOAdapter
+
+            _ADO_BOARD = ADOAdapter()
+        except Exception:  # noqa: BLE001
+            return None
+    return _ADO_BOARD
+
+
+def _board_capabilities(project: str, adapter: Any | None) -> dict[str, bool]:
+    native = _project_backend(project) == BACKEND_PAM_BOARD
+    return {
+        "editable": bool(native and adapter is not None),
+        "dependency_links": bool(
+            getattr(adapter, "supports_dependency_links", False)
+        ),
+        "iterations": bool(getattr(adapter, "supports_iterations", False)),
+        "comments": bool(getattr(adapter, "supports_comments", False)),
+        "close_iteration": bool(
+            getattr(adapter, "supports_close_iteration", False)
+        ),
+    }
+
+
+def _board_column(state: str) -> str:
+    text = (state or "").strip().lower()
+    if text == "blocked":
+        return "blocked"
+    if is_closed(state):
+        return "done"
+    if text in (
+        "active",
+        "doing",
+        "in progress",
+        "inprogress",
+        "committed",
+        "resolved",
+    ):
+        return "active"
+    return "new"
+
+
+def _pick(fields: dict[str, Any], *keys: str, default: Any = "") -> Any:
+    for key in keys:
+        if key in fields and fields[key] not in (None, ""):
+            return fields[key]
+    return default
+
+
+def _tags_list(fields: dict[str, Any]) -> list[str]:
+    raw = _pick(fields, "tags", "System.Tags", default="")
+    if isinstance(raw, list):
+        return [str(tag).strip() for tag in raw if str(tag).strip()]
+    if isinstance(raw, str):
+        return [
+            part for part in (p.strip() for p in raw.replace(",", ";").split(";")) if part
+        ]
+    return []
+
+
+def _ado_board_url() -> str:
+    org = os.environ.get("ADO_ORG_URL", "").strip().rstrip("/")
+    proj = os.environ.get("ADO_PROJECT", "").strip()
+    if not org or not proj:
+        return ""
+    return f"{org}/{proj}/_boards"
+
+
+def _ado_item_url(item_id: str) -> str:
+    base = _ado_board_url()
+    if not base:
+        return ""
+    org = os.environ.get("ADO_ORG_URL", "").strip().rstrip("/")
+    proj = os.environ.get("ADO_PROJECT", "").strip()
+    return f"{org}/{proj}/_workitems/edit/{item_id}"
+
+
+def _serialize_item(
+    item: WorkItem,
+    iteration_names: dict[str, str] | None = None,
+    external_url: str = "",
+) -> dict[str, Any]:
+    fields = dict(getattr(item, "fields", {}) or {})
+    names = iteration_names or {}
+    iteration_id = str(_pick(fields, "iteration_id", default=""))
+    path = str(_pick(fields, "System.IterationPath", default=""))
+    sprint = names.get(iteration_id, "")
+    if not sprint and path:
+        sprint = path.replace("/", "\\").rsplit("\\", 1)[-1]
+    if not sprint:
+        sprint = iteration_id
+    tags = _tags_list(fields)
+    state = str(getattr(item, "state", "") or "")
+    return {
+        "id": str(item.id),
+        "title": str(getattr(item, "title", "") or fields.get("title", "")),
+        "state": state,
+        "column": _board_column(state),
+        "description": str(_pick(fields, "description", "System.Description")),
+        "tags": tags,
+        "tags_text": "; ".join(tags),
+        "due_date": str(_pick(fields, "due_date", "Microsoft.VSTS.Scheduling.DueDate")),
+        "owner": str(_pick(fields, "owner", "assigned_to", "System.AssignedTo")),
+        "estimate": _pick(fields, "estimate", "Microsoft.VSTS.Scheduling.OriginalEstimate"),
+        "remaining": _pick(fields, "remaining", "Microsoft.VSTS.Scheduling.RemainingWork"),
+        "priority": str(_pick(fields, "priority", "Microsoft.VSTS.Common.Priority")),
+        "iteration_id": iteration_id,
+        "sprint": sprint,
+        "changed": str(getattr(item, "changed", "") or ""),
+        "external_url": external_url,
+    }
+
+
+def _link_label(source_id: str, target_id: str, rel: str) -> str:
+    if rel.endswith("Dependency-Reverse"):
+        return f"{source_id} waits on {target_id}"
+    return f"{source_id} blocks {target_id}"
+
+
+def _board_iterations(adapter: Any) -> list[dict[str, str]]:
+    getter = getattr(adapter, "list_iterations", None)
+    if not callable(getter):
+        return []
+    try:
+        found = getter()
+    except Exception:  # noqa: BLE001
+        return []
+    closed: set[str] = set()
+    closer = getattr(adapter, "closed_iteration_ids", None)
+    if callable(closer):
+        try:
+            closed = {str(i) for i in closer()}
+        except Exception:  # noqa: BLE001
+            closed = set()
+    out: list[dict[str, str]] = []
+    for entry in found or []:
+        ident = str(getattr(entry, "id", ""))
+        out.append(
+            {
+                "id": ident,
+                "name": str(getattr(entry, "name", "")),
+                "start_date": str(getattr(entry, "start_date", "") or ""),
+                "end_date": str(getattr(entry, "end_date", "") or ""),
+                "path": str(getattr(entry, "path", "") or ""),
+                "status": "closed" if ident in closed else "open",
+            }
+        )
+    return out
+
+
+def _board_links(adapter: Any, items: list[WorkItem]) -> list[dict[str, str]]:
+    if not bool(getattr(adapter, "supports_dependency_links", False)):
+        return []
+    seen: set[tuple[str, str, str]] = set()
+    out: list[dict[str, str]] = []
+    for item in items:
+        try:
+            found = adapter.list_links(item.id)
+        except Exception:  # noqa: BLE001, S112
+            continue
+        for link in found or []:
+            key = (
+                str(link.source_id),
+                str(link.target_id),
+                str(link.rel),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(
+                {
+                    "source_id": key[0],
+                    "target_id": key[1],
+                    "rel": key[2],
+                    "label": _link_label(key[0], key[1], key[2]),
+                }
+            )
+    return out
+
+
+def _record_board_write(
+    project: str,
+    operation: str,
+    item_id: str,
+    evidence: str,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    detail: dict[str, Any] = {"actor": "human", "project": project}
+    if extra:
+        detail.update(extra)
+    try:
+        write_id = store_mod.insert_write(
+            _db_path(),
+            {
+                "operation": operation,
+                "item_id": str(item_id),
+                "evidence_quote": evidence,
+                "status": "applied",
+                "detail": json.dumps(detail),
+            },
+        )
+    except Exception:  # noqa: BLE001
+        past = bus.history()
+        write_id = int(past[-1].get("id", 0)) + 1 if past else 1
+    event = {
+        "id": write_id,
+        "operation": operation,
+        "item_id": str(item_id),
+        "evidence_quote": evidence,
+        "status": "applied",
+        "detail": json.dumps(detail),
+    }
+    bus.publish(event)
+    logger.info("board write: %s %s on %s", operation, item_id, project)
+    return event
+
+
+def _board_snapshot(project: str) -> dict[str, Any]:
+    """Read items, sprints, and links for one project, never raising."""
+    name = _safe_project(project)
+    backend = _project_backend(name)
+    adapter = get_board_adapter(name)
+    caps = _board_capabilities(name, adapter)
+    snapshot: dict[str, Any] = {
+        "project": name,
+        "backend": backend,
+        "backend_label": backend_label(backend),
+        "capabilities": caps,
+        "editable": caps["editable"],
+        "states": [],
+        "iterations": [],
+        "items": [],
+        "links": [],
+        "error": "",
+    }
+    if adapter is None:
+        snapshot["error"] = (
+            "Azure DevOps is not configured yet. Set ADO_ORG_URL, "
+            "ADO_PROJECT, and ADO_PAT, then reload."
+        )
+        return snapshot
+    try:
+        raw_items = adapter.list_items(limit=500)
+    except Exception as exc:  # noqa: BLE001
+        snapshot["error"] = f"Board read failed: {exc}"
+        return snapshot
+    raw_items = list(raw_items or [])
+    try:
+        snapshot["states"] = [str(s) for s in adapter.list_states()]
+    except Exception:  # noqa: BLE001
+        snapshot["states"] = []
+    iterations = _board_iterations(adapter) if caps["iterations"] else []
+    snapshot["iterations"] = iterations
+    names = {entry["id"]: entry["name"] for entry in iterations}
+    native = backend == BACKEND_PAM_BOARD
+    cards = []
+    for item in raw_items:
+        url = "" if native else _ado_item_url(str(item.id))
+        cards.append(_serialize_item(item, names, url))
+    snapshot["items"] = cards
+    snapshot["links"] = _board_links(adapter, raw_items)
+    return snapshot
+
+
 @app.get("/board", response_class=HTMLResponse)
 def board_page(request: Request) -> HTMLResponse:
     ctx = _context(request, "board")
-    groups = (
-        ("todo", "To Do", ("To Do", "New", "Open")),
-        ("doing", "Doing", ("Doing", "Active", "In Progress")),
-        ("done", "Done", ("Done", "Closed", "Resolved")),
-    )
+    project = str(ctx["project"])
+    snap = _board_snapshot(project)
+    cards: list[dict[str, Any]] = snap["items"]
+    counts: dict[str, int] = {}
+    for link in snap["links"]:
+        for end in (link["source_id"], link["target_id"]):
+            counts[end] = counts.get(end, 0) + 1
+    for card in cards:
+        card["link_count"] = counts.get(str(card["id"]), 0)
     ctx["columns"] = [
         {
             "key": key,
             "title": title,
-            "cards": [i for i in SAMPLE_ITEMS if i["state"] in states],
+            "cards": [c for c in cards if c["column"] == key],
         }
-        for key, title, states in groups
+        for key, title in BOARD_COLUMNS
     ]
-    ctx["links"] = SAMPLE_LINKS
+    ctx["links"] = snap["links"]
+    ctx["iterations"] = snap["iterations"]
+    ctx["states"] = snap["states"] or ["New", "Active", "Blocked", "Done"]
+    ctx["editable"] = snap["editable"]
+    ctx["capabilities"] = snap["capabilities"]
+    ctx["backend"] = snap["backend"]
+    ctx["board_error"] = snap["error"]
+    ctx["ado_url"] = "" if snap["editable"] else _ado_board_url()
+    ctx["backlog"] = [c for c in cards if not c["iteration_id"]]
+    sprints = []
+    for entry in snap["iterations"]:
+        sprints.append(
+            {
+                **entry,
+                "cards": [c for c in cards if c["iteration_id"] == entry["id"]],
+            }
+        )
+    ctx["sprints"] = sprints
     return templates.TemplateResponse(request, "board.html", ctx)  # type: ignore[return-value]
 
 
@@ -814,15 +1201,38 @@ def _sse_events() -> Any:
 
 
 @app.get("/api/activity/stream")
-async def activity_stream() -> StreamingResponse:
+async def activity_stream(request: Request) -> StreamingResponse:
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+    if request.query_params.get("live", "") != "1":
+        return StreamingResponse(
+            _sse_events(),
+            media_type="text/event-stream",
+            headers=headers,
+        )
+
+    async def _live_events() -> Any:
+        for event in _activity_events():
+            yield f"data: {json.dumps(event)}\n\n"
+        queue = bus.subscribe()
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=20)
+                except TimeoutError:
+                    yield ": ping\n\n"
+                    continue
+                yield f"data: {json.dumps(event)}\n\n"
+        finally:
+            bus.unsubscribe(queue)
+
     return StreamingResponse(
-        _sse_events(),
+        _live_events(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+        headers=headers,
     )
 
 
@@ -987,3 +1397,630 @@ async def approve_plan(request: Request) -> Any:
         ids = ", ".join(item["id"] for item in done)
         return HTMLResponse(_test_result_html(True, f"Created items: {ids}"))
     return {"ok": True, "created": done}
+
+
+async def _board_payload(request: Request) -> dict[str, Any]:
+    ctype = request.headers.get("content-type", "")
+    if "application/json" in ctype:
+        try:
+            payload = await request.json()
+        except ValueError:
+            return {}
+        return dict(payload) if isinstance(payload, dict) else {}
+    form = await request.form()
+    return {str(k): str(v) for k, v in form.items()}
+
+
+def _board_project(request: Request) -> str:
+    return _safe_project(request.query_params.get("project", "default"))
+
+
+def _read_only_response() -> JSONResponse:
+    return JSONResponse(
+        {
+            "ok": False,
+            "message": "This board is read only in Pam.",
+            "hint": "Open it in Azure DevOps to make changes.",
+        },
+        status_code=403,
+    )
+
+
+def _editable_board(project: str) -> tuple[Any | None, dict[str, bool]]:
+    adapter = get_board_adapter(project)
+    caps = _board_capabilities(project, adapter)
+    if adapter is None or not caps["editable"]:
+        return None, caps
+    return adapter, caps
+
+
+def _board_error_response(exc: Exception) -> JSONResponse:
+    if isinstance(exc, ValueError):
+        return JSONResponse({"ok": False, "message": str(exc)}, status_code=400)
+    return JSONResponse(
+        {"ok": False, "message": f"Board write failed: {exc}"},
+        status_code=502,
+    )
+
+
+def _iteration_names(adapter: Any) -> dict[str, str]:
+    return {entry["id"]: entry["name"] for entry in _board_iterations(adapter)}
+
+
+@app.get("/api/board")
+def board_data(request: Request) -> Any:
+    project = _board_project(request)
+    snap = _board_snapshot(project)
+    if snap["error"] and not snap["items"]:
+        payload = {
+            "ok": True,
+            "project": snap["project"],
+            "backend": snap["backend"],
+            "backend_label": snap["backend_label"],
+            "editable": snap["editable"],
+            "capabilities": snap["capabilities"],
+            "states": snap["states"],
+            "iterations": snap["iterations"],
+            "items": [],
+            "links": [],
+            "error": snap["error"],
+        }
+        return payload
+    return {
+        "ok": True,
+        "project": snap["project"],
+        "backend": snap["backend"],
+        "backend_label": snap["backend_label"],
+        "editable": snap["editable"],
+        "capabilities": snap["capabilities"],
+        "states": snap["states"],
+        "iterations": snap["iterations"],
+        "items": snap["items"],
+        "links": snap["links"],
+        "error": snap["error"],
+    }
+
+
+@app.post("/api/board/items")
+async def board_create_item(request: Request) -> Any:
+    project = _board_project(request)
+    adapter, _ = _editable_board(project)
+    if adapter is None:
+        return _read_only_response()
+    payload = await _board_payload(request)
+    title = str(payload.get("title", "")).strip()
+    if not title:
+        return JSONResponse(
+            {
+                "ok": False,
+                "message": "Title is required.",
+                "hint": "Type a title, then save again.",
+            },
+            status_code=400,
+        )
+    fields: dict[str, Any] = {}
+    for key in BOARD_ITEM_FIELDS:
+        value = payload.get(key)
+        if value is not None and str(value) != "":
+            fields[key] = value
+    if "state" not in fields:
+        try:
+            states = [str(s) for s in adapter.list_states()]
+        except Exception:  # noqa: BLE001
+            states = []
+        fields["state"] = states[0] if states else "New"
+    try:
+        item = adapter.create_item(title, fields)
+    except Exception as exc:  # noqa: BLE001
+        return _board_error_response(exc)
+    evidence = str(payload.get("evidence", "")).strip() or (
+        f"Human edit on {project} board: created {title}."
+    )
+    event = _record_board_write(
+        project, "create", str(item.id), evidence, {"title": title}
+    )
+    return {
+        "ok": True,
+        "item": _serialize_item(item, _iteration_names(adapter)),
+        "write_id": event["id"],
+    }
+
+
+@app.get("/api/board/items/{item_id}")
+def board_item_detail(request: Request, item_id: str) -> Any:
+    project = _board_project(request)
+    adapter = get_board_adapter(project)
+    if adapter is None:
+        return JSONResponse(
+            {"ok": False, "message": "Board is not available."},
+            status_code=502,
+        )
+    try:
+        item = adapter.get_item(item_id)
+    except Exception:  # noqa: BLE001
+        return JSONResponse(
+            {"ok": False, "message": f"Item {item_id} was not found."},
+            status_code=404,
+        )
+    caps = _board_capabilities(project, adapter)
+    links: list[dict[str, str]] = []
+    if caps["dependency_links"]:
+        try:
+            for link in adapter.list_links(item_id) or []:
+                links.append(
+                    {
+                        "source_id": str(link.source_id),
+                        "target_id": str(link.target_id),
+                        "rel": str(link.rel),
+                        "label": _link_label(
+                            str(link.source_id),
+                            str(link.target_id),
+                            str(link.rel),
+                        ),
+                    }
+                )
+        except Exception:  # noqa: BLE001
+            links = []
+    comments: list[dict[str, str]] = []
+    if caps["comments"]:
+        try:
+            for entry in adapter.list_comments(item_id) or []:
+                comments.append(
+                    {
+                        "id": str(entry.id),
+                        "text": str(entry.text),
+                        "author": str(entry.author or ""),
+                        "created": str(entry.created or ""),
+                    }
+                )
+        except Exception:  # noqa: BLE001
+            comments = []
+    native = _project_backend(project) == BACKEND_PAM_BOARD
+    url = "" if native else _ado_item_url(str(item.id))
+    data = _serialize_item(item, _iteration_names(adapter), url)
+    data["link_count"] = len(links)
+    return {
+        "ok": True,
+        "item": data,
+        "links": links,
+        "comments": comments,
+        "capabilities": caps,
+        "editable": caps["editable"],
+    }
+
+
+@app.patch("/api/board/items/{item_id}")
+async def board_edit_item(request: Request, item_id: str) -> Any:
+    project = _board_project(request)
+    adapter, _ = _editable_board(project)
+    if adapter is None:
+        return _read_only_response()
+    payload = await _board_payload(request)
+    fields: dict[str, Any] = {}
+    title = str(payload.get("title", "")).strip()
+    if title:
+        fields["title"] = title
+    for key in BOARD_ITEM_FIELDS:
+        if key in payload and payload[key] is not None:
+            fields[key] = payload[key]
+    if not fields:
+        return JSONResponse(
+            {"ok": False, "message": "Nothing to update."},
+            status_code=400,
+        )
+    try:
+        item = adapter.update_item(item_id, fields)
+    except Exception as exc:  # noqa: BLE001
+        if "unknown item" in str(exc).lower():
+            return JSONResponse(
+                {"ok": False, "message": f"Item {item_id} was not found."},
+                status_code=404,
+            )
+        return _board_error_response(exc)
+    evidence = str(payload.get("evidence", "")).strip() or (
+        f"Human edit on {project} board: updated item {item_id}."
+    )
+    event = _record_board_write(
+        project, "update", item_id, evidence, {"fields": sorted(fields)}
+    )
+    return {
+        "ok": True,
+        "item": _serialize_item(item, _iteration_names(adapter)),
+        "write_id": event["id"],
+    }
+
+
+@app.post("/api/board/items/{item_id}/move")
+async def board_move_item(request: Request, item_id: str) -> Any:
+    project = _board_project(request)
+    adapter, _ = _editable_board(project)
+    if adapter is None:
+        return _read_only_response()
+    payload = await _board_payload(request)
+    state = str(payload.get("state", "")).strip()
+    if not state:
+        return JSONResponse(
+            {"ok": False, "message": "State is required."},
+            status_code=400,
+        )
+    try:
+        states = [str(s) for s in adapter.list_states()]
+    except Exception:  # noqa: BLE001
+        states = []
+    if states and state not in states:
+        return JSONResponse(
+            {
+                "ok": False,
+                "message": f"Unknown state {state}.",
+                "hint": "Use one of: " + ", ".join(states) + ".",
+            },
+            status_code=400,
+        )
+    try:
+        before = adapter.get_item(item_id)
+        item = adapter.update_item(item_id, {"state": state})
+    except Exception as exc:  # noqa: BLE001
+        if "unknown item" in str(exc).lower():
+            return JSONResponse(
+                {"ok": False, "message": f"Item {item_id} was not found."},
+                status_code=404,
+            )
+        return _board_error_response(exc)
+    evidence = str(payload.get("evidence", "")).strip() or (
+        f"Human edit on {project} board: moved item {item_id} to {state}."
+    )
+    event = _record_board_write(
+        project,
+        "move",
+        item_id,
+        evidence,
+        {"from": str(before.state), "to": state},
+    )
+    return {
+        "ok": True,
+        "item": _serialize_item(item, _iteration_names(adapter)),
+        "write_id": event["id"],
+    }
+
+
+@app.post("/api/board/links")
+async def board_add_link(request: Request) -> Any:
+    project = _board_project(request)
+    adapter, caps = _editable_board(project)
+    if adapter is None:
+        return _read_only_response()
+    if not caps["dependency_links"]:
+        return JSONResponse(
+            {
+                "ok": False,
+                "message": "This backend does not support dependency links.",
+            },
+            status_code=403,
+        )
+    payload = await _board_payload(request)
+    source_id = str(payload.get("source_id", "")).strip()
+    target_id = str(payload.get("target_id", "")).strip()
+    rel = str(payload.get("rel", "")).strip() or (
+        "System.LinkTypes.Dependency-Forward"
+    )
+    if not source_id or not target_id:
+        return JSONResponse(
+            {"ok": False, "message": "source_id and target_id are required."},
+            status_code=400,
+        )
+    try:
+        link = adapter.add_link(source_id, target_id, rel)
+    except Exception as exc:  # noqa: BLE001
+        return _board_error_response(exc)
+    evidence = str(payload.get("evidence", "")).strip() or (
+        f"Human edit on {project} board: linked {source_id} to {target_id}."
+    )
+    event = _record_board_write(
+        project,
+        "add_link",
+        source_id,
+        evidence,
+        {"source_id": source_id, "target_id": target_id, "rel": rel},
+    )
+    return {
+        "ok": True,
+        "link": {
+            "source_id": str(link.source_id),
+            "target_id": str(link.target_id),
+            "rel": str(link.rel),
+            "label": _link_label(
+                str(link.source_id), str(link.target_id), str(link.rel)
+            ),
+        },
+        "write_id": event["id"],
+    }
+
+
+@app.post("/api/board/items/{item_id}/sprint")
+async def board_set_sprint(request: Request, item_id: str) -> Any:
+    project = _board_project(request)
+    adapter, caps = _editable_board(project)
+    if adapter is None:
+        return _read_only_response()
+    if not caps["iterations"]:
+        return JSONResponse(
+            {"ok": False, "message": "This backend does not support sprints."},
+            status_code=403,
+        )
+    payload = await _board_payload(request)
+    iteration_id = str(payload.get("iteration_id", "")).strip()
+    try:
+        item = adapter.set_item_iteration(item_id, iteration_id)
+    except Exception as exc:  # noqa: BLE001
+        return _board_error_response(exc)
+    evidence = str(payload.get("evidence", "")).strip() or (
+        f"Human edit on {project} board: set sprint on item {item_id}."
+    )
+    event = _record_board_write(
+        project, "set_sprint", item_id, evidence, {"iteration_id": iteration_id}
+    )
+    return {
+        "ok": True,
+        "item": _serialize_item(item, _iteration_names(adapter)),
+        "write_id": event["id"],
+    }
+
+
+@app.post("/api/board/sprints")
+async def board_create_sprint(request: Request) -> Any:
+    project = _board_project(request)
+    adapter, caps = _editable_board(project)
+    if adapter is None:
+        return _read_only_response()
+    if not caps["iterations"]:
+        return JSONResponse(
+            {"ok": False, "message": "This backend does not support sprints."},
+            status_code=403,
+        )
+    payload = await _board_payload(request)
+    name = str(payload.get("name", "")).strip()
+    if not name:
+        return JSONResponse(
+            {"ok": False, "message": "Sprint name is required."},
+            status_code=400,
+        )
+    try:
+        sprint = adapter.create_iteration(
+            name,
+            start_date=str(payload.get("start_date", "")).strip(),
+            end_date=str(payload.get("end_date", "")).strip(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _board_error_response(exc)
+    evidence = str(payload.get("evidence", "")).strip() or (
+        f"Human edit on {project} board: created sprint {name}."
+    )
+    event = _record_board_write(
+        project, "create_sprint", str(sprint.id), evidence, {"name": name}
+    )
+    return {
+        "ok": True,
+        "sprint": {
+            "id": str(sprint.id),
+            "name": str(sprint.name),
+            "start_date": str(getattr(sprint, "start_date", "") or ""),
+            "end_date": str(getattr(sprint, "end_date", "") or ""),
+        },
+        "write_id": event["id"],
+    }
+
+
+@app.post("/api/board/sprints/{sprint_id}/close")
+async def board_close_sprint(request: Request, sprint_id: str) -> Any:
+    project = _board_project(request)
+    adapter, caps = _editable_board(project)
+    if adapter is None:
+        return _read_only_response()
+    if not caps["close_iteration"]:
+        return JSONResponse(
+            {
+                "ok": False,
+                "message": "This backend cannot close sprints from Pam.",
+            },
+            status_code=403,
+        )
+    closer = getattr(adapter, "close_iteration", None)
+    if not callable(closer):
+        return JSONResponse(
+            {
+                "ok": False,
+                "message": "This backend cannot close sprints from Pam.",
+            },
+            status_code=403,
+        )
+    try:
+        sprint = closer(sprint_id)
+    except Exception as exc:  # noqa: BLE001
+        if "unknown iteration" in str(exc).lower():
+            return JSONResponse(
+                {"ok": False, "message": f"Sprint {sprint_id} was not found."},
+                status_code=404,
+            )
+        return _board_error_response(exc)
+    name = str(getattr(sprint, "name", sprint_id))
+    payload = await _board_payload(request)
+    evidence = str(payload.get("evidence", "")).strip() or (
+        f"Human edit on {project} board: closed sprint {name}."
+    )
+    event = _record_board_write(
+        project, "close_sprint", str(sprint.id), evidence, {"name": name}
+    )
+    return {
+        "ok": True,
+        "sprint": {
+            "id": str(sprint.id),
+            "name": name,
+            "start_date": str(getattr(sprint, "start_date", "") or ""),
+            "end_date": str(getattr(sprint, "end_date", "") or ""),
+        },
+        "write_id": event["id"],
+    }
+
+
+@app.post("/api/board/items/{item_id}/comments")
+async def board_add_comment(request: Request, item_id: str) -> Any:
+    project = _board_project(request)
+    adapter, caps = _editable_board(project)
+    if adapter is None:
+        return _read_only_response()
+    if not caps["comments"]:
+        return JSONResponse(
+            {"ok": False, "message": "This backend does not support comments."},
+            status_code=403,
+        )
+    payload = await _board_payload(request)
+    text = str(payload.get("text", "")).strip()
+    if not text:
+        return JSONResponse(
+            {"ok": False, "message": "Comment text is required."},
+            status_code=400,
+        )
+    try:
+        comment = adapter.add_comment(
+            item_id, text, author=str(payload.get("author", "")).strip()
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _board_error_response(exc)
+    event = _record_board_write(
+        project, "comment", item_id, text[:200], {"comment_id": str(comment.id)}
+    )
+    return {
+        "ok": True,
+        "comment": {
+            "id": str(comment.id),
+            "text": str(comment.text),
+            "author": str(comment.author or ""),
+            "created": str(comment.created or ""),
+        },
+        "write_id": event["id"],
+    }
+
+
+@app.get("/api/board/export")
+def board_export_csv(request: Request) -> Any:
+    project = _board_project(request)
+    adapter = get_board_adapter(project)
+    if adapter is None:
+        return JSONResponse(
+            {"ok": False, "message": "Board is not available."},
+            status_code=502,
+        )
+    try:
+        raw_items = list(adapter.list_items(limit=2000) or [])
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(
+            {"ok": False, "message": f"Board read failed: {exc}"},
+            status_code=502,
+        )
+    names = _iteration_names(adapter)
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=list(BOARD_CSV_FIELDS))
+    writer.writeheader()
+    for item in raw_items:
+        data = _serialize_item(item, names)
+        writer.writerow(
+            {
+                "id": data["id"],
+                "title": data["title"],
+                "state": data["state"],
+                "owner": data["owner"],
+                "estimate": data["estimate"],
+                "remaining": data["remaining"],
+                "priority": data["priority"],
+                "tags": data["tags_text"],
+                "due_date": data["due_date"],
+                "iteration_id": data["iteration_id"],
+                "description": data["description"],
+            }
+        )
+    return Response(
+        buf.getvalue(),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="board-{project}.csv"'
+        },
+    )
+
+
+@app.post("/api/board/import")
+async def board_import_csv(request: Request) -> Any:
+    project = _board_project(request)
+    adapter, _ = _editable_board(project)
+    if adapter is None:
+        return _read_only_response()
+    ctype = request.headers.get("content-type", "")
+    text = ""
+    if "application/json" in ctype:
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = {}
+        if isinstance(payload, dict):
+            text = str(payload.get("csv", ""))
+    elif "multipart/form-data" in ctype or "urlencoded" in ctype:
+        form = await request.form()
+        upload = form.get("file")
+        if upload is not None and hasattr(upload, "read"):
+            try:
+                raw = await upload.read()  # type: ignore[no-untyped-call]
+            except Exception:  # noqa: BLE001
+                raw = b""
+            if isinstance(raw, (bytes, bytearray)):
+                text = bytes(raw).decode("utf-8", errors="replace")
+        elif "csv" in form:
+            text = str(form.get("csv", ""))
+    else:
+        raw_body = await request.body()
+        text = raw_body.decode("utf-8", errors="replace")
+    if not text.strip():
+        return JSONResponse(
+            {
+                "ok": False,
+                "message": "CSV body is empty.",
+                "hint": "Paste CSV text or attach a CSV file.",
+            },
+            status_code=400,
+        )
+    try:
+        rows = list(csv.DictReader(io.StringIO(text)))
+    except Exception:  # noqa: BLE001
+        return JSONResponse(
+            {"ok": False, "message": "CSV could not be parsed."},
+            status_code=400,
+        )
+    created: list[str] = []
+    skipped = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            skipped += 1
+            continue
+        title = str(row.get("title", "") or "").strip()
+        if not title:
+            skipped += 1
+            continue
+        fields: dict[str, Any] = {}
+        for key in BOARD_ITEM_FIELDS:
+            value = row.get(key)
+            if value is not None and str(value).strip() != "":
+                fields[key] = str(value).strip()
+        if "state" not in fields:
+            fields["state"] = "New"
+        try:
+            item = adapter.create_item(title, fields)
+        except Exception:  # noqa: BLE001
+            skipped += 1
+            continue
+        created.append(str(item.id))
+        _record_board_write(
+            project,
+            "create",
+            str(item.id),
+            f"Human edit on {project} board: imported {title} from CSV.",
+            {"title": title, "source": "csv_import"},
+        )
+    return {"ok": True, "created": len(created), "skipped": skipped, "ids": created}

@@ -1,35 +1,247 @@
 {% extends "base.html" %}
 {% block title %}Board - Pam{% endblock %}
+{% block bodyclass %}board-page{% endblock %}
 {% block content %}
 <h1>Board</h1>
-<p class="muted">Read only view for project {{ project }}. Changes happen through rules.</p>
+{% if editable %}
+<p class="muted">Live board for project {{ project }}. Drag cards between columns or use Move to. Every change is saved with evidence and can be undone from Activity.</p>
+{% else %}
+<p class="muted">Read only view for project {{ project }}. Changes happen through rules.{% if ado_url %} <a href="{{ ado_url }}">Open in Azure DevOps</a>.{% endif %}</p>
+{% endif %}
 
-<div class="kanban">
-  {% for col in columns %}
-  <section class="kanban-col">
-    <h2>{{ col.title }}</h2>
-    {% for item in col.cards %}
-    <article class="kanban-card status-{{ col.key }}">
-      <div class="kanban-head">
-        <span class="item-id">#{{ item.id }}</span>
-        <span class="status-dot status-{{ col.key }}" aria-hidden="true"></span>
-      </div>
-      <h3>{{ item.title }}</h3>
-      <p class="muted">{{ item.state }}. Owner: {{ item.owner }}.</p>
-    </article>
+<div class="board-toolbar" role="toolbar" aria-label="Board tools">
+  <div class="view-tabs" role="tablist" aria-label="Board views">
+    <button type="button" role="tab" id="tab-board" aria-selected="true" aria-controls="view-board" data-view="view-board" class="tab-active">Board</button>
+    <button type="button" role="tab" id="tab-backlog" aria-selected="false" aria-controls="view-backlog" data-view="view-backlog">Backlog ({{ backlog|length }})</button>
+    <button type="button" role="tab" id="tab-planning" aria-selected="false" aria-controls="view-planning" data-view="view-planning">Planning</button>
+  </div>
+  <div class="board-actions">
+    <label for="sprint-filter">Sprint</label>
+    <select id="sprint-filter" name="sprint-filter">
+      <option value="">All sprints</option>
+      <option value="__none__">No sprint</option>
+      {% for entry in iterations %}
+      <option value="{{ entry.id }}">{{ entry.name }}</option>
+      {% endfor %}
+    </select>
+    {% if editable %}
+    <button type="button" id="new-item-btn">New item</button>
+    <a class="btn" href="/api/board/export?project={{ project }}">Export CSV</a>
+    <button type="button" id="import-btn">Import CSV</button>
     {% else %}
-    <p class="muted">No items.</p>
-    {% endfor %}
-  </section>
-  {% endfor %}
+    <a class="btn" href="/api/board/export?project={{ project }}">Export CSV</a>
+    {% endif %}
+    <button type="button" id="theme-toggle" aria-pressed="false">Dark theme</button>
+    <span id="board-status" class="pill" role="status">Stream: connecting</span>
+  </div>
 </div>
 
-<section class="card">
+<div id="board-error" class="result" aria-live="polite">{% if board_error %}<span class="pill pill-fail">{{ board_error }}</span>{% endif %}</div>
+
+{% if editable %}
+<section class="card" id="new-item-panel" hidden>
+  <h2>New item</h2>
+  <form id="new-item-form">
+    <div class="form-grid">
+      <label>Title <input type="text" name="title" required maxlength="200" autocomplete="off"></label>
+      <label>Owner <input type="text" name="owner" autocomplete="off"></label>
+      <label>State
+        <select name="state">
+          {% for st in states %}<option value="{{ st }}">{{ st }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Sprint
+        <select name="iteration_id">
+          <option value="">No sprint</option>
+          {% for entry in iterations %}<option value="{{ entry.id }}">{{ entry.name }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Estimate <input type="text" name="estimate" inputmode="decimal" autocomplete="off"></label>
+      <label>Remaining <input type="text" name="remaining" inputmode="decimal" autocomplete="off"></label>
+      <label>Priority <input type="text" name="priority" autocomplete="off"></label>
+      <label>Tags <input type="text" name="tags" autocomplete="off" placeholder="design; review"></label>
+      <label>Due date <input type="date" name="due_date"></label>
+    </div>
+    <label>Description <textarea name="description" rows="3"></textarea></label>
+    <div class="form-actions">
+      <button type="submit">Save item</button>
+      <button type="button" id="new-item-cancel">Cancel</button>
+    </div>
+    <div class="result" id="new-item-result" aria-live="polite"></div>
+  </form>
+</section>
+
+<section class="card" id="import-panel" hidden>
+  <h2>Import CSV</h2>
+  <p class="muted">Columns: title, state, owner, estimate, remaining, priority, tags, due_date, iteration_id, description. Title is required on each row.</p>
+  <form id="import-form">
+    <label>CSV file <input type="file" name="file" accept=".csv,text/csv"></label>
+    <label>Or paste CSV <textarea name="csv" rows="4" placeholder="title,state,owner"></textarea></label>
+    <div class="form-actions">
+      <button type="submit">Import</button>
+      <button type="button" id="import-cancel">Cancel</button>
+    </div>
+    <div class="result" id="import-result" aria-live="polite"></div>
+  </form>
+</section>
+{% endif %}
+
+<div id="view-board" role="tabpanel" aria-labelledby="tab-board" data-project="{{ project }}" data-editable="{{ '1' if editable else '0' }}">
+  <div class="kanban" id="kanban">
+    {% for col in columns %}
+    <section class="kanban-col" aria-label="{{ col.title }}">
+      <h2><span class="status-dot status-{{ col.key }}" aria-hidden="true"></span> {{ col.title }} <span class="count">({{ col.cards|length }})</span></h2>
+      <div class="kanban-drop" data-state="{{ col.title }}">
+        {% for item in col.cards %}
+        <article class="kanban-card" data-id="{{ item.id }}" data-state="{{ item.state }}" data-sprint="{{ item.iteration_id }}" tabindex="0" aria-label="#{{ item.id }} {{ item.title }}"{% if editable %} draggable="true"{% endif %}>
+          <div class="kanban-head">
+            <span class="item-id">#{{ item.id }}</span>
+            <span class="status-dot status-{{ item.column }}" aria-hidden="true"></span>
+          </div>
+          <h3>{{ item.title }}</h3>
+          <p class="muted card-state">{{ item.state }}{% if item.owner %} &middot; {{ item.owner }}{% endif %}</p>
+          <dl class="card-fields">
+            {% if item.estimate != "" %}<div><dt>Est</dt><dd>{{ item.estimate }}</dd></div>{% endif %}
+            {% if item.remaining != "" %}<div><dt>Left</dt><dd>{{ item.remaining }}</dd></div>{% endif %}
+            {% if item.priority %}<div><dt>Pri</dt><dd>{{ item.priority }}</dd></div>{% endif %}
+            {% if item.due_date %}<div><dt>Due</dt><dd>{{ item.due_date }}</dd></div>{% endif %}
+            {% if item.sprint %}<div><dt>Sprint</dt><dd>{{ item.sprint }}</dd></div>{% endif %}
+            {% if item.link_count %}<div><dt>Links</dt><dd>{{ item.link_count }}</dd></div>{% endif %}
+          </dl>
+          {% if item.tags %}
+          <p class="card-tags">{% for tag in item.tags %}<span class="tag">{{ tag }}</span>{% endfor %}</p>
+          {% endif %}
+          <div class="card-actions">
+            <button type="button" class="open-drawer" data-open="{{ item.id }}">Open</button>
+            {% if editable %}
+            <details class="move-menu">
+              <summary>Move to</summary>
+              <ul>
+                {% for st in states %}
+                <li><button type="button" data-move="{{ st }}" data-id="{{ item.id }}"{% if st == item.state %} disabled{% endif %}>{{ st }}</button></li>
+                {% endfor %}
+              </ul>
+            </details>
+            {% elif item.external_url %}
+            <a class="btn btn-small" href="{{ item.external_url }}">Open in Azure DevOps</a>
+            {% endif %}
+          </div>
+        </article>
+        {% else %}
+        <p class="muted">No items. Drop cards here to move them.</p>
+        {% endfor %}
+      </div>
+    </section>
+    {% endfor %}
+  </div>
+</div>
+
+<div id="view-backlog" role="tabpanel" aria-labelledby="tab-backlog" hidden>
+  <section class="card">
+    <h2>Backlog</h2>
+    <p class="muted">Items with no sprint. Pick a sprint to plan them.</p>
+    <ul class="backlog-list">
+      {% for item in backlog %}
+      <li data-id="{{ item.id }}">
+        <span class="item-id">#{{ item.id }}</span>
+        <strong>{{ item.title }}</strong>
+        <span class="muted">{{ item.state }}{% if item.owner %} &middot; {{ item.owner }}{% endif %}</span>
+        {% if editable and capabilities.iterations %}
+        <label>Sprint
+          <select data-sprint-for="{{ item.id }}">
+            <option value="">No sprint</option>
+            {% for entry in iterations %}
+            <option value="{{ entry.id }}">{{ entry.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        {% endif %}
+      </li>
+      {% else %}
+      <li class="muted">Backlog is empty. Everything is planned.</li>
+      {% endfor %}
+    </ul>
+  </section>
+</div>
+
+<div id="view-planning" role="tabpanel" aria-labelledby="tab-planning" hidden>
+  {% if editable and capabilities.iterations %}
+  <section class="card">
+    <h2>New sprint</h2>
+    <form id="sprint-form" class="inline-form">
+      <label>Name <input type="text" name="name" required maxlength="120" autocomplete="off"></label>
+      <label>Start <input type="date" name="start_date"></label>
+      <label>End <input type="date" name="end_date"></label>
+      <button type="submit">Create sprint</button>
+    </form>
+    <div class="result" id="sprint-result" aria-live="polite"></div>
+  </section>
+  {% endif %}
+  <div id="sprint-list">
+    {% for sprint in sprints %}
+    <section class="card">
+      <h2>{{ sprint.name }}</h2>
+      <p class="muted">
+        {% if sprint.start_date or sprint.end_date %}{{ sprint.start_date }} to {{ sprint.end_date }}. {% endif %}
+        Status: {{ sprint.status }}. {{ sprint.cards|length }} item(s).
+      </p>
+      <ul class="sprint-items">
+        {% for item in sprint.cards %}
+        <li>
+          <span class="item-id">#{{ item.id }}</span>
+          <strong>{{ item.title }}</strong>
+          <span class="muted">{{ item.state }}</span>
+          {% if editable and capabilities.iterations %}
+          <label>Move to
+            <select data-sprint-for="{{ item.id }}">
+              {% for entry in iterations %}
+              <option value="{{ entry.id }}"{% if entry.id == sprint.id %} selected{% endif %}>{{ entry.name }}</option>
+              {% endfor %}
+              <option value="">Backlog</option>
+            </select>
+          </label>
+          {% endif %}
+        </li>
+        {% else %}
+        <li class="muted">No items in this sprint yet.</li>
+        {% endfor %}
+      </ul>
+      {% if editable and capabilities.close_iteration and sprint.status != "closed" %}
+      <button type="button" data-close-sprint="{{ sprint.id }}">Close sprint</button>
+      {% endif %}
+    </section>
+    {% else %}
+    <section class="card">
+      <p class="muted">No sprints yet.{% if editable and capabilities.iterations %} Create one above to start planning.{% endif %}</p>
+    </section>
+    {% endfor %}
+  </div>
+</div>
+
+<section class="card" id="links-card">
   <h2>Dependency links</h2>
+  {% if links %}
   <ul>
     {% for link in links %}
     <li>{{ link.label }} <span class="muted">({{ link.rel }})</span></li>
     {% endfor %}
   </ul>
+  {% else %}
+  <p class="muted">No dependency links yet.</p>
+  {% endif %}
 </section>
+
+<div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
+<aside class="drawer" id="item-drawer" role="dialog" aria-label="Item details" hidden>
+  <div class="drawer-head">
+    <h2 id="drawer-title">Item</h2>
+    <button type="button" id="drawer-close">Close</button>
+  </div>
+  <div id="drawer-body">
+    <p class="muted">Select a card to see details.</p>
+  </div>
+</aside>
+{% endblock %}
+{% block scripts %}
+<script src="/static/board.js"></script>
 {% endblock %}

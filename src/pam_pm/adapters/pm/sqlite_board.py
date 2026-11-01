@@ -43,7 +43,8 @@ ITERATIONS_DDL = """CREATE TABLE IF NOT EXISTS iterations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   start_date TEXT NOT NULL DEFAULT '',
-  end_date TEXT NOT NULL DEFAULT ''
+  end_date TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT ''
 )"""
 
 COMMENTS_DDL = """CREATE TABLE IF NOT EXISTS comments (
@@ -76,6 +77,7 @@ class NativeBoard(PMAdapter):
     supports_dependency_links: bool = True
     supports_iterations: bool = True
     supports_comments: bool = True
+    supports_close_iteration: bool = True
 
     def __init__(self, path: str | Path | None = None) -> None:
         name = ":memory:" if path is None else str(path)
@@ -86,7 +88,21 @@ class NativeBoard(PMAdapter):
         self._conn.execute(LINKS_DDL)
         self._conn.execute(ITERATIONS_DDL)
         self._conn.execute(COMMENTS_DDL)
+        self._ensure_iteration_status()
         self._conn.commit()
+
+    def _ensure_iteration_status(self) -> None:
+        cols = [
+            row[1]
+            for row in self._conn.execute(
+                "PRAGMA table_info(iterations)"
+            ).fetchall()
+        ]
+        if "status" not in cols:
+            self._conn.execute(
+                "ALTER TABLE iterations ADD COLUMN status"
+                " TEXT NOT NULL DEFAULT ''"
+            )
 
     def close(self) -> None:
         self._conn.close()
@@ -224,6 +240,32 @@ class NativeBoard(PMAdapter):
             end_date=created[3] or "",
             path=created[1],
         )
+
+    def close_iteration(self, iteration_id: str) -> Iteration:
+        row = self._conn.execute(
+            "SELECT id, name, start_date, end_date FROM iterations WHERE id = ?",
+            (iteration_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"unknown iteration: {iteration_id}")
+        self._conn.execute(
+            "UPDATE iterations SET status = 'closed' WHERE id = ?",
+            (iteration_id,),
+        )
+        self._conn.commit()
+        return Iteration(
+            id=str(row[0]),
+            name=row[1],
+            start_date=row[2] or "",
+            end_date=row[3] or "",
+            path=row[1],
+        )
+
+    def closed_iteration_ids(self) -> set[str]:
+        rows = self._conn.execute(
+            "SELECT id FROM iterations WHERE status = 'closed'"
+        ).fetchall()
+        return {str(row[0]) for row in rows}
 
     def set_item_iteration(
         self, item_id: str, iteration_id: str
