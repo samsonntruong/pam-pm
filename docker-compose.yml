@@ -2,6 +2,14 @@ services:
   pam:
     build: .
     ports:
-      - "8765:8765"
+      - "127.0.0.1:8765:8765"
     env_file:
       - .env
+    environment:
+      - PAM_HOME=/data
+    volumes:
+      - pam-data:/data
+    # Setup token and setup URL are printed in the logs at start.
+
+volumes:
+  pam-data:

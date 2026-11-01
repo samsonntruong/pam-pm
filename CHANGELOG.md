@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (v0.1.0)
+## v0.1.0 - 2026-11-01
 
 - Local web console: setup wizard with Test buttons, Rules, Board, Activity with Undo, Plan, Review.
 - CLI: `pam start`, `pam doctor`, `pam review`, `pam --version`, plus the `pam-pm` alias.
