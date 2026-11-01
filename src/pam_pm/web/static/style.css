@@ -66,10 +66,13 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* impeccable-disable-next-line overused-font: enterprise SaaS stack requested */
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   line-height: 1.5;
+  letter-spacing: normal;
 }
 
+h1, h2, h3 { font-weight: 600; letter-spacing: -0.01em; }
 h1 { font-size: 1.6rem; margin: 0 0 0.25rem; }
 h2 { font-size: 1.1rem; margin: 0 0 0.5rem; }
 h3 { font-size: 1rem; margin: 0.4rem 0 0.2rem; }
@@ -130,7 +133,7 @@ select, input[type="text"], input[type="number"] {
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 10px;
   padding: 1rem 1.1rem;
   margin: 1rem 0;
 }
@@ -139,7 +142,7 @@ button {
   background: var(--accent);
   color: #fff;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 0.5rem 0.9rem;
   font-weight: 600;
   cursor: pointer;
@@ -152,7 +155,7 @@ button:hover { background: var(--accent-dark); }
 .offline-banner {
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 10px;
   padding: 0.6rem 0.9rem;
 }
 
@@ -209,7 +212,7 @@ blockquote.evidence {
 .kanban-card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 10px;
   padding: 0.7rem 0.8rem;
   margin: 0.6rem 0;
 }
@@ -290,7 +293,7 @@ a.btn {
   background: var(--surface);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 0.5rem 0.9rem;
   font-weight: 600;
   text-decoration: none;
@@ -351,7 +354,7 @@ a.btn:hover { background: var(--bg); color: var(--text); }
   cursor: pointer;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 0.4rem 0.7rem;
   font-weight: 600;
   font-size: 0.9rem;
@@ -626,6 +629,7 @@ input, select, textarea {
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 0.05rem 0.3rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.9em;
   overflow-wrap: break-word;
 }
@@ -634,6 +638,7 @@ input, select, textarea {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   padding: 0.7rem 0.9rem;
   overflow-x: auto;
   white-space: pre-wrap;

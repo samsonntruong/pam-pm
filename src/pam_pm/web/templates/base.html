@@ -1,18 +1,17 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Pam{% endblock %}</title>
   <link rel="stylesheet" href="/static/style.css">
+  <!-- impeccable-disable overused-font: enterprise SaaS stack requested -->
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
   <script>
     (function () {
       try {
-        var name = localStorage.getItem("pam-theme") || "dark";
-        if (name !== "light" && name !== "dark") {
-          name = "dark";
-        }
+        var name = localStorage.getItem("pam-theme");
+        name = name === "light" ? "light" : "dark";
         document.documentElement.setAttribute("data-theme", name);
       } catch (err) { /* base CSS already paints the dark default */ }
     })();
@@ -81,9 +80,7 @@
       }
       function paint(name) {
         var root = document.documentElement;
-        if (name !== "light" && name !== "dark") {
-          name = "dark";
-        }
+        name = name === "light" ? "light" : "dark";
         root.setAttribute("data-theme", name);
         var dark = name === "dark";
         btn.textContent = dark ? "Light theme" : "Dark theme";
