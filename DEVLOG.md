@@ -46,6 +46,7 @@ Build log for Pam. Three lines per entry.
 | Muse Code | Extra UI theme | Dark default with blue accent family, detector clean |
 | Muse Code | Extra adapters batch 1 | Jira plus Linear with wizard cards and icons, 295 pass |
 | Muse Code | Extra adapters batch 2 | Trello plus ClickUp with URL secret redaction, 312 pass |
+| Muse Code | Extra adapters batch 3 | Asana plus Monday with icons, 329 pass |
 
 ## Entries
 
