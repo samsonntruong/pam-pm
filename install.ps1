@@ -4,7 +4,7 @@
 # This script never asks for or handles secrets. Enter credentials in the web wizard.
 #
 # One-liner:
-#   powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/OWNER/pam-pm/main/install.ps1 | iex"
+#   powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/samsonntruong/pam-pm/main/install.ps1 | iex"
 #
 # Parameters:
 #   -Version     Release tag to install (default: $DefaultVersion, update when tagging)
@@ -35,7 +35,7 @@ $ErrorActionPreference = "Stop"
 # Mirrors the version in pyproject.toml and src/pam_pm/__init__.py (__version__).
 $DefaultVersion = "v0.2.0"
 $UvInstallScript = "https://astral.sh/uv/install.ps1"
-$RepoArchiveBase = "https://github.com/OWNER/pam-pm/archive/refs"
+$RepoArchiveBase = "https://github.com/samsonntruong/pam-pm/archive/refs"
 
 function Show-Step([string]$Message) {
     Write-Output ""
@@ -230,7 +230,7 @@ function Copy-PamIcon([string]$Dest) {
     }
     $rawRef = $Version
     if ($Ref -ne "") { $rawRef = $Ref }
-    $rawUrl = "https://raw.githubusercontent.com/OWNER/pam-pm/$rawRef/src/pam_pm/web/static/logo.ico"
+    $rawUrl = "https://raw.githubusercontent.com/samsonntruong/pam-pm/$rawRef/src/pam_pm/web/static/logo.ico"
     try {
         Invoke-RestMethod -Uri $rawUrl -OutFile $Dest
         return $true

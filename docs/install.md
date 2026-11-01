@@ -18,6 +18,8 @@ curl -LsSf https://raw.githubusercontent.com/samsonntruong/pam-pm/main/install.s
 
 Your browser opens the Pam setup console. Follow the wizard.
 
+Note: the one-liner works once the repo is public. While private, run `git clone https://github.com/samsonntruong/pam-pm.git` then run install.ps1 or install.sh from the checkout.
+
 Prefer to read the script first? Download `install.ps1` (Windows) or
 `install.sh` (macOS or Linux) from the repo root, read it, then run it:
 
