@@ -114,12 +114,25 @@ ACTIVE_BY_URL = {
 
 def test_sidenav_has_four_labeled_groups() -> None:
     text = client.get("/setup").text
+    assert 'id="sidenav-filter"' in text
+    assert 'class="sidenav-main"' in text
+    assert 'class="sidenav-manage"' in text
     for heading, links in NAV_GROUPS.items():
-        assert f'<summary class="nav-heading">{heading}</summary>' in text, heading
+        if heading == "Manage":
+            assert "nav-heading-manage" in text
+            assert "<span>Manage</span>" in text
+        else:
+            assert f'<summary class="nav-heading">{heading}</summary>' in text, heading
         for link in links:
             assert f'href="{link}"' in text, link
-    assert text.count('class="nav-group"') == 4
-    positions = [text.index(f">{h}</summary>") for h in NAV_GROUPS]
+    assert text.count("data-group=") == 4
+    main = text.split('class="sidenav-main"')[1].split('class="sidenav-manage"')[0]
+    manage = text.split('class="sidenav-manage"')[1]
+    for link in NAV_GROUPS["Plan"] + NAV_GROUPS["Run"] + NAV_GROUPS["Listen"]:
+        assert f'href="{link}"' in main, link
+    for link in NAV_GROUPS["Manage"]:
+        assert f'href="{link}"' in manage, link
+    positions = [text.index(f'data-group="{g}"') for g in ("plan", "run", "listen", "manage")]
     assert positions == sorted(positions), "group order changed"
 
 
