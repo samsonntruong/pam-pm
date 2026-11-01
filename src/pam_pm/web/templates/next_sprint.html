@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Next sprint - Pam{% endblock %}
+{% block content %}
+<h1>Next sprint</h1>
+<p class="muted">Proposal for project {{ project }} ({{ project_backend_label }}). Retro actions go first, then carryover, then backlog in order. Approve creates the next sprint and moves the items.</p>
+<section class="card">
+  <h2>Propose next sprint</h2>
+  <p class="muted">The proposal is plain code and costs nothing. Approve proposes first when dry run is on.</p>
+  <form hx-post="/api/next-sprint/run?project={{ project }}" hx-target="#next-sprint-wrap" hx-swap="innerHTML">
+    <button type="submit">Propose next sprint</button>
+  </form>
+</section>
+<div id="next-sprint-wrap" aria-live="polite">
+{{ next_sprint_html | safe }}
+</div>
+{% endblock %}

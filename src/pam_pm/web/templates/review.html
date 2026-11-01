@@ -1,5 +1,6 @@
 {% extends "base.html" %}
-{% block title %}Review - Pam{% endblock %}
+{% block title %}Review - Pam<p><a class="btn btn-small" href="/next-sprint">Plan next sprint</a></p>
+{% endblock %}
 {% block content %}
 <h1>Review</h1>
 <p class="muted">Review for project {{ project }}. Facts come from team interviews. Items Pam is unsure about are marked for follow up.</p>
@@ -26,4 +27,5 @@
     {% endif %}
   </section>
 </div>
+<p><a class="btn btn-small" href="/next-sprint">Plan next sprint</a></p>
 {% endblock %}

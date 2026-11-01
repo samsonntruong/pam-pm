@@ -3908,3 +3908,150 @@ async def listen_socket(websocket: WebSocket) -> None:
             await websocket.close()
         except Exception:  # noqa: BLE001, S110
             pass
+
+
+LAST_NEXT_SPRINT: dict[str, Any] = {"proposal": None, "project": "default"}
+
+
+def _next_sprint_project(request: Request) -> str:
+    return _safe_project(request.query_params.get("project", "default"))
+
+
+def _next_sprint_result_html(proposal: dict[str, Any], dry_run: bool) -> str:
+    from pam_pm.agents import next_sprint as ns_mod
+
+    entries = list((proposal or {}).get("items", []))
+    labels = {"retro": "Retro action", "carryover": "Carryover", "backlog": "Backlog"}
+    parts: list[str] = ['<section class="card" id="next-sprint-card">']
+    if not entries:
+        parts.append("<h2>Next sprint: nothing proposed</h2>")
+        parts.append('<p class="muted">No carryover, retro actions, or backlog items found.</p>')
+        parts.append('<p class="muted">Add backlog items on the Board, then choose Propose next sprint.</p>')
+    else:
+        word = "item" if len(entries) == 1 else "items"
+        parts.append(f"<h2>Next sprint: {len(entries)} {word} proposed</h2>")
+        if dry_run:
+            parts.append('<p class="pill">Dry run is on. Approve proposes first.</p>')
+        else:
+            parts.append('<p class="pill">Dry run is off. Approve creates the sprint.</p>')
+        if (proposal or {}).get("has_history") is False:
+            parts.append('<p class="pill">No history yet, plan uses capacity and estimates.</p>')
+        for entry in entries:
+            title = html.escape(str(entry.get("title", "")))
+            owner = html.escape(str(entry.get("owner", "") or "Unassigned"))
+            reason = html.escape(str(entry.get("reason", "")))
+            raw_kind = str(entry.get("kind", "") or "").strip().lower()
+            kind = html.escape(labels.get(raw_kind, "Item"))
+            slip = html.escape(str(entry.get("slip_reason", "") or ""))
+            try:
+                hours = f"{float(entry.get('estimate', 4.0)):g}h"
+            except (TypeError, ValueError):
+                hours = "4h"
+            parts.append(
+                "<article>"
+                f"<h3>{title}</h3>"
+                f'<p class="muted">{kind} &middot; {hours} &middot; {owner} &middot; {reason}</p>'
+                + (f"<p>Slipped because: {slip}</p>" if slip else "")
+                + "</article>"
+            )
+        loads = dict((proposal or {}).get("loads", {}))
+        if loads:
+            load_text = ", ".join(f"{n} {h:g}h" for n, h in sorted(loads.items()))
+            parts.append(f"<p><strong>Load:</strong> {html.escape(load_text)}.</p>")
+        risk = str((proposal or {}).get("risk_note", "") or "").strip()
+        if risk:
+            parts.append(f"<p><strong>Risk:</strong> {html.escape(risk)}.</p>")
+        if entries:
+            parts.append(
+                '<form hx-post="/api/next-sprint/approve" hx-target="#next-sprint-result" '
+                'hx-swap="innerHTML">'
+                '<label for="ns-name">Sprint name</label>'
+                '<input id="ns-name" name="name" value="Sprint 2">'
+                "<div class=\"form-actions\">"
+                "<button type=\"submit\">Approve and create sprint</button>"
+                "</div>"
+                '<div id="next-sprint-result" class="result" aria-live="polite"></div>'
+                "</form>"
+            )
+    parts.append("</section>")
+    _ = ns_mod
+    return "\n".join(parts)
+
+
+@app.get("/next-sprint", response_class=HTMLResponse)
+def next_sprint_page(request: Request) -> HTMLResponse:
+    ctx = _context(request, "next-sprint")
+    project = str(ctx["project"])
+    dry_run, _ = _effective_safety()
+    stored = LAST_NEXT_SPRINT.get("proposal")
+    if stored and LAST_NEXT_SPRINT.get("project") == project:
+        ctx["next_sprint_html"] = _next_sprint_result_html(stored, dry_run)
+    else:
+        ctx["next_sprint_html"] = _next_sprint_result_html({"items": []}, dry_run)
+    return templates.TemplateResponse(request, "next_sprint.html", ctx)  # type: ignore[return-value]
+
+
+@app.post("/api/next-sprint/run")
+def next_sprint_run_route(request: Request) -> Any:
+    from pam_pm.agents import next_sprint as ns_mod
+
+    project = _next_sprint_project(request)
+    adapter = get_board_adapter(project)
+    if adapter is None:
+        msg = "The board is not configured yet."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg))
+        return JSONResponse({"ok": False, "message": msg}, status_code=502)
+    roster = _roster_entries(project)
+    retro = [dict(a) for a in LAST_REVIEW.get("retro_actions", [])]
+    try:
+        proposal = ns_mod.propose_next_sprint(adapter, roster, retro_actions=retro)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("next sprint propose failed: %s", exc)
+        msg = "The sprint could not be proposed."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg))
+        return JSONResponse({"ok": False, "message": msg}, status_code=502)
+    LAST_NEXT_SPRINT["proposal"] = proposal
+    LAST_NEXT_SPRINT["project"] = project
+    dry_run, _ = _effective_safety()
+    if "hx-request" in request.headers:
+        return HTMLResponse(_next_sprint_result_html(proposal, dry_run))
+    return {"ok": True, "project": project, "count": len(proposal["items"]), "proposal": proposal}
+
+
+@app.post("/api/next-sprint/approve")
+async def next_sprint_approve_route(request: Request) -> Any:
+    from pam_pm.agents import next_sprint as ns_mod
+
+    project = str(LAST_NEXT_SPRINT.get("project", "default"))
+    proposal = LAST_NEXT_SPRINT.get("proposal")
+    if not proposal or not proposal.get("items"):
+        msg = "No sprint proposal to approve. Run Propose first."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg))
+        return JSONResponse({"ok": False, "message": msg}, status_code=404)
+    form = await request.form()
+    name = str(form.get("name", "") or request.query_params.get("name", "") or "Next sprint").strip()
+    adapter = get_board_adapter(project)
+    if adapter is None:
+        msg = "The board is not configured yet."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg))
+        return JSONResponse({"ok": False, "message": msg}, status_code=502)
+    dry_run, _ = _effective_safety()
+    writes = WriteService(_db_path(), dry_run=dry_run)
+    try:
+        result = ns_mod.approve_next_sprint(
+            adapter, proposal, name, writes=writes, db=_db_path(),
+            dry_run=dry_run, evidence_quote="Approved from the next sprint card.",
+        )
+    except Exception as exc:  # noqa: BLE001
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, f"Approve failed: {exc}"))
+        return JSONResponse({"ok": False, "message": f"Approve failed: {exc}"}, status_code=502)
+    if "hx-request" in request.headers:
+        if result.get("applied"):
+            return HTMLResponse(_test_result_html(True, f"Created {name}."))
+        return HTMLResponse(_test_result_html(True, "Proposed. Dry run is on, so nothing changed."))
+    return {"ok": True, "applied": result.get("applied"), "name": name}

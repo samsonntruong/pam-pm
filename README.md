@@ -78,6 +78,7 @@ Listen meetings (beta): capture audio in Chrome or Edge at `/listen`, review fin
 - Sticky-note photo to sprint: segments a planning photo, reads each note, proposes a sprint, and creates the items after you press Approve.
 - RAID log: risks, assumptions, issues, and dependencies with propose plus accept, manual add and edit, and CSV plus Markdown export.
 - Kickoff from a document: paste a brief or upload a file, review owner suggestions with reasons on one approval card, and create the items after you press Approve.
+- Next-sprint proposal: retro plus carryover plus backlog with owners, load, and risk on one approval card. Approve creates the next sprint.
 - Board triage: daily scan for stale, unassigned, and blocked items with proposed fixes on one approval card.
 
 ## Rules summary
