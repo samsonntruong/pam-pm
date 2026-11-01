@@ -2975,6 +2975,166 @@ async def kickoff_owner_response(request: Request) -> Any:
     return {"ok": True, **result}
 
 
+LAST_ADD_TASK: dict[str, Any] = {
+    "draft": None,
+    "message": "",
+    "created": [],
+}
+
+
+def _add_task_card_html(
+    draft: dict[str, Any],
+    roster: list[dict[str, Any]],
+    dry_run: bool,
+) -> str:
+    title = html.escape(str(draft.get("title", "") or "Untitled"))
+    owner = str(draft.get("owner") or "")
+    reason = html.escape(str(draft.get("reason", "") or ""))
+    conf = html.escape(str(draft.get("confidence", "low")))
+    estimate = draft.get("estimate")
+    if estimate is None:
+        est_text = "Not set"
+    else:
+        try:
+            est_text = f"{float(estimate):g}h"
+        except (TypeError, ValueError):
+            est_text = "Not set"
+    quote = html.escape(str(draft.get("evidence_quote", "") or ""))
+    names = [str(entry.get("name", "")) for entry in roster if entry.get("name")]
+    options = ['<option value="">Unassigned</option>']
+    for label in names:
+        sel = " selected" if label == owner else ""
+        options.append(
+            f'<option value="{html.escape(label)}"{sel}>'
+            f"{html.escape(label)}</option>"
+        )
+    if owner and owner not in names:
+        options.append(
+            f'<option value="{html.escape(owner)}" selected>'
+            f"{html.escape(owner)}</option>"
+        )
+    pills = ""
+    if dry_run:
+        pills += '<p class="pill">Dry run is on. Approve proposes first.</p>'
+    else:
+        pills += '<p class="pill">Dry run is off. Approve creates the task.</p>'
+    if draft.get("warning"):
+        pills += ' <span class="pill pill-fail">Over capacity</span>'
+    if draft.get("needs_owner"):
+        pills += ' <span class="pill pill-fail">Needs an owner</span>'
+    return (
+        '<section class="card" id="add-task-card">'
+        "<h2>Draft</h2>"
+        f"{pills}"
+        '<dl class="card-fields">'
+        f"<div><dt>Title</dt><dd>{title}</dd></div>"
+        f"<div><dt>Estimate</dt><dd>{html.escape(est_text)}</dd></div>"
+        f"<div><dt>Reason</dt><dd>{reason}"
+        f'<br><span class="muted">Confidence: {conf}</span></dd></div>'
+        "</dl>"
+        '<form hx-post="/api/add-task/approve" hx-target="#add-task-approve-result" '
+        'hx-swap="innerHTML">'
+        '<label for="add-task-owner">Owner</label>'
+        f'<select id="add-task-owner" name="owner">{"".join(options)}</select>'
+        f'<blockquote class="evidence">{quote}</blockquote>'
+        '<div class="form-actions">'
+        "<button type=\"submit\">Approve and create task</button>"
+        "</div>"
+        '<div id="add-task-approve-result" class="result" aria-live="polite">'
+        "</div></form>"
+        "</section>"
+    )
+
+
+@app.get("/add-task", response_class=HTMLResponse)
+def add_task_page(request: Request) -> HTMLResponse:
+    ctx = _context(request, "add-task")
+    project = str(ctx["project"])
+    draft = LAST_ADD_TASK.get("draft")
+    if draft:
+        dry_run, _ = _effective_safety()
+        ctx["add_task_html"] = _add_task_card_html(
+            dict(draft), _roster_entries(project), dry_run
+        )
+    else:
+        ctx["add_task_html"] = ""
+    return templates.TemplateResponse(request, "add_task.html", ctx)  # type: ignore[return-value]
+
+
+@app.post("/api/add-task/parse")
+async def parse_add_task_route(request: Request) -> Any:
+    from pam_pm.agents.add_task import propose_add_task
+
+    project = _board_project(request)
+    payload = await _board_payload(request)
+    message = str(payload.get("message", "") or "")
+    draft = propose_add_task(
+        message, _roster_entries(project), get_board_adapter(project)
+    )
+    if draft is None:
+        msg = "That did not look like an add-task request."
+        hint = "Start with add task, for example: add a task: fix login, 3h."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg, hint))
+        return JSONResponse(
+            {"ok": False, "message": msg, "hint": hint}, status_code=400
+        )
+    LAST_ADD_TASK["draft"] = draft
+    LAST_ADD_TASK["message"] = message
+    LAST_ADD_TASK["created"] = []
+    dry_run, _ = _effective_safety()
+    if "hx-request" in request.headers:
+        return HTMLResponse(
+            _add_task_card_html(draft, _roster_entries(project), dry_run)
+        )
+    return {"ok": True, "draft": draft}
+
+
+@app.post("/api/add-task/approve")
+async def approve_add_task_route(request: Request) -> Any:
+    from pam_pm.agents.add_task import approve_add_task
+
+    project = _board_project(request)
+    stored = LAST_ADD_TASK.get("draft")
+    if not stored:
+        msg = "No draft to approve. Preview a mention first."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg))
+        return JSONResponse({"ok": False, "message": msg}, status_code=400)
+    draft = dict(stored)
+    payload = await _board_payload(request)
+    if "owner" in payload:
+        pick = str(payload["owner"]).strip()
+        draft["owner"] = pick or None
+        draft["needs_owner"] = not pick
+    adapter = get_board_adapter(project)
+    if adapter is None:
+        msg = "Board is not configured for this project."
+        hint = "Finish the Setup wizard, then approve again."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg, hint))
+        return JSONResponse(
+            {"ok": False, "message": msg, "hint": hint}, status_code=500
+        )
+    dry_run, _ = _effective_safety()
+    try:
+        created = approve_add_task(
+            draft, adapter, db=_db_path(), dry_run=dry_run
+        )
+    except Exception as exc:  # noqa: BLE001
+        msg = f"Approve failed: {exc}"
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg))
+        return JSONResponse({"ok": False, "message": msg}, status_code=502)
+    done = [{"id": str(item.id), "title": str(item.title)} for item in created]
+    LAST_ADD_TASK["created"] = done
+    LAST_ADD_TASK["draft"] = None
+    message = f"Created task {done[0]['title']}." if done else "Nothing created."
+    if "hx-request" in request.headers:
+        return HTMLResponse(_test_result_html(True, message))
+    return {"ok": True, "created": done}
+
+
 LAST_TRIAGE: dict[str, Any] = {
     "findings": [],
     "message": "",

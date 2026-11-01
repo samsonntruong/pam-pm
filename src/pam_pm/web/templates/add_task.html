@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Add task - Pam{% endblock %}
+{% block content %}
+<h1>Add task</h1>
+<p class="muted">Paste an app mention for project {{ project }} ({{ project_backend_label }}) to preview the same draft Pam posts in Slack, then approve. Nothing is created until you approve.</p>
+
+<section class="card" id="add-task-input">
+  <h2>Mention</h2>
+  <form hx-post="/api/add-task/parse?project={{ project }}" hx-target="#add-task-result" hx-swap="innerHTML">
+    <label for="add-task-message">Slack message</label>
+    <textarea id="add-task-message" name="message" rows="3" aria-describedby="add-task-hint" placeholder="@Pam add a task: fix login timeout, 3h, assign Maya"></textarea>
+    <p class="muted" id="add-task-hint">Start with add task or add a task. Add an estimate like 3h and an owner with assign plus a name. Parsing replaces any previous draft.</p>
+    <div class="form-actions">
+      <button type="submit">Preview draft</button>
+    </div>
+  </form>
+</section>
+
+<div id="add-task-result" aria-live="polite">
+  {% if add_task_html %}
+  {{ add_task_html | safe }}
+  {% else %}
+  <section class="card">
+    <h2>Draft</h2>
+    <p class="muted">No draft yet. Paste a mention above and choose Preview draft.</p>
+  </section>
+  {% endif %}
+</div>
+{% endblock %}
