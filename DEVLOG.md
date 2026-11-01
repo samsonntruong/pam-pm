@@ -27,6 +27,7 @@ Build log for Pam. Three lines per entry.
 | Impeccable 4.8.0 | WP0 design tooling | Project skill install, telemetry off, PRODUCT.md DESIGN.md, detector clean |
 | Muse Code | WP1 backends and wizard | NativeBoard real adapter, capability flags, backend choice, saved progress, 90 pass |
 | Muse Code | WP2 native board | Editable kanban with drawer and CSV, rules on native, full story test, 101 pass |
+| Muse Code | WP3 installer | install.ps1 and install.sh verified end to end, analyzer clean, uv 0.11.1 |
 
 ## Entries
 
