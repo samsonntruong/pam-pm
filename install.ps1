@@ -98,6 +98,12 @@ if ($Uninstall) {
     Invoke-Step -Label "Running: uv tool uninstall pam-pm" -Action {
         & uv tool uninstall pam-pm
     } -DryText "uv tool uninstall pam-pm"
+    Invoke-Step -Label "Removing the Start Menu shortcut Pam." -Action {
+        $cut = Get-PamShortcutPath
+        if (Test-Path $cut) { Remove-Item -Force $cut }
+        $ico = Get-PamShortcutIconPath
+        if (Test-Path $ico) { Remove-Item -Force $ico }
+    } -DryText "Remove Start Menu shortcut Pam"
     if ($RemoveData) {
         $dataDir = Get-DataDir
         if ($DryRun) {
@@ -186,6 +192,80 @@ Invoke-Step -Label "Running: uv tool install --python 3.12 --force ""$PamSpec"""
 Invoke-Step -Label "Running: uv tool update-shell" -Action {
     & uv tool update-shell
 } -DryText "uv tool update-shell"
+
+function Get-StartMenuProgramsDir() {
+    return Join-Path ([Environment]::GetFolderPath("ApplicationData")) "Microsoft\Windows\Start Menu\Programs"
+}
+
+function Get-PamShortcutPath() {
+    return Join-Path (Get-StartMenuProgramsDir) "Pam.lnk"
+}
+
+function Get-PamShortcutIconPath() {
+    return Join-Path (Get-StartMenuProgramsDir) "pam-logo.ico"
+}
+
+function Copy-PamIcon([string]$Dest) {
+    if ((-not [string]::IsNullOrEmpty($PSScriptRoot)) -and (Test-Path (Join-Path $PSScriptRoot "src\pam_pm\web\static\logo.ico"))) {
+        Copy-Item -Force (Join-Path $PSScriptRoot "src\pam_pm\web\static\logo.ico") $Dest
+        return $true
+    }
+    if ((-not [string]::IsNullOrEmpty($InstallSource)) -and (Test-Path $InstallSource) -and ($InstallSource -like "*.zip")) {
+        try {
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($InstallSource)
+            try {
+                foreach ($entry in $zip.Entries) {
+                    if (($entry.FullName -like "*src/pam_pm/web/static/logo.ico") -or ($entry.FullName -like "*src\pam_pm\web\static\logo.ico")) {
+                        [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $Dest, $true)
+                        return $true
+                    }
+                }
+            } finally {
+                $zip.Dispose()
+            }
+        } catch {
+            Write-Output "  Logo read from the local archive failed, trying the download."
+        }
+    }
+    $rawRef = $Version
+    if ($Ref -ne "") { $rawRef = $Ref }
+    $rawUrl = "https://raw.githubusercontent.com/OWNER/pam-pm/$rawRef/src/pam_pm/web/static/logo.ico"
+    try {
+        Invoke-RestMethod -Uri $rawUrl -OutFile $Dest
+        return $true
+    } catch {
+        Write-Output "  Logo download failed, the shortcut will use the default icon."
+        return $false
+    }
+}
+
+function Install-PamShortcut() {
+    $programs = Get-StartMenuProgramsDir
+    if (-not (Test-Path $programs)) {
+        New-Item -ItemType Directory -Force -Path $programs | Out-Null
+    }
+    $shortcutPath = Get-PamShortcutPath
+    $iconPath = Get-PamShortcutIconPath
+    $haveIcon = $false
+    if (Copy-PamIcon $iconPath) { $haveIcon = Test-Path $iconPath }
+    $pamExe = Get-PamExe
+    $shell = New-Object -ComObject WScript.Shell
+    $link = $shell.CreateShortcut($shortcutPath)
+    $link.TargetPath = $pamExe
+    $link.Arguments = "desktop"
+    $linkDir = Split-Path $pamExe -Parent
+    if (-not [string]::IsNullOrEmpty($linkDir)) { $link.WorkingDirectory = $linkDir }
+    if ($haveIcon) { $link.IconLocation = "$iconPath,0" }
+    $link.Save()
+    Write-Output "  Start Menu shortcut installed: $shortcutPath"
+}
+
+if ($DesktopWanted) {
+    Invoke-Step -Label "Creating the Start Menu shortcut Pam." -Action {
+        Install-PamShortcut
+    } -DryText "Create Start Menu shortcut Pam -> pam desktop"
+}
 
 if (-not $NoAutostart) {
     $pamAutostartExe = Get-PamExe

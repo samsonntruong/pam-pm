@@ -93,6 +93,16 @@ if [ "$UNINSTALL" -eq 1 ]; then
     step "Removing Pam (your data stays in place)."
     run "Running: uv tool uninstall pam-pm" "uv tool uninstall pam-pm" \
         uv tool uninstall pam-pm
+    if [ "$DRY_RUN" -eq 1 ]; then
+        echo "  [dry run] Remove Pam.app, Pam.desktop, and launcher icons"
+    else
+        rm -rf "$HOME/Applications/Pam.app" 2>/dev/null || true
+        if [ -w "/Applications" ]; then
+            rm -rf "/Applications/Pam.app" 2>/dev/null || true
+        fi
+        rm -f "$HOME/.local/share/applications/Pam.desktop" 2>/dev/null || true
+        rm -f "$HOME/.local/share/pam-pm/pam-logo.svg" 2>/dev/null || true
+    fi
     if [ "$REMOVE_DATA" -eq 1 ]; then
         dir="$(data_dir)"
         if [ "$DRY_RUN" -eq 1 ]; then
@@ -174,6 +184,167 @@ run "Running: uv tool install --python 3.12 --force \"$INSTALL_SPEC\"" \
 
 run "Running: uv tool update-shell" "uv tool update-shell" \
     uv tool update-shell
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo "")"
+
+pam_launcher_icon_src() {
+    if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/src/pam_pm/web/static/$1" ]; then
+        printf '%s' "$SCRIPT_DIR/src/pam_pm/web/static/$1"
+        return 0
+    fi
+    return 1
+}
+
+pam_fetch_icon() {
+    name="$1"; dest="$2"
+    if src="$(pam_launcher_icon_src "$name")" && [ -n "$src" ]; then
+        cp "$src" "$dest" 2>/dev/null && return 0
+    fi
+    if [ -n "$INSTALL_SOURCE" ] && [ -f "$INSTALL_SOURCE" ]; then
+        case "$INSTALL_SOURCE" in
+            *.zip)
+                if command -v unzip >/dev/null 2>&1; then
+                    entry="$(unzip -Z1 "$INSTALL_SOURCE" 2>/dev/null | grep "src/pam_pm/web/static/$name" | head -n 1)"
+                    if [ -n "$entry" ]; then
+                        unzip -p "$INSTALL_SOURCE" "$entry" >"$dest" 2>/dev/null && return 0
+                    fi
+                elif command -v python3 >/dev/null 2>&1; then
+                    python3 - "$INSTALL_SOURCE" "$name" "$dest" 2>/dev/null <<'PYEOF' && return 0
+import sys
+import zipfile
+with zipfile.ZipFile(sys.argv[1]) as zf:
+    for n in zf.namelist():
+        if n.endswith("src/pam_pm/web/static/" + sys.argv[2]):
+            with open(sys.argv[3], "wb") as handle:
+                handle.write(zf.read(n))
+            break
+    else:
+        sys.exit(1)
+PYEOF
+                fi
+                ;;
+        esac
+    fi
+    raw_ref="$VERSION"
+    if [ -n "$REF" ]; then raw_ref="$REF"; fi
+    if command -v curl >/dev/null 2>&1; then
+        curl -LsSf "https://raw.githubusercontent.com/OWNER/pam-pm/$raw_ref/src/pam_pm/web/static/$name" -o "$dest" 2>/dev/null && return 0
+    fi
+    return 1
+}
+
+install_mac_app() {
+    dest_parent="$HOME/Applications"
+    if ! mkdir -p "$dest_parent" 2>/dev/null; then
+        if [ -w "/Applications" ]; then
+            dest_parent="/Applications"
+        else
+            echo "  Could not write $HOME/Applications, skipping Pam.app."
+            return 0
+        fi
+    fi
+    app="$dest_parent/Pam.app"
+    rm -rf "$app"
+    mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+    pam_exe="$HOME/.local/bin/pam"
+    {
+        echo "#!/bin/sh"
+        echo "# Pam launcher: runs pam desktop, which starts the server"
+        echo "# when needed and opens the console window. Output goes to"
+        echo "# desktop-app.log; the first-run setup token is in"
+        echo "# desktop-server.log in the same folder."
+        echo "PAM_EXE=\"$pam_exe\""
+        echo 'if [ ! -x "$PAM_EXE" ]; then'
+        echo '    PAM_EXE="pam"'
+        echo "fi"
+        echo 'LOG_DIR="${PAM_HOME:-$HOME/Library/Application Support/pam-pm}"'
+        echo 'mkdir -p "$LOG_DIR" 2>/dev/null || true'
+        echo 'exec "$PAM_EXE" desktop >>"$LOG_DIR/desktop-app.log" 2>&1'
+    } >"$app/Contents/MacOS/Pam"
+    chmod +x "$app/Contents/MacOS/Pam"
+    icon_name=""
+    if pam_fetch_icon "logo.png" "$app/Contents/Resources/pam-logo.png"; then
+        icon_name="pam-logo"
+        if command -v iconutil >/dev/null 2>&1 && command -v sips >/dev/null 2>&1; then
+            tmpset="$(mktemp -d 2>/dev/null || echo "")"
+            if [ -n "$tmpset" ] && mkdir -p "$tmpset/pam.iconset"; then
+                ok=1
+                for sz in 16 32 128 256 512; do
+                    sips -z "$sz" "$sz" "$app/Contents/Resources/pam-logo.png" --out "$tmpset/pam.iconset/icon_${sz}x${sz}.png" >/dev/null 2>&1 || ok=0
+                done
+                for sz in 32 64 256 512 1024; do
+                    base=$((sz / 2))
+                    sips -z "$sz" "$sz" "$app/Contents/Resources/pam-logo.png" --out "$tmpset/pam.iconset/icon_${base}x${base}@2x.png" >/dev/null 2>&1 || ok=0
+                done
+                if [ "$ok" -eq 1 ]; then
+                    iconutil -c icns "$tmpset/pam.iconset" --output "$app/Contents/Resources/pam-logo.icns" >/dev/null 2>&1 || true
+                fi
+                rm -rf "$tmpset"
+            fi
+        fi
+    fi
+    {
+        echo '<?xml version="1.0" encoding="UTF-8"?>'
+        echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
+        echo '<plist version="1.0">'
+        echo "<dict>"
+        echo '  <key>CFBundleName</key><string>Pam</string>'
+        echo '  <key>CFBundleIdentifier</key><string>com.pam-pm.pam</string>'
+        echo "  <key>CFBundleVersion</key><string>$VERSION</string>"
+        echo '  <key>CFBundlePackageType</key><string>APPL</string>'
+        echo '  <key>CFBundleExecutable</key><string>Pam</string>'
+        if [ -n "$icon_name" ]; then
+            echo "  <key>CFBundleIconFile</key><string>$icon_name</string>"
+        fi
+        echo '  <key>NSHighResolutionCapable</key><true/>'
+        echo "</dict>"
+        echo "</plist>"
+    } >"$app/Contents/Info.plist"
+    touch "$app"
+    echo "  Pam.app installed: $app"
+}
+
+install_linux_desktop_file() {
+    apps_dir="$HOME/.local/share/applications"
+    icons_dir="$HOME/.local/share/pam-pm"
+    mkdir -p "$apps_dir" "$icons_dir" 2>/dev/null || true
+    pam_exe="$HOME/.local/bin/pam"
+    icon_line=""
+    if pam_fetch_icon "logo-light.svg" "$icons_dir/pam-logo.svg"; then
+        icon_line="Icon=$icons_dir/pam-logo.svg"
+    fi
+    case "$pam_exe" in
+        *\ * ) pam_exec="\"$pam_exe\" desktop" ;;
+        * ) pam_exec="$pam_exe desktop" ;;
+    esac
+    {
+        echo "[Desktop Entry]"
+        echo "Type=Application"
+        echo "Name=Pam"
+        echo "Comment=Pam PM console"
+        echo "Exec=$pam_exec"
+        if [ -n "$icon_line" ]; then echo "$icon_line"; fi
+        echo "Terminal=false"
+        echo "Categories=Utility;"
+        echo "StartupNotify=true"
+    } >"$apps_dir/Pam.desktop"
+    echo "  Desktop file installed: $apps_dir/Pam.desktop"
+}
+
+if [ "$(uname -s)" = "Darwin" ] && [ "$DESKTOP_WANTED" -eq 1 ]; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+        echo "  [dry run] Create Pam.app in $HOME/Applications"
+    else
+        install_mac_app
+    fi
+fi
+if [ "$(uname -s)" != "Darwin" ] && [ "$NO_DESKTOP" -eq 0 ]; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+        echo "  [dry run] Create Pam.desktop in ~/.local/share/applications"
+    else
+        install_linux_desktop_file
+    fi
+fi
 
 if [ "$NO_AUTOSTART" -eq 0 ]; then
     PAM_AUTOSTART_EXE="$(uv_bin_dir)/pam"
