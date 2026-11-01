@@ -36,6 +36,7 @@
       </nav>
     </aside>
     <main class="content">
+      {% if offline_banner %}<p class="offline-banner" role="status">{{ offline_banner }}</p>{% endif %}
       {% block content %}{% endblock %}
     </main>
   </div>

@@ -11,7 +11,7 @@
 #   --ref BRANCH    Install from a branch instead, e.g. --ref main
 #   --source P      Local path or URL to install from (for testing)
 #   --no-start      Install but do not start Pam
-#   --no-autostart  Do not enable start on login (accepted now, wired next)
+#   --no-autostart  Do not enable start on login
 #   --no-desktop    Do not create a desktop shortcut (accepted now, wired next)
 #   --uninstall     Remove Pam, keeping the data directory
 #   --remove-data   With --uninstall only: also delete the data directory (asks first)
@@ -164,7 +164,15 @@ run "Running: uv tool update-shell" "uv tool update-shell" \
     uv tool update-shell
 
 if [ "$NO_AUTOSTART" -eq 0 ]; then
-    echo "  Note: start on login arrives in the next release. For now Pam runs when you start it."
+    PAM_AUTOSTART_EXE="$(uv_bin_dir)/pam"
+    if [ "$DRY_RUN" -eq 1 ]; then
+        echo "  [dry run] $PAM_AUTOSTART_EXE autostart on"
+    elif [ -x "$PAM_AUTOSTART_EXE" ]; then
+        echo "  Running: $PAM_AUTOSTART_EXE autostart on"
+        "$PAM_AUTOSTART_EXE" autostart on
+    else
+        echo "  pam not found yet, skipping autostart. Run 'pam autostart on' later."
+    fi
 fi
 if [ "$NO_DESKTOP" -eq 0 ]; then
     echo "  Note: a desktop shortcut arrives in a later release."

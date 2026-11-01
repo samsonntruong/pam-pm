@@ -21,7 +21,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_start.add_argument(
         "--no-browser", action="store_true", help="Do not open a browser"
     )
-    sub.add_parser("doctor", help="Check meta, slack, ado, and cache prefix")
+    sub.add_parser("doctor", help="Check meta, slack, ado, cache, autostart, uptime")
+    p_auto = sub.add_parser("autostart", help="Start Pam at sign-in and restart it if it stops")
+    p_auto.add_argument("action", choices=["on", "off", "status"])
     sub.add_parser("review", help="Print the sprint review markdown")
     return parser
 
@@ -83,6 +85,64 @@ def _check_cache_prefix() -> tuple[bool, str]:
         return False, f"error: {exc}"
 
 
+def cmd_autostart(args: argparse.Namespace) -> None:
+    from pam_pm import autostart
+
+    action = str(getattr(args, "action", "status") or "status")
+    if action == "on":
+        print(autostart.enable())
+    elif action == "off":
+        print(autostart.disable())
+    else:
+        print(autostart.status_text())
+
+
+def _last_start() -> str:
+    try:
+        from pam_pm.core import recovery
+        from pam_pm.core import store as store_mod
+        from pam_pm.core.config import Config
+    except Exception:  # noqa: BLE001
+        return ""
+    try:
+        return recovery.kv_get(Config().db_path(), store_mod.STARTED_AT_KEY)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _format_uptime(seconds: float) -> str:
+    total = max(0, int(seconds))
+    days, rem = divmod(total, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
+def _uptime_text(last_start: str) -> str:
+    text = (last_start or "").strip()
+    if not text:
+        return "unknown"
+    try:
+        from datetime import UTC, datetime
+    except Exception:  # noqa: BLE001
+        return "unknown"
+    try:
+        iso = text[:-1] + "+00:00" if text.endswith("Z") else text
+        moment = datetime.fromisoformat(iso)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=UTC)
+        delta = (datetime.now(UTC) - moment).total_seconds()
+    except ValueError:
+        return "unknown"
+    return _format_uptime(delta)
+
+
 def cmd_doctor(_args: argparse.Namespace) -> None:
     meta_missing = _presence(["META_MODEL", "META_BASE_URL", "META_API_KEY"])
     slack_missing = _presence(["SLACK_BOT_TOKEN"])
@@ -101,6 +161,15 @@ def cmd_doctor(_args: argparse.Namespace) -> None:
         print("ado: ok")
     ok, detail = _check_cache_prefix()
     print(f"cache prefix: {detail}")
+    try:
+        from pam_pm import autostart
+
+        print(autostart.status_text())
+    except Exception as exc:  # noqa: BLE001
+        print(f"autostart: unknown ({exc})")
+    started = _last_start()
+    print(f"last start: {started or 'unknown'}")
+    print(f"uptime: {_uptime_text(started)}")
     if not meta_missing and not slack_missing and not ado_missing and ok:
         print("doctor: ok")
     else:
@@ -143,6 +212,8 @@ def main(argv: list[str] | None = None) -> None:
         cmd_start(args)
     elif args.command == "doctor":
         cmd_doctor(args)
+    elif args.command == "autostart":
+        cmd_autostart(args)
     elif args.command == "review":
         cmd_review(args)
     else:

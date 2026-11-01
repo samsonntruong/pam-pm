@@ -18,10 +18,12 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from pam_pm import autostart as autostart_mod
 from pam_pm.adapters.pm.base import WorkItem, is_closed
 from pam_pm.adapters.pm.sqlite_board import SQLiteBoard
 from pam_pm.agents.lead import synthesize_review
 from pam_pm.agents.planner import approve_proposal, propose_sprint
+from pam_pm.core import recovery as recovery_mod
 from pam_pm.core import store as store_mod
 from pam_pm.core.config import (
     BACKEND_AZURE_DEVOPS,
@@ -396,6 +398,28 @@ def _project(request: Request) -> str:
     return "default"
 
 
+def _offline_banner() -> str:
+    try:
+        return recovery_mod.get_offline_banner(_db_path())
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _autostart_enabled() -> bool:
+    try:
+        return bool(autostart_mod.is_enabled())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _autostart_choice(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("on", "true", "1", "yes", "checked")
+
+
 def _context(request: Request, active: str) -> dict[str, Any]:
     project = _project(request)
     return {
@@ -405,6 +429,7 @@ def _context(request: Request, active: str) -> dict[str, Any]:
         "projects": _projects_with_backends(),
         "project_backend": _project_backend(project),
         "project_backend_label": backend_label(_project_backend(project)),
+        "offline_banner": _offline_banner(),
     }
 
 
@@ -620,6 +645,8 @@ def setup_page(request: Request, token: str = "") -> HTMLResponse:
             "people_names": people_entry.get("people", ""),
             "pam_board_value": BACKEND_PAM_BOARD,
             "ado_value": BACKEND_AZURE_DEVOPS,
+            "autostart_label": autostart_mod.CHECKBOX_LABEL,
+            "autostart_enabled": _autostart_enabled(),
         }
     )
     return templates.TemplateResponse(request, "setup.html", ctx)  # type: ignore[return-value]
@@ -645,6 +672,10 @@ def rules_page(request: Request) -> HTMLResponse:
 def activity_page(request: Request) -> HTMLResponse:
     ctx = _context(request, "activity")
     ctx["events"] = _activity_events()
+    try:
+        ctx["lifecycle"] = recovery_mod.list_lifecycle(_db_path(), limit=50)
+    except Exception:  # noqa: BLE001
+        ctx["lifecycle"] = []
     return templates.TemplateResponse(request, "activity.html", ctx)  # type: ignore[return-value]
 
 
@@ -1253,6 +1284,7 @@ async def setup_complete(request: Request) -> Any:
     if SETUP_DONE:
         return JSONResponse({"ok": False, "message": "Setup already complete"})
     token = ""
+    autostart_on = True
     ctype = request.headers.get("content-type", "")
     if "application/json" in ctype:
         try:
@@ -1261,15 +1293,80 @@ async def setup_complete(request: Request) -> Any:
             payload = {}
         if isinstance(payload, dict):
             token = str(payload.get("token", "")).strip()
+            autostart_on = _autostart_choice(
+                payload.get("autostart", True), default=True
+            )
     else:
         form = await request.form()
         token = str(form.get("token", "")).strip()
+        # An unchecked box sends no field, so a missing field means off
+        # here while the JSON API defaults to on.
+        autostart_on = _autostart_choice(
+            form.get("autostart") if "autostart" in form else False,
+            default=True,
+        )
     if not token:
         token = request.query_params.get("token", "").strip()
     if not is_valid_token(token):
         return JSONResponse({"ok": False, "message": "Invalid setup token"})
+    try:
+        if autostart_on:
+            autostart_message = autostart_mod.enable()
+        else:
+            autostart_message = autostart_mod.disable()
+    except Exception as exc:  # noqa: BLE001
+        autostart_message = f"autostart: unknown ({exc})"
     SETUP_DONE = True
-    return {"ok": True, "message": "Setup complete"}
+    return {"ok": True, "message": "Setup complete", "autostart": autostart_message}
+
+
+@app.get("/api/autostart")
+def get_autostart() -> dict[str, Any]:
+    """Return autostart status and the wizard checkbox label."""
+    try:
+        info = autostart_mod.status()
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "message": f"autostart: unknown ({exc})"}
+    return {
+        "ok": True,
+        "enabled": info.get("enabled") == "on",
+        "platform": info.get("platform", ""),
+        "detail": info.get("detail", ""),
+        "label": autostart_mod.CHECKBOX_LABEL,
+    }
+
+
+@app.post("/api/autostart")
+async def set_autostart(request: Request) -> Any:
+    """Turn autostart on or off from JSON, form, or query input."""
+    enabled: Any = None
+    ctype = request.headers.get("content-type", "")
+    if "application/json" in ctype:
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = {}
+        if isinstance(payload, dict):
+            enabled = payload.get("enabled", payload.get("autostart"))
+    else:
+        form = await request.form()
+        if "enabled" in form:
+            enabled = form.get("enabled")
+        elif "autostart" in form:
+            enabled = form.get("autostart")
+    if "enabled" in request.query_params:
+        enabled = request.query_params.get("enabled")
+    on = _autostart_choice(enabled, default=True)
+    try:
+        if on:
+            message = autostart_mod.enable()
+        else:
+            message = autostart_mod.disable()
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"ok": False, "message": f"autostart: unknown ({exc})"})
+    if "hx-request" in request.headers:
+        return HTMLResponse(_test_result_html(True, message))
+    return {"ok": True, "enabled": on, "message": message}
 
 
 @app.post("/api/review/run")

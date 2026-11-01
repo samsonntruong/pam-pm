@@ -9,6 +9,7 @@ services:
       - PAM_HOME=/data
     volumes:
       - pam-data:/data
+    restart: unless-stopped
     # Setup token and setup URL are printed in the logs at start.
 
 volumes:

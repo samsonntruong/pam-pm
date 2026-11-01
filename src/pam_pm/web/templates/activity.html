@@ -16,6 +16,19 @@
   </article>
   {% endfor %}
 </div>
+
+<section class="card" id="lifecycle">
+  <h2>Starts, stops, and crashes</h2>
+  {% if lifecycle %}
+  <ul class="lifecycle-list">
+    {% for entry in lifecycle %}
+    <li><strong>{{ entry.event }}</strong> <span class="muted">{{ entry.created_at }}</span>{% if entry.detail %}<br>{{ entry.detail }}{% endif %}</li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">No start, stop, or crash events recorded yet.</p>
+  {% endif %}
+</section>
 {% endblock %}
 {% block scripts %}
 <script>

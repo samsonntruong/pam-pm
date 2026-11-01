@@ -11,7 +11,7 @@
 #   -Ref         Install from a branch instead, e.g. -Ref main
 #   -Source      Local path or URL to install from (for testing)
 #   -NoStart     Install but do not start Pam
-#   -NoAutostart Do not enable start on login (WP3b; accepted now, wired next)
+#   -NoAutostart Do not enable start on login
 #   -NoDesktop   Do not create a desktop shortcut (WP3c; accepted now, wired next)
 #   -Uninstall   Remove Pam, keeping the data directory
 #   -RemoveData  With -Uninstall only: also delete the data directory (asks first)
@@ -177,7 +177,14 @@ Invoke-Step -Label "Running: uv tool update-shell" -Action {
 } -DryText "uv tool update-shell"
 
 if (-not $NoAutostart) {
-    Write-Output "  Note: start on login arrives in the next release. For now Pam runs when you start it."
+    $pamAutostartExe = Get-PamExe
+    Invoke-Step -Label "Running: $pamAutostartExe autostart on" -Action {
+        if (Test-Path $pamAutostartExe) {
+            & $pamAutostartExe autostart on
+        } else {
+            Write-Output "  pam not found yet, skipping autostart. Run 'pam autostart on' later."
+        }
+    } -DryText "$pamAutostartExe autostart on"
 }
 if (-not $NoDesktop) {
     Write-Output "  Note: a desktop shortcut arrives in a later release."

@@ -1,10 +1,11 @@
-"""SQLite state store: writes log, calls log, and interviews (F5, F9)."""
+"""SQLite state store: writes log, calls log, interviews, and recovery (F5, F9)."""
 
 from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pam_pm.core.cost import CALLS_TABLE_DDL, CallUsage, log_call
@@ -36,6 +37,60 @@ PROJECTS_TABLE_DDL = """CREATE TABLE IF NOT EXISTS projects (
   backend TEXT NOT NULL DEFAULT 'azure_devops'
 )"""
 
+CONVERSATIONS_TABLE_DDL = """CREATE TABLE IF NOT EXISTS conversations (
+  thread_key TEXT PRIMARY KEY,
+  person TEXT NOT NULL DEFAULT '',
+  item_id TEXT NOT NULL DEFAULT '',
+  turns_json TEXT NOT NULL DEFAULT '[]',
+  last_seen TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'open',
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+)"""
+
+PROPOSALS_TABLE_DDL = """CREATE TABLE IF NOT EXISTS proposals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project TEXT NOT NULL DEFAULT 'default',
+  kind TEXT NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+)"""
+
+SCHEDULED_JOBS_TABLE_DDL = """CREATE TABLE IF NOT EXISTS scheduled_jobs (
+  job_id TEXT PRIMARY KEY,
+  project TEXT NOT NULL DEFAULT 'default',
+  rule TEXT NOT NULL DEFAULT '',
+  spec_json TEXT NOT NULL DEFAULT '{}',
+  misfire_grace_hours REAL NOT NULL DEFAULT 3.0,
+  last_run TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+)"""
+
+SCHEDULED_RUNS_TABLE_DDL = """CREATE TABLE IF NOT EXISTS scheduled_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id TEXT NOT NULL,
+  due_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  detail TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)"""
+
+LIFECYCLE_TABLE_DDL = """CREATE TABLE IF NOT EXISTS lifecycle (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event TEXT NOT NULL,
+  detail TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)"""
+
+KV_TABLE_DDL = """CREATE TABLE IF NOT EXISTS kv (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL DEFAULT ''
+)"""
+
+CATCHUP_KEY = "catchup_last"
+STARTED_AT_KEY = "run_started_at"
+
 
 @contextmanager
 def _connect(db: DbLike) -> Iterator[sqlite3.Connection]:
@@ -66,12 +121,35 @@ def _migrate_projects(conn: sqlite3.Connection) -> None:
 
 
 def _ensure_tables(conn: sqlite3.Connection) -> None:
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.Error:
+        pass
     conn.execute(WRITES_TABLE_DDL)
     conn.execute(CALLS_TABLE_DDL)
     conn.execute(INTERVIEWS_TABLE_DDL)
     conn.execute(PROJECTS_TABLE_DDL)
+    conn.execute(CONVERSATIONS_TABLE_DDL)
+    conn.execute(PROPOSALS_TABLE_DDL)
+    conn.execute(SCHEDULED_JOBS_TABLE_DDL)
+    conn.execute(SCHEDULED_RUNS_TABLE_DDL)
+    conn.execute(LIFECYCLE_TABLE_DDL)
+    conn.execute(KV_TABLE_DDL)
     _migrate_projects(conn)
     conn.commit()
+
+
+def now_iso() -> str:
+    """Return the current UTC time as an ISO string with Z."""
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def journal_mode(db: DbLike) -> str:
+    """Return the SQLite journal mode for a database."""
+    with _connect(db) as conn:
+        _ensure_tables(conn)
+        row = conn.execute("PRAGMA journal_mode").fetchone()
+    return str(row[0]).lower() if row else ""
 
 
 def init_db(path: str | Path) -> Path:

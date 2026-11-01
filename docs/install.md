@@ -77,10 +77,31 @@ Back up or move that folder to back up or move Pam.
 
 ## Keeping Pam running
 
-Pam runs while the `pam start` process runs. Start on login (autostart with
-restart on failure) is built next; the installers already accept
-`-NoAutostart` / `--no-autostart` for when it lands. Until then, start Pam
-with `pam start` after a reboot.
+Pam only works while the machine is on and awake. Sleep, hibernate, reboot,
+or shutdown pauses Pam, and closing the lid pauses it too. When the machine
+wakes again, Pam comes back by itself and picks up where it left off,
+without sending any message or board write twice.
+
+Autostart is on by default. Pam starts at sign-in and restarts if it stops:
+a per-user Scheduled Task on Windows, a LaunchAgent with KeepAlive on
+macOS, and a systemd user service with Restart=on-failure on Linux. The
+setup wizard Done screen has the same checkbox on by default, and the
+installers accept `-NoAutostart` / `--no-autostart` to skip it. Manage it
+any time:
+
+```sh
+pam autostart status
+pam autostart off
+pam autostart on
+```
+
+`pam doctor` shows autostart status, last start, and uptime. To keep Pam
+running overnight, turn off sleep in the OS power settings (Windows:
+Settings, System, Power; macOS: System Settings, Battery, Options; Linux:
+Settings, Power) or leave the machine awake with the lid open.
+
+For always-on use on a server instead of a laptop or desktop, see
+docs/deploy.md.
 
 ## Troubleshooting
 

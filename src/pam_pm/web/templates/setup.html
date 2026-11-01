@@ -93,6 +93,8 @@
   <form hx-post="/api/setup/complete" hx-target="#setup-result" hx-swap="innerHTML" onsubmit="saveStep('done')">
     <label for="token">Setup token</label>
     <input id="token" name="token" type="text" value="{{ token }}" placeholder="Paste token here" autocomplete="off">
+    <label for="autostart"><input id="autostart" name="autostart" type="checkbox" value="on" checked> {{ autostart_label }}</label>
+    <p class="muted">Autostart is currently {% if autostart_enabled %}on{% else %}off{% endif %}. Uncheck the box to skip it.</p>
     <button type="submit">Complete setup</button>
   </form>
   <div id="setup-result" class="result" aria-live="polite"></div>

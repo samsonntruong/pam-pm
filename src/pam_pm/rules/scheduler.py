@@ -53,7 +53,8 @@ class Scheduler:
 
     schedule_morning registers a cron job per project. should_send is the
     runtime gate: it blocks sends during quiet hours, outside working
-    hours, while snoozed, or once the daily cap is reached.
+    hours, while snoozed, or once the daily cap is reached. Jobs are
+    persisted in SQLite with a per-rule misfire grace window.
     """
 
     def __init__(
@@ -64,12 +65,19 @@ class Scheduler:
         quiet_end: int = DEFAULT_QUIET_END,
         work_start: int = DEFAULT_WORK_START,
         work_end: int = DEFAULT_WORK_END,
+        db: Any | None = None,
+        misfire_grace_hours: float = 3.0,
     ) -> None:
         self.daily_cap = daily_cap
         self.quiet_start = quiet_start
         self.quiet_end = quiet_end
         self.work_start = work_start
         self.work_end = work_end
+        self._db = db
+        try:
+            self.misfire_grace_hours = float(misfire_grace_hours)
+        except (TypeError, ValueError):
+            self.misfire_grace_hours = 3.0
         self._counts: dict[tuple[str, str, str], int] = {}
         self._snoozed: set[tuple[str, str]] = set()
         self._specs: dict[str, dict[str, Any]] = {}
@@ -95,6 +103,10 @@ class Scheduler:
     def cap_for(self, project: str) -> int:
         return self._project_caps.get(project, self.daily_cap)
 
+    def set_db(self, db: Any | None) -> None:
+        """Pin the SQLite path used to persist scheduled jobs."""
+        self._db = db
+
     def schedule_morning(
         self,
         project: str,
@@ -102,18 +114,43 @@ class Scheduler:
         tz: str = "UTC",
         days: str = "mon-fri",
         func: Any | None = None,
+        *,
+        misfire_grace_hours: float | None = None,
+        db: Any | None = None,
         **kwargs: Any,
     ) -> str:
         """Schedule a morning job with cron in the given time zone."""
         hour, minute = _parse_time(time)
         zone = _zone(tz)
         job_id = f"morning:{project}:{hour:02d}{minute:02d}:{tz}:{days}"
-        self._specs[job_id] = {
+        grace = self.misfire_grace_hours
+        if misfire_grace_hours is not None:
+            try:
+                grace = float(misfire_grace_hours)
+            except (TypeError, ValueError):
+                grace = self.misfire_grace_hours
+        spec = {
             "project": project,
             "time": f"{hour:02d}:{minute:02d}",
             "tz": tz,
             "days": days,
         }
+        self._specs[job_id] = dict(spec)
+        target = db if db is not None else self._db
+        if target is not None:
+            try:
+                from pam_pm.core.recovery import upsert_job
+
+                upsert_job(
+                    target,
+                    job_id,
+                    project=project,
+                    rule="morning",
+                    spec=spec,
+                    misfire_grace_hours=grace,
+                )
+            except Exception:  # noqa: BLE001, S110
+                pass
         if func is None:
             return job_id
         backend = self._backend()
