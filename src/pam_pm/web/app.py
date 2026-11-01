@@ -15,7 +15,13 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -24,6 +30,7 @@ from pam_pm.adapters.pm.base import WorkItem, is_closed
 from pam_pm.adapters.pm.sqlite_board import SQLiteBoard
 from pam_pm.agents.lead import synthesize_review
 from pam_pm.agents.planner import approve_proposal, propose_sprint
+from pam_pm.core import auth as auth_mod
 from pam_pm.core import provider as provider_mod
 from pam_pm.core import raid as raid_mod
 from pam_pm.core import recovery as recovery_mod
@@ -554,6 +561,181 @@ def is_valid_token(token: str | None) -> bool:
     if not token or not SETUP_TOKEN:
         return False
     return secrets.compare_digest(str(token), SETUP_TOKEN)
+
+
+AUTH_EXEMPT_PATHS = frozenset({"/", "/health", "/login"})
+AUTH_EXEMPT_PREFIXES = ("/static", "/api/auth")
+
+
+def _auth_data_dir() -> Path | None:
+    try:
+        return Config().data_dir
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _auth_allowed_host() -> str:
+    try:
+        return Config().allowed_host
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _client_ip(request: Request) -> str:
+    client = request.client
+    if client is not None and client.host:
+        return str(client.host)
+    return "unknown"
+
+
+def _request_session_ok(request: Request) -> bool:
+    try:
+        return auth_mod.validate_session(
+            request.cookies.get(auth_mod.SESSION_COOKIE, "")
+        )
+    except Exception:  # noqa: BLE001
+        return False
+
+
+@app.middleware("http")
+async def _console_auth_guard(request: Request, call_next: Any) -> Any:
+    """Require a login session once a console password is set.
+
+    Localhost mode with no stored password passes through unchanged
+    (the setup token flow keeps working). Health checks stay open so
+    container hosts can probe the app.
+    """
+    path = request.url.path
+    if path not in ("/", "/health") and not auth_mod.host_allowed(
+        request.headers.get("host", ""), _auth_allowed_host()
+    ):
+        return JSONResponse(
+            {
+                "ok": False,
+                "message": "This host name is not allowed.",
+                "hint": "Open Pam with the PAM_ALLOWED_HOST name set on the server.",
+            },
+            status_code=400,
+        )
+    if path in AUTH_EXEMPT_PATHS or path.startswith(AUTH_EXEMPT_PREFIXES):
+        return await call_next(request)
+    data_dir = _auth_data_dir()
+    password_set = False
+    if data_dir is not None:
+        try:
+            password_set = auth_mod.has_password(data_dir)
+        except Exception:  # noqa: BLE001
+            password_set = False
+    if not password_set:
+        return await call_next(request)
+    if _request_session_ok(request):
+        return await call_next(request)
+    if path.startswith("/api"):
+        return JSONResponse(
+            {
+                "ok": False,
+                "message": "Login is required.",
+                "hint": "Open /login in a browser and enter the console password.",
+            },
+            status_code=401,
+        )
+    return RedirectResponse(url="/login", status_code=303)
+
+
+def _login_page_html(mode: str, message: str) -> str:
+    if mode == "setup":
+        title = "Choose a console password"
+        intro = (
+            "No console password is set yet. Choose one now. "
+            "It is stored hashed on this server."
+        )
+        action = "/api/auth/setup"
+        button = "Save password"
+    else:
+        title = "Log in to Pam"
+        intro = "Enter the console password to open Pam."
+        action = "/login"
+        button = "Log in"
+    note = ""
+    if message:
+        note = f'<p class="message" role="alert">{html.escape(message)}</p>'
+    return (
+        "<!DOCTYPE html>"
+        '<html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>{html.escape(title)}</title>"
+        "<style>"
+        "body{font-family:system-ui,sans-serif;background:#f4f4f5;color:#18181b;"
+        "margin:0;display:flex;min-height:100vh;align-items:center;"
+        "justify-content:center;padding:1rem;box-sizing:border-box;}"
+        ".card{background:#fff;border:1px solid #e4e4e7;border-radius:0.75rem;"
+        "padding:2rem;max-width:26rem;width:100%;box-sizing:border-box;}"
+        "h1{font-size:1.25rem;margin:0 0 0.5rem;}"
+        "p{color:#52525b;}"
+        ".message{color:#b91c1c;}"
+        "label{display:block;margin:1rem 0 0.25rem;font-weight:600;}"
+        'input[type="password"]{width:100%;padding:0.6rem;box-sizing:border-box;'
+        "border:1px solid #d4d4d8;border-radius:0.375rem;font-size:1rem;}"
+        "button{margin-top:1.25rem;padding:0.6rem 1.25rem;font-size:1rem;"
+        "background:#4f46e5;color:#fff;border:none;border-radius:0.375rem;"
+        "cursor:pointer;}button:hover{background:#4338ca;}"
+        "</style></head><body>"
+        '<main class="card">'
+        f"<h1>{html.escape(title)}</h1>"
+        f"<p>{html.escape(intro)}</p>"
+        f"{note}"
+        f'<form method="post" action="{action}">'
+        '<label for="password">Password</label>'
+        '<input type="password" id="password" name="password" '
+        'autocomplete="current-password" minlength="8" required>'
+        f"<button type=\"submit\">{html.escape(button)}</button>"
+        "</form></main></body></html>"
+    )
+
+
+async def _login_password(request: Request) -> str:
+    ctype = request.headers.get("content-type", "")
+    if "application/json" in ctype:
+        try:
+            payload = await request.json()
+        except ValueError:
+            return ""
+        if isinstance(payload, dict):
+            return str(payload.get("password", "") or "")
+        return ""
+    form = await request.form()
+    return str(form.get("password", "") or "")
+
+
+def _session_cookie_response(request: Request, token: str, *, as_json: bool) -> Any:
+    if as_json:
+        resp: Any = JSONResponse({"ok": True, "message": "Logged in."})
+    else:
+        resp = RedirectResponse(url="/board", status_code=303)
+    resp.set_cookie(
+        auth_mod.SESSION_COOKIE,
+        token,
+        max_age=auth_mod.SESSION_TTL_SECONDS,
+        path="/",
+        httponly=True,
+        samesite="lax",
+        secure=request.url.scheme == "https",
+    )
+    return resp
+
+
+def _rate_limited_response(request: Request, key: str, *, as_json: bool) -> Any:
+    retry = auth_mod.login_retry_after(key)
+    msg = "Too many login attempts. Try again in a moment."
+    if as_json:
+        return JSONResponse(
+            {"ok": False, "message": msg},
+            status_code=429,
+            headers={"Retry-After": str(retry)},
+        )
+    resp = HTMLResponse(_login_page_html("login", msg), status_code=429)
+    resp.headers["Retry-After"] = str(retry)
+    return resp
 
 
 def _project(request: Request) -> str:
@@ -4566,4 +4748,100 @@ async def mid_sprint_approve_route(request: Request) -> Any:
     return {
         "ok": bool(result.get("applied") or result.get("write_id")),
         **result,
+    }
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page() -> HTMLResponse:
+    """Show the password setup form on first run, else the login form."""
+    data_dir = _auth_data_dir()
+    password_set = bool(data_dir is not None and auth_mod.has_password(data_dir))
+    return HTMLResponse(_login_page_html("login" if password_set else "setup", ""))
+
+
+@app.post("/login")
+async def login_submit(request: Request) -> Any:
+    """Check the console password and set a session cookie."""
+    ctype = request.headers.get("content-type", "")
+    as_json = "application/json" in ctype
+    data_dir = _auth_data_dir()
+    if data_dir is None or not auth_mod.has_password(data_dir):
+        msg = "No console password is set yet."
+        hint = "Open /login in a browser and choose a password first."
+        if as_json:
+            return JSONResponse(
+                {"ok": False, "message": msg, "hint": hint}, status_code=400
+            )
+        return HTMLResponse(
+            _login_page_html("setup", f"{msg} {hint}"), status_code=400
+        )
+    key = _client_ip(request)
+    if not auth_mod.login_allowed(key):
+        return _rate_limited_response(request, key, as_json=as_json)
+    password = await _login_password(request)
+    if password and auth_mod.verify_password(password, data_dir):
+        auth_mod.record_login_success(key)
+        return _session_cookie_response(
+            request, auth_mod.create_session(), as_json=as_json
+        )
+    auth_mod.record_login_failure(key)
+    msg = "That password did not match. Try again."
+    if as_json:
+        return JSONResponse({"ok": False, "message": msg}, status_code=401)
+    return HTMLResponse(_login_page_html("login", msg), status_code=401)
+
+
+@app.post("/api/auth/setup")
+async def auth_setup(request: Request) -> Any:
+    """Set the console password on first run (logged in users may change it)."""
+    ctype = request.headers.get("content-type", "")
+    as_json = "application/json" in ctype
+    data_dir = _auth_data_dir()
+    if data_dir is None:
+        return JSONResponse(
+            {"ok": False, "message": "The data directory is not available."},
+            status_code=500,
+        )
+    if auth_mod.has_password(data_dir) and not _request_session_ok(request):
+        return JSONResponse(
+            {
+                "ok": False,
+                "message": "A console password is already set.",
+                "hint": "Log in first to change it.",
+            },
+            status_code=403,
+        )
+    key = _client_ip(request)
+    if not auth_mod.login_allowed(key):
+        return _rate_limited_response(request, key, as_json=True)
+    password = await _login_password(request)
+    try:
+        auth_mod.set_password(password, data_dir)
+    except ValueError as exc:
+        auth_mod.record_login_failure(key)
+        return JSONResponse({"ok": False, "message": str(exc)}, status_code=400)
+    auth_mod.record_login_success(key)
+    return _session_cookie_response(
+        request, auth_mod.create_session(), as_json=as_json
+    )
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(request: Request) -> Any:
+    """Drop the current session and clear its cookie."""
+    auth_mod.destroy_session(request.cookies.get(auth_mod.SESSION_COOKIE, ""))
+    resp = JSONResponse({"ok": True, "message": "Logged out."})
+    resp.delete_cookie(auth_mod.SESSION_COOKIE, path="/")
+    return resp
+
+
+@app.get("/api/auth/status")
+def auth_status(request: Request) -> Any:
+    """Report whether a password is set and this request is logged in."""
+    data_dir = _auth_data_dir()
+    password_set = bool(data_dir is not None and auth_mod.has_password(data_dir))
+    return {
+        "ok": True,
+        "password_set": password_set,
+        "authenticated": _request_session_ok(request),
     }

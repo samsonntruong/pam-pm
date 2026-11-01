@@ -57,8 +57,6 @@ pam-pm start
 
 `pam start` prints a one-time setup token and opens the setup wizard at `http://127.0.0.1:8765/setup?token=...`. Work through each step until every Test button is green, then the console lands on the live Board. See [docs/setup.md](docs/setup.md) for the full walkthrough.
 
-For server hosting, see [docs/deploy.md](docs/deploy.md).
-
 Check your environment at any time with:
 
 ```sh
@@ -128,7 +126,7 @@ One internal Slack app per team, created once from the manifest at the repo root
 
 ## Roadmap
 
-Near term: PyPI release, daily lead digest, per-person snooze and quiet hours, Teams stub, MCP connectors for Jira, Linear, and Asana (design notes only today). Longer term: packaged desktop app and hosted version. Full list: [docs/roadmap.md](docs/roadmap.md).
+Near term: PyPI release, daily lead digest, per-person snooze and quiet hours, Teams stub, MCP connectors for Jira, Linear, and Asana (design notes only today). Longer term: packaged desktop app and a hosted multi-tenant version. Full list: [docs/roadmap.md](docs/roadmap.md).
 
 ## Contributing, license, and status
 

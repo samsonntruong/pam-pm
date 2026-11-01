@@ -70,6 +70,7 @@ class Config:
         data_dir: str | Path | None = None,
         model_tier: str | None = None,
         backend: str | None = None,
+        allowed_host: str | None = None,
     ) -> None:
         want_tier = model_tier or tier or os.environ.get("META_TIER", "")
         want_tier = (want_tier or "standard").strip().lower()
@@ -117,6 +118,10 @@ class Config:
             self.data_dir = Path(user_data_dir(APP_NAME))
         want_backend = backend if backend is not None else os.environ.get("PAM_BACKEND", "")
         self.backend = normalize_backend(want_backend)
+        if allowed_host is not None:
+            self.allowed_host = str(allowed_host).strip()
+        else:
+            self.allowed_host = os.environ.get("PAM_ALLOWED_HOST", "").strip()
 
     @property
     def model_tier(self) -> str:

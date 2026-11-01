@@ -34,13 +34,29 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def cmd_start(args: argparse.Namespace) -> None:
-    token = secrets.token_urlsafe(32)
-    os.environ["PAM_SETUP_TOKEN"] = token
+    from pam_pm.core import auth as auth_mod
+    from pam_pm.core.config import Config
+
     host = str(getattr(args, "host", HOST) or HOST)
     port = int(getattr(args, "port", PORT) or PORT)
+    data_dir = Config().data_dir
+    try:
+        if auth_mod.provision_password_from_env(data_dir):
+            print("Console password saved from PAM_CONSOLE_PASSWORD (stored hashed).")
+    except ValueError as exc:
+        print(str(exc))
+        raise SystemExit(2)
+    error = auth_mod.console_bind_error(host, data_dir)
+    if error is not None:
+        print(error)
+        raise SystemExit(2)
+    token = secrets.token_urlsafe(32)
+    os.environ["PAM_SETUP_TOKEN"] = token
     url = f"http://{host}:{port}/setup?token={token}"
     print(f"Setup token: {token}")
     print(f"URL: {url}")
+    if auth_mod.has_password(data_dir):
+        print(f"Login: http://{host}:{port}/login")
     if not getattr(args, "no_browser", False):
         try:
             webbrowser.open(url)
