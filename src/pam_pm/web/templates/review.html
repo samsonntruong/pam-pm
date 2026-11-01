@@ -1,6 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Review - Pam<p><a class="btn btn-small" href="/next-sprint">Plan next sprint</a></p>
-{% endblock %}
+{% block title %}Review - Pam{% endblock %}
 {% block content %}
 <h1>Review</h1>
 <p class="muted">Review for project {{ project }}. Facts come from team interviews. Items Pam is unsure about are marked for follow up.</p>
@@ -15,7 +14,7 @@
     <h2>Follow up actions</h2>
     {% if retro_actions %}
     {% for action in retro_actions %}
-    <article class="card">
+    <article>
       <h3>{{ action.title }}</h3>
       <p class="muted">{{ action.description }}</p>
       <button hx-post="/api/review/retro/create?index={{ loop.index0 }}" hx-target="#retro-result-{{ loop.index0 }}" hx-swap="innerHTML">Create task</button>

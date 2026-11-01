@@ -434,3 +434,82 @@ Findings fixed:
 - [P1, fixed] RAID operations had no human verbs. Activity now maps all ten RAID operations in both server and stream paths.
 
 Detector: `python -m ruff check src tests` exit 0 after fix; rendered `/raid` checked for 200, four tabs, no em dashes. No servers left running.
+
+## 9. Fresh pass over all 16 screens
+
+Method: single-context inline critique plus audit per screen, same
+collapsed method as above so scores compare. Mode: Operate, all 10
+heuristics apply. Before scores are the last recorded After scores
+from sections 1 to 8 and the WP4 notes (TRIAGE, NEXT_SPRINT,
+MID_SPRINT, LISTEN); Kickoff and Add task had no prior scores and
+were scored for the first time. No redesign, no theme change.
+
+Evidence: source read for every template in
+`src/pam_pm/web/templates/`, `style.css`, and the card HTML helpers
+in `app.py`; all 15 page routes rendered through TestClient (all
+200, no em dashes); `impeccable detect --json` over
+`src/pam_pm/web/` exit 0. No servers left running.
+
+Scoreboard (before to after, this pass):
+
+| Screen | Critique before | Critique after | Audit before | Audit after |
+|---|---|---|---|---|
+| Setup wizard | 22/40 Acceptable | 22/40 Acceptable | 14/20 Good | 14/20 Good |
+| Board | 25/40 Acceptable | 25/40 Acceptable | 13/20 Acceptable | 13/20 Acceptable |
+| Activity | 23/40 Acceptable | 23/40 Acceptable | 15/20 Good | 15/20 Good |
+| RAID | 24/40 Acceptable | 24/40 Acceptable | 15/20 Good | 15/20 Good |
+| Plan | 19/40 Poor | 19/40 Poor | 13/20 Acceptable | 13/20 Acceptable |
+| Review | 20/40 Acceptable | 20/40 Acceptable | 13/20 Acceptable | 13/20 Acceptable |
+| Rules | 25/40 Acceptable | 25/40 Acceptable | 16/20 Good | 16/20 Good |
+| Settings | 26/40 Acceptable | 26/40 Acceptable | 15/20 Good | 15/20 Good |
+| Kickoff | new, first score | 23/40 Acceptable | new, first score | 15/20 Good |
+| Triage | 29/40 Good | 29/40 Good | 17/20 Good | 17/20 Good |
+| Next sprint | 29/40 Good | 29/40 Good | 17/20 Good | 17/20 Good |
+| Add task | new, first score | 27/40 Acceptable | new, first score | 17/20 Good |
+| Mid sprint | 29/40 Good | 29/40 Good | 17/20 Good | 17/20 Good |
+| Listen | 26/40 Acceptable | 26/40 Acceptable | 15/20 Good | 15/20 Good |
+| Meetings | 24/40 Acceptable | 24/40 Acceptable | 15/20 Good | 15/20 Good |
+| Meeting detail | 24/40 Acceptable | 24/40 Acceptable | 16/20 Good | 16/20 Good |
+
+Fixes made (regressions and polish only, 5 small edits):
+
+- [P1, fixed] Review title block contained a link element, so markup
+  rendered inside `<title>`. `review.html` title is plain text again;
+  the Plan next sprint link stays in the page body.
+- [P2, fixed] Nested cards returned on two screens after the
+  next-sprint and mid-sprint passes removed the pattern. Triage card
+  HTML and both Review follow up action paths now use plain
+  `article` elements, matching the fixed screens.
+- [P3, fixed] Plan proposal table headers lacked `scope="col"`,
+  unlike every other console table. Scopes added.
+
+New findings left open, with reason:
+
+- [P2, open] Sidenav grew from 7 to 15 links as screens shipped, so
+  it exceeds the 5 item guidance. Reason: links are short, grouped
+  by reading order, and each screen keeps its one task focus.
+  Grouping with section headings is scheduled, not done here, to
+  avoid redesigning shared navigation in a polish pass.
+- [P2, open] Kickoff card names no dry run state, though approve
+  respects it and every sibling card shows a pill. Reason: approve
+  still guards through dry run server side, so no unsafe write is
+  possible. A pill matching triage and add-task is scheduled.
+- [P3, open] Kickoff and add-task name no cost note, unlike
+  triage, next-sprint, and mid-sprint. Reason: both propose paths
+  are local code, so the spend risk is nil. One shared cost line is
+  scheduled.
+
+First scores detail for the two unscored screens:
+
+- Kickoff 23/40: H1 2 (no dry run pill), H2 3, H3 3, H4 2 (missing
+  pill vs siblings), H5 2 (state unnamed), H6 3, H7 1, H8 3, H9 2,
+  H10 2. Audit 15/20: A11y 3, Perf 4, Theming 4, Responsive 2
+  (wide table), Integrity 2 (missing pill).
+- Add task 27/40: H1 3, H2 3, H3 3, H4 3, H5 3, H6 3, H7 1, H8 3,
+  H9 3, H10 2 (no cost note). Audit 17/20: A11y 3, Perf 4,
+  Theming 4, Responsive 3, Integrity 3.
+
+Detector result: `impeccable detect --json src/pam_pm/web/` exit 0,
+zero findings, before and after. The earlier base.html low contrast
+warning is gone: tokens now use the blue accent family in both
+themes. `ruff check src tests` exit 0, `pytest` 329 passed.

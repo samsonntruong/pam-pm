@@ -515,7 +515,7 @@ def _review_result_html(result: dict[str, Any]) -> str:
         title = html.escape(str(action.get("title", "")))
         desc = html.escape(str(action.get("description", "")))
         parts.append(
-            '<article class="card">'
+            '<article>'
             f"<h3>{title}</h3>"
             f'<p class="muted">{desc}</p>'
             f'<button hx-post="/api/review/retro/create?index={index}" '
@@ -563,7 +563,8 @@ def _plan_result_html(photo: dict[str, Any], proposal: list[dict[str, Any]]) -> 
         )
         parts.append(
             '<table class="proposal"><thead><tr>'
-            "<th>Title</th><th>Type</th><th>Owner</th><th>Estimate</th>"
+            '<th scope="col">Title</th><th scope="col">Type</th>'
+            '<th scope="col">Owner</th><th scope="col">Estimate</th>'
             "</tr></thead><tbody>"
             f"{rows}</tbody></table>"
         )
@@ -4525,7 +4526,7 @@ def _triage_result_html(findings: list[dict[str, Any]], dry_run: bool) -> str:
         fix = html.escape(str(finding.get("fix_label", "")))
         item_id = html.escape(str(finding.get("item_id", "")))
         parts.append(
-            '<article class="card">'
+            '<article>'
             f"<h3>{title}</h3>"
             f'<p class="muted">{kind} &middot; item {item_id} &middot; {detail}</p>'
             f"<p>Proposed fix: {fix}</p>"
