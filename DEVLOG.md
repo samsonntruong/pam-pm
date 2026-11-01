@@ -13,6 +13,7 @@ Build log for Pam. Three lines per entry.
 | Muse Code | M1b adapters client | Fake chat and board, ADO and Slack adapters, Responses ModelClient |
 | Muse Code | M1c interviewer | Six turn pushback, structured result, end to end fake pass, 26 tests total |
 | Muse Code | M2a rules | Engine, scheduler, poller watermark, morning followup blocker templates |
+| Muse Code | M2b state map | Agile Closed vs Scrum Done, close_item, is_closed, check_ado fix |
 | Azure DevOps | M2 ADO blocker probe | Link PASS, poll PASS, Agile uses Closed not Done, probe items deleted |
 | Muse Spark 1.3 Contributor | M0 check_meta real call | Responses API probe with tool and image, 539 in 113 cached 302 out, cost $0.000103 |
 | Muse Spark 1.3 Contributor | M0 check_sam real call | Listed models, confirmed sam-3.1 present, fallback TBD |

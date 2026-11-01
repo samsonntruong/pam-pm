@@ -1,18 +1,110 @@
-"""PAM PM command line interface (minimal placeholder)."""
+"""PAM PM command line interface."""
+
+from __future__ import annotations
 
 import argparse
+import os
+import secrets
+import webbrowser
 
 from pam_pm import __version__
+from pam_pm.web.app import HOST, PORT
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="pam", description="PAM PM placeholder CLI")
+    parser = argparse.ArgumentParser(prog="pam", description="Pam PM console")
     parser.add_argument("--version", action="store_true", help="Print version and exit")
     sub = parser.add_subparsers(dest="command")
-    sub.add_parser("start", help="Start placeholder")
-    sub.add_parser("doctor", help="Doctor placeholder")
+    p_start = sub.add_parser("start", help="Start the local web console")
+    p_start.add_argument("--host", default=HOST, help="Bind host (default 127.0.0.1)")
+    p_start.add_argument("--port", type=int, default=PORT, help="Bind port (default 8765)")
+    p_start.add_argument(
+        "--no-browser", action="store_true", help="Do not open a browser"
+    )
+    sub.add_parser("doctor", help="Check meta, slack, ado, and cache prefix")
     sub.add_parser("review", help="Review placeholder")
     return parser
+
+
+def cmd_start(args: argparse.Namespace) -> None:
+    token = secrets.token_urlsafe(32)
+    os.environ["PAM_SETUP_TOKEN"] = token
+    host = str(getattr(args, "host", HOST) or HOST)
+    port = int(getattr(args, "port", PORT) or PORT)
+    url = f"http://{host}:{port}/setup?token={token}"
+    print(f"Setup token: {token}")
+    print(f"URL: {url}")
+    if not getattr(args, "no_browser", False):
+        try:
+            webbrowser.open(url)
+        except Exception as exc:  # noqa: BLE001
+            print(f"Browser open skipped: {exc}")
+    try:
+        import uvicorn
+    except ImportError:
+        print("uvicorn is not installed.")
+        return
+    uvicorn.run("pam_pm.web.app:app", host=host, port=port)
+
+
+def _presence(keys: list[str]) -> list[str]:
+    return [k for k in keys if not os.environ.get(k, "").strip()]
+
+
+def _check_cache_prefix() -> tuple[bool, str]:
+    try:
+        import json
+
+        from pam_pm.agents.prompts.builder import build_messages
+    except Exception as exc:  # noqa: BLE001
+        return False, f"error: {exc}"
+    try:
+        first = build_messages(
+            "interviewer",
+            "Project Atlas.",
+            [{"role": "user", "content": "hi"}],
+            {"person": "Ana", "now": "2026-11-01T09:00:00"},
+        )
+        second = build_messages(
+            "interviewer",
+            "Project Atlas.",
+            [{"role": "user", "content": "hi"}],
+            {"person": "Ben", "now": "2026-11-01T15:30:00"},
+        )
+        tools_same = json.dumps(first["tools"], sort_keys=True) == json.dumps(
+            second["tools"], sort_keys=True
+        )
+        head_first = json.dumps(first["messages"][:-1], sort_keys=True)
+        head_second = json.dumps(second["messages"][:-1], sort_keys=True)
+        if tools_same and head_first == head_second:
+            return True, "stable"
+        return False, "unstable"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"error: {exc}"
+
+
+def cmd_doctor(_args: argparse.Namespace) -> None:
+    meta_missing = _presence(["META_MODEL", "META_BASE_URL", "META_API_KEY"])
+    slack_missing = _presence(["SLACK_BOT_TOKEN"])
+    ado_missing = _presence(["ADO_ORG_URL", "ADO_PROJECT", "ADO_PAT"])
+    if meta_missing:
+        print("meta: missing " + ", ".join(meta_missing))
+    else:
+        print("meta: ok")
+    if slack_missing:
+        print("slack: missing " + ", ".join(slack_missing))
+    else:
+        print("slack: ok")
+    if ado_missing:
+        print("ado: missing " + ", ".join(ado_missing))
+    else:
+        print("ado: ok")
+    ok, detail = _check_cache_prefix()
+    print(f"cache prefix: {detail}")
+    if not meta_missing and not slack_missing and not ado_missing and ok:
+        print("doctor: ok")
+    else:
+        print("doctor: issues found")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -22,9 +114,9 @@ def main(argv: list[str] | None = None) -> None:
         print(__version__)
         return
     if args.command == "start":
-        print("start: not implemented yet")
+        cmd_start(args)
     elif args.command == "doctor":
-        print("doctor: ok")
+        cmd_doctor(args)
     elif args.command == "review":
         print("review: not implemented yet")
     else:

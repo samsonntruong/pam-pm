@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Rules - Pam{% endblock %}
+{% block content %}
+<h1>Rules</h1>
+<p class="muted">Toggle the built in rule templates for project {{ project }}.</p>
+
+{% for rule in rules %}
+<section class="card" id="rule-{{ rule.name }}">
+  <h2>{{ rule.title }}</h2>
+  <p>{{ rule.description }}</p>
+  <p class="muted">Template: {{ rule.name }}. Trigger: {{ rule.trigger }}.</p>
+  <form hx-post="/api/rules/toggle" hx-target="#state-{{ rule.name }}" hx-swap="innerHTML">
+    <input type="hidden" name="name" value="{{ rule.name }}">
+    <label class="toggle">
+      <input type="checkbox" name="enabled" value="on" {% if rule.enabled %}checked{% endif %}>
+      Enabled
+    </label>
+    <button type="submit">Save</button>
+  </form>
+  <div id="state-{{ rule.name }}" class="result" aria-live="polite">
+    <span class="toggle-state">Rule {{ rule.name }} is {% if rule.enabled %}On{% else %}Off{% endif %}</span>
+  </div>
+</section>
+{% endfor %}
+{% endblock %}

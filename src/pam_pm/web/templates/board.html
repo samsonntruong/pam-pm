@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Board - Pam{% endblock %}
+{% block content %}
+<h1>Board</h1>
+<p class="muted">Read only view for project {{ project }}. Changes happen through rules.</p>
+
+<div class="kanban">
+  {% for col in columns %}
+  <section class="kanban-col">
+    <h2>{{ col.title }}</h2>
+    {% for item in col.cards %}
+    <article class="kanban-card status-{{ col.key }}">
+      <div class="kanban-head">
+        <span class="item-id">#{{ item.id }}</span>
+        <span class="status-dot status-{{ col.key }}" aria-hidden="true"></span>
+      </div>
+      <h3>{{ item.title }}</h3>
+      <p class="muted">{{ item.state }}. Owner: {{ item.owner }}.</p>
+    </article>
+    {% else %}
+    <p class="muted">No items.</p>
+    {% endfor %}
+  </section>
+  {% endfor %}
+</div>
+
+<section class="card">
+  <h2>Dependency links</h2>
+  <ul>
+    {% for link in links %}
+    <li>{{ link.label }} <span class="muted">({{ link.rel }})</span></li>
+    {% endfor %}
+  </ul>
+</section>
+{% endblock %}

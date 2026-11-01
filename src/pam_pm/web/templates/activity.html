@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Activity - Pam{% endblock %}
+{% block content %}
+<h1>Activity</h1>
+<p class="muted">Live stream from the event bus. Each write shows its evidence quote.</p>
+<p><span id="stream-status" class="pill">Stream: connecting</span></p>
+
+<div id="events">
+  {% for ev in events %}
+  <article class="card event" id="event-{{ ev.id }}">
+    <h2>{{ ev.operation }} on {{ ev.item_id }}</h2>
+    <blockquote class="evidence">{{ ev.evidence_quote }}</blockquote>
+    <p class="muted">Status: {{ ev.status }}. {{ ev.detail }}</p>
+    <button hx-post="/api/undo/{{ ev.id }}" hx-target="#undo-{{ ev.id }}" hx-swap="innerHTML">Undo</button>
+    <span id="undo-{{ ev.id }}" class="result" aria-live="polite"></span>
+  </article>
+  {% endfor %}
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  (function () {
+    var status = document.getElementById("stream-status");
+    var box = document.getElementById("events");
+    var source = new EventSource("/api/activity/stream");
+    source.onopen = function () {
+      if (status) status.textContent = "Stream: live";
+    };
+    source.onerror = function () {
+      if (status) status.textContent = "Stream: retrying";
+    };
+    source.onmessage = function (evt) {
+      try {
+        var data = JSON.parse(evt.data);
+        if (!data || !data.id) return;
+        if (document.getElementById("event-" + data.id)) return;
+        var card = document.createElement("article");
+        card.className = "card event";
+        card.id = "event-" + data.id;
+        var title = document.createElement("h2");
+        title.textContent = data.operation + " on " + data.item_id;
+        var quote = document.createElement("blockquote");
+        quote.className = "evidence";
+        quote.textContent = data.evidence_quote || "";
+        var meta = document.createElement("p");
+        meta.className = "muted";
+        meta.textContent = "Status: " + data.status + ". " + (data.detail || "");
+        card.appendChild(title);
+        card.appendChild(quote);
+        card.appendChild(meta);
+        box.prepend(card);
+      } catch (err) {
+        return;
+      }
+    };
+  })();
+</script>
+{% endblock %}

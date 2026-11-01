@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Setup - Pam{% endblock %}
+{% block content %}
+<h1>Setup wizard</h1>
+<p class="muted">Seven short steps. This console runs on 127.0.0.1 only.</p>
+
+{% if setup_done %}
+<p><span class="pill pill-ok">OK: Setup is complete</span></p>
+{% elif token_ok %}
+<p><span class="pill pill-ok">OK: Token accepted</span></p>
+{% endif %}
+
+<section class="card" id="step-1">
+  <h2>Step 1: Welcome</h2>
+  <p>Paste your one time setup token to finish the wizard. The token was printed by pam start.</p>
+  <form hx-post="/api/setup/complete" hx-target="#setup-result" hx-swap="innerHTML">
+    <label for="token">Setup token</label>
+    <input id="token" name="token" type="text" value="{{ token }}" placeholder="Paste token here" autocomplete="off">
+    <button type="submit">Complete setup</button>
+  </form>
+  <div id="setup-result" class="result" aria-live="polite"></div>
+</section>
+
+<section class="card" id="step-2">
+  <h2>Step 2: Connect Meta model</h2>
+  <p>Set META_MODEL, META_BASE_URL, and META_API_KEY in your secrets file, then test.</p>
+  <button hx-post="/api/test/meta" hx-target="#meta-result" hx-swap="innerHTML">Test Meta</button>
+  <div id="meta-result" class="result" aria-live="polite"></div>
+</section>
+
+<section class="card" id="step-3">
+  <h2>Step 3: Connect Slack</h2>
+  <p>Set SLACK_BOT_TOKEN in your secrets file, then test.</p>
+  <button hx-post="/api/test/slack" hx-target="#slack-result" hx-swap="innerHTML">Test Slack</button>
+  <div id="slack-result" class="result" aria-live="polite"></div>
+</section>
+
+<section class="card" id="step-4">
+  <h2>Step 4: Connect ADO</h2>
+  <p>Set ADO_ORG_URL, ADO_PROJECT, and ADO_PAT in your secrets file, then test.</p>
+  <button hx-post="/api/test/ado" hx-target="#ado-result" hx-swap="innerHTML">Test ADO</button>
+  <div id="ado-result" class="result" aria-live="polite"></div>
+</section>
+
+<section class="card" id="step-5">
+  <h2>Step 5: Choose project</h2>
+  <p>Pick the active project with the switcher at the top. Current project: {{ project }}.</p>
+</section>
+
+<section class="card" id="step-6">
+  <h2>Step 6: Enable rules</h2>
+  <p>Turn on the rule templates you want on the <a href="/rules">Rules</a> page.</p>
+</section>
+
+<section class="card" id="step-7">
+  <h2>Step 7: Done</h2>
+  <p>Check the <a href="/board">Board</a> and <a href="/activity">Activity</a> pages to confirm data flows.</p>
+</section>
+{% endblock %}
