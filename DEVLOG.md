@@ -63,6 +63,7 @@ Build log for Pam. Three lines per entry.
 | Muse Code | Collapsible sidenav | Dropdown groups with persisted state, 361 pass |
 | Muse Code | Spacing audit pass 2 | 6 CSS fixes, scores held, 361 pass |
 | Muse Code | SaaS sidebar rebuild | Search filter, pinned Manage cluster, tighter rows, 361 pass |
+| Muse Code | CI autostart fix | Autostart never fatal, pinned off in workflows, 361 pass |
 
 ## Entries
 
