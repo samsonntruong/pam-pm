@@ -4,7 +4,15 @@ from __future__ import annotations
 
 from typing import Any
 
-DONE_STATES = {"done", "closed"}
+from pam_pm.adapters.pm.base import is_closed
+
+
+def close_via_adapter(board: Any, item_id: str) -> Any:
+    """Close one item through the adapter mapped state when available."""
+    close_item = getattr(board, "close_item", None)
+    if callable(close_item):
+        return close_item(item_id)
+    return board.update_item(item_id, {"state": "Closed"})
 
 FORWARD_RELS = {
     "Dependency-Forward",
@@ -97,14 +105,14 @@ def on_item_done(
     *,
     message: str | None = None,
 ) -> list[str]:
-    """DM each successor owner when an item moves to Done. Else no-op."""
+    """DM each successor owner when an item closes. Else no-op."""
     resolved = item
     if isinstance(item, str):
         try:
             resolved = board.get_item(item)
         except Exception:  # noqa: BLE001
             return []
-    if _item_state(resolved).strip().lower() not in DONE_STATES:
+    if not is_closed(_item_state(resolved)):
         return []
     done_id = _item_id(resolved)
     if not done_id:

@@ -14,9 +14,14 @@ from urllib.parse import quote
 
 import httpx
 
-from pam_pm.adapters.pm.base import Link, PMAdapter, WorkItem
+from pam_pm.adapters.pm.base import Link, PMAdapter, WorkItem, is_closed
 
 API_VERSION = "7.1"
+
+STATE_MAP = {
+    "Agile": {"open": "New", "active": "Active", "done": "Closed"},
+    "Scrum": {"open": "To Do", "active": "In Progress", "done": "Done"},
+}
 
 DEPENDENCY_FORWARD = "System.LinkTypes.Dependency-Forward"
 DEPENDENCY_REVERSE = "System.LinkTypes.Dependency-Reverse"
@@ -62,6 +67,8 @@ class ADOAdapter(PMAdapter):
         project: str | None = None,
         team: str | None = None,
         timeout: int = 30,
+        transport: httpx.BaseTransport | None = None,
+        process: str | None = None,
     ) -> None:
         org = (org_url or os.environ.get("ADO_ORG_URL", "")).strip().rstrip("/")
         proj = (project or os.environ.get("ADO_PROJECT", "")).strip()
@@ -78,14 +85,88 @@ class ADOAdapter(PMAdapter):
         self._basic = "Basic " + basic
         self._client = httpx.Client(
             timeout=timeout,
+            transport=transport,
             headers={
                 "Authorization": self._basic,
                 "Accept": "application/json",
             },
         )
+        cleaned = (process or "").strip()
+        self._process: str | None = cleaned if cleaned in STATE_MAP else None
 
     def close(self) -> None:
         self._client.close()
+
+    def detect_process(self, project: str | None = None) -> str:
+        """Detect Agile or Scrum for a project, defaulting to Agile.
+
+        Uses project capabilities first, then a Task states probe.
+        """
+        proj = (project or self._project).strip() or self._project
+        if proj == self._project and self._process in STATE_MAP:
+            return str(self._process)
+        found = self._process_from_properties(proj)
+        if found is None:
+            found = self._process_from_probe(proj)
+        if found is None:
+            found = "Agile"
+        if proj == self._project:
+            self._process = found
+        return found
+
+    def _process_from_properties(self, proj: str) -> str | None:
+        url = f"{self._org}/_apis/projects/{quote(proj, safe='')}"
+        url += f"?api-version={API_VERSION}"
+        try:
+            data = self._request("GET", url)
+        except ADOError:
+            return None
+        if not isinstance(data, dict):
+            return None
+        caps = data.get("capabilities")
+        if not isinstance(caps, dict):
+            return None
+        template = caps.get("processTemplate")
+        if not isinstance(template, dict):
+            return None
+        name = str(template.get("templateName", "")).strip()
+        for key in STATE_MAP:
+            if name.lower() == key.lower():
+                return key
+        return None
+
+    def _process_from_probe(self, proj: str) -> str | None:
+        prefix = f"{self._org}/{quote(proj, safe='')}"
+        url = prefix + f"/_apis/wit/workitemtypes/Task/states?api-version={API_VERSION}"
+        try:
+            data = self._request("GET", url)
+        except ADOError:
+            return None
+        values = data.get("value", []) if isinstance(data, dict) else []
+        names = set()
+        for entry in values if isinstance(values, list) else []:
+            if isinstance(entry, dict):
+                names.add(str(entry.get("name", "")).strip().lower())
+        if "new" in names:
+            return "Agile"
+        if "to do" in names:
+            return "Scrum"
+        return None
+
+    def _mapped_state(self, kind: str) -> str:
+        proc = self._process if self._process in STATE_MAP else None
+        if proc is None:
+            proc = self.detect_process()
+        mapping = STATE_MAP.get(str(proc), STATE_MAP["Agile"])
+        return str(mapping.get(kind, mapping["open"]))
+
+    def close_item(self, item_id: str) -> WorkItem:
+        """Move one item to its mapped closed state."""
+        return self.update_item(item_id, {"state": self._mapped_state("done")})
+
+    def activate_item(self, item_id: str) -> WorkItem:
+        """Move one item to its mapped active state."""
+        return self.update_item(item_id, {"state": self._mapped_state("active")})
 
     def _clean(self, text: object) -> str:
         return redact(text, self._pat, self._basic)
@@ -220,6 +301,9 @@ class ADOAdapter(PMAdapter):
         given = dict(fields or {})
         item_type = str(given.pop("type", "Task"))
         given.setdefault("title", title)
+        state_keys = {"state", "System.State", "/fields/System.State"}
+        if state_keys.isdisjoint(given):
+            given["state"] = self._mapped_state("open")
         url = self._url(
             f"/_apis/wit/workitems/${quote(item_type, safe='')}"
             f"?api-version={API_VERSION}"
@@ -272,6 +356,7 @@ class ADOAdapter(PMAdapter):
         return out
 
     def poll_changes(self, since: str | None = None) -> list[WorkItem]:
+        """List changed items; closed means is_closed state on any process."""
         if since:
             tick = since.replace("'", "''")
             query = (
@@ -285,7 +370,10 @@ class ADOAdapter(PMAdapter):
                 " WHERE [System.ChangedDate] >= @Today - 30"
                 " ORDER BY [System.ChangedDate] ASC"
             )
-        return self._batch_get(self._wiql(query))
+        items = self._batch_get(self._wiql(query))
+        for item in items:
+            item.fields.setdefault("is_closed", is_closed(item.state))
+        return items
 
 
 AzureDevOpsAdapter = ADOAdapter

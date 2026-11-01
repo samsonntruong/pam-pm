@@ -189,9 +189,19 @@ def main(argv=None):
     # Step 2: get project.
     url = f"{org}/_apis/projects/{proj_enc}?api-version={API_VERSION}"
     status, data, _raw = do_request(url, pat, args.timeout)
+    process_template = "Agile"
     if status == 200 and isinstance(data, dict):
         pid = str(data.get("id", ""))[:36]
         print(redact(f"step get-project: PASS id={pid}"))
+        try:
+            caps = data.get("capabilities", {})
+            template = caps.get("processTemplate", {}) if isinstance(caps, dict) else {}
+            name = str(template.get("templateName", "")).strip() if isinstance(template, dict) else ""
+            if name.lower() in ("agile", "scrum"):
+                process_template = name.capitalize() if name.lower() == "agile" else "Scrum"
+        except Exception:  # noqa: BLE001
+            process_template = "Agile"
+        print(redact(f"step process-template: note template={process_template}"))
     else:
         print(redact(f"step get-project: FAIL status={status}"))
         failed += 1
@@ -276,18 +286,24 @@ def main(argv=None):
                     f"{org}/{proj_enc}/_apis/wit/workitems/{wid}"
                     f"?api-version={API_VERSION}"
                 )
-                close_patch = [
-                    {"op": "add", "path": "/fields/System.Tags", "value": "pam-test"},
-                    {"op": "add", "path": "/fields/System.State", "value": "Closed"},
-                ]
-                cstatus, _, _ = do_request(
-                    close_url,
-                    pat,
-                    args.timeout,
-                    method="PATCH",
-                    payload=close_patch,
-                    content_type="application/json-patch+json",
-                )
+                mapped_closed = "Closed" if process_template == "Agile" else "Done"
+                fallback_closed = "Done" if mapped_closed == "Closed" else "Closed"
+                cstatus = 0
+                for state_value in (mapped_closed, fallback_closed):
+                    close_patch = [
+                        {"op": "add", "path": "/fields/System.Tags", "value": "pam-test"},
+                        {"op": "add", "path": "/fields/System.State", "value": state_value},
+                    ]
+                    cstatus, _, _ = do_request(
+                        close_url,
+                        pat,
+                        args.timeout,
+                        method="PATCH",
+                        payload=close_patch,
+                        content_type="application/json-patch+json",
+                    )
+                    if cstatus == 200:
+                        break
                 if cstatus == 200:
                     print(redact(f"step test-item-close: PASS id={wid} tagged pam-test"))
                 else:

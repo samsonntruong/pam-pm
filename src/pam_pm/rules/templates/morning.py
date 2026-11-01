@@ -4,10 +4,19 @@ from __future__ import annotations
 
 from typing import Any
 
+from pam_pm.adapters.pm.base import is_closed
 from pam_pm.agents.interviewer import Interviewer
 from pam_pm.core.writes import WriteService
 
-DONE_STATES = {"done", "closed", "removed", "resolved"}
+OTHER_CLOSED = {"removed", "resolved"}
+
+
+def close_via_adapter(board: Any, item_id: str) -> Any:
+    """Close one item through the adapter mapped state when available."""
+    close_item = getattr(board, "close_item", None)
+    if callable(close_item):
+        return close_item(item_id)
+    return board.update_item(item_id, {"state": "Closed"})
 
 
 def _state_of(item: Any) -> str:
@@ -44,7 +53,10 @@ def _owner_of(item: Any) -> str:
 
 
 def _is_active(item: Any) -> bool:
-    return _state_of(item).strip().lower() not in DONE_STATES
+    state = _state_of(item)
+    if is_closed(state):
+        return False
+    return state.strip().lower() not in OTHER_CLOSED
 
 
 def _resolve_writes(

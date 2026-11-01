@@ -1,10 +1,22 @@
-"""PM adapter interface: items, links, polling."""
+"""PM adapter interface: items, links, polling.
+
+Canonical done means Closed on Agile projects and Done on Scrum projects.
+Use is_closed to treat both spellings as closed.
+"""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
+
+
+def is_closed(state: object) -> bool:
+    """Return True when a work item state means closed.
+
+    Closed covers Closed on Agile and Done on Scrum, case-insensitive.
+    """
+    return str(state or "").strip().lower() in {"done", "closed"}
 
 
 @dataclass

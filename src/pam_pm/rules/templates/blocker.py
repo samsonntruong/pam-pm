@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from pam_pm.adapters.pm.base import is_closed
 from pam_pm.core.schemas import BlockerInfo
 from pam_pm.core.writes import WriteService
 
@@ -12,7 +13,14 @@ WHO_Q = "Who or what blocks it?"
 IMPACT_Q = "What is the impact?"
 
 FORWARD_REL = "System.LinkTypes.Dependency-Forward"
-DONE_STATES = {"done", "closed"}
+
+
+def close_via_adapter(board: Any, item_id: str) -> Any:
+    """Close one item through the adapter mapped state when available."""
+    close_item = getattr(board, "close_item", None)
+    if callable(close_item):
+        return close_item(item_id)
+    return board.update_item(item_id, {"state": "Closed"})
 
 
 def _text_of(entry: Any) -> str:
@@ -222,7 +230,7 @@ def on_blocker_closed(
             resolved = board.get_item(blocking_item)
         except Exception:  # noqa: BLE001
             return None
-    if _item_state(resolved).strip().lower() not in DONE_STATES:
+    if not is_closed(_item_state(resolved)):
         return None
     title = _item_title(resolved)
     try:
