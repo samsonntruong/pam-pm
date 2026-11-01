@@ -62,6 +62,7 @@ Build log for Pam. Three lines per entry.
 | Muse Code | Brand icon colors | Official fills on all 7 icons, drafts removed, 361 pass |
 | Muse Code | Collapsible sidenav | Dropdown groups with persisted state, 361 pass |
 | Muse Code | Spacing audit pass 2 | 6 CSS fixes, scores held, 361 pass |
+| Muse Code | SaaS sidebar rebuild | Search filter, pinned Manage cluster, tighter rows, 361 pass |
 
 ## Entries
 
