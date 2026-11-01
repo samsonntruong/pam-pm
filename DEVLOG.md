@@ -12,6 +12,8 @@ Build log for Pam. Three lines per entry.
 | Muse Code | M1a core | Masking, cost, schemas, store, writes, builder, 8 tests pass |
 | Muse Code | M1b adapters client | Fake chat and board, ADO and Slack adapters, Responses ModelClient |
 | Muse Code | M1c interviewer | Six turn pushback, structured result, end to end fake pass, 26 tests total |
+| Muse Code | M2a rules | Engine, scheduler, poller watermark, morning followup blocker templates |
+| Azure DevOps | M2 ADO blocker probe | Link PASS, poll PASS, Agile uses Closed not Done, probe items deleted |
 | Muse Spark 1.3 Contributor | M0 check_meta real call | Responses API probe with tool and image, 539 in 113 cached 302 out, cost $0.000103 |
 | Muse Spark 1.3 Contributor | M0 check_sam real call | Listed models, confirmed sam-3.1 present, fallback TBD |
 | Azure DevOps | M0 check_ado real run | Listed projects, created and deleted test item 1, verified Dependency link names |
@@ -42,3 +44,9 @@ Total under $0.05 of $100 cap, no hard stop, continuing to M1.
 Store with evidence log and undo, masking, cost meter, fake adapters, Responses ModelClient.
 Interviewer challenges vague answers, six turn cap, structured result, end to end fake pass.
 26 tests pass with ruff clean, spend adds about $0.049, total about $0.07, cached share 94 to 95 percent.
+
+### M2 rules and ADO probe
+
+Rules engine with scheduler and poller watermark plus three templates pass 5 fake tests.
+Real ADO link and poll pass, Agile state is Closed not Done so templates need a state map.
+31 tests pass total, M2a spend about $0.016, total about $0.09, continuing to state fix.

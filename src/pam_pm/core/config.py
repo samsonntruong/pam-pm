@@ -1,5 +1,125 @@
-"""App configuration loading. TODO: implement settings."""
+"""App configuration: tier, spend cap, dry run, data dir."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from platformdirs import user_data_dir
+
+APP_NAME = "pam-pm"
+DEFAULT_DAILY_SPEND_CAP = 2.0
 
 
-class Settings:
-    """TODO: settings loaded from env and local data dir."""
+def resolve_data_dir(explicit: str | Path | None = None) -> Path:
+    """Return the data dir, honoring PAM_HOME then platformdirs."""
+    home = os.environ.get("PAM_HOME", "").strip()
+    if explicit is not None:
+        return Path(explicit).expanduser()
+    if home:
+        return Path(home).expanduser()
+    return Path(user_data_dir(APP_NAME))
+
+
+class Config:
+    """Runtime settings loaded from args with env fallbacks.
+
+    tier defaults to standard. Contributor tier is only for runs with
+    fake data, enforced by require_fake_for_contributor.
+    """
+
+    def __init__(
+        self,
+        model: str | None = None,
+        tier: str | None = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        max_tokens: int | None = None,
+        daily_spend_cap: float | None = None,
+        dry_run: bool | None = None,
+        data_dir: str | Path | None = None,
+        model_tier: str | None = None,
+    ) -> None:
+        want_tier = model_tier or tier or os.environ.get("META_TIER", "")
+        want_tier = (want_tier or "standard").strip().lower()
+        if want_tier not in ("standard", "contributor"):
+            want_tier = "standard"
+        self.tier = want_tier
+        self.model = (model or os.environ.get("META_MODEL", "")).strip()
+        self.base_url = (base_url or os.environ.get("META_BASE_URL", "")).strip()
+        self.api_key = (api_key or os.environ.get("META_API_KEY", "")).strip()
+        env_tokens = os.environ.get("META_MAX_TOKENS", "").strip()
+        if max_tokens is not None:
+            self.max_tokens = int(max_tokens)
+        elif env_tokens:
+            try:
+                self.max_tokens = int(env_tokens)
+            except ValueError:
+                self.max_tokens = 4000
+        else:
+            self.max_tokens = 4000
+        env_cap = os.environ.get("DAILY_SPEND_CAP", "").strip()
+        if daily_spend_cap is not None:
+            self.daily_spend_cap = float(daily_spend_cap)
+        elif env_cap:
+            try:
+                self.daily_spend_cap = float(env_cap)
+            except ValueError:
+                self.daily_spend_cap = DEFAULT_DAILY_SPEND_CAP
+        else:
+            self.daily_spend_cap = DEFAULT_DAILY_SPEND_CAP
+        env_dry = os.environ.get("PAM_DRY_RUN", "").strip().lower()
+        if dry_run is not None:
+            self.dry_run = bool(dry_run)
+        elif env_dry in ("0", "false", "no", "off"):
+            self.dry_run = False
+        elif env_dry in ("1", "true", "yes", "on"):
+            self.dry_run = True
+        else:
+            self.dry_run = True
+        env_home = os.environ.get("PAM_HOME", "").strip()
+        if data_dir is not None:
+            self.data_dir = Path(data_dir).expanduser()
+        elif env_home:
+            self.data_dir = Path(env_home).expanduser()
+        else:
+            self.data_dir = Path(user_data_dir(APP_NAME))
+
+    @property
+    def model_tier(self) -> str:
+        return self.tier
+
+    @model_tier.setter
+    def model_tier(self, value: str) -> None:
+        norm = (value or "standard").strip().lower()
+        self.tier = norm if norm in ("standard", "contributor") else "standard"
+
+    @property
+    def meta_model(self) -> str:
+        return self.model
+
+    @property
+    def meta_tier(self) -> str:
+        return self.tier
+
+    def require_fake_for_contributor(self, *, fake: bool = False) -> None:
+        """Raise when contributor tier is used with non fake data."""
+        if self.tier == "contributor" and not fake:
+            raise ValueError("contributor tier is only for runs with fake data")
+
+    def ensure_data_dir(self) -> Path:
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        return self.data_dir
+
+    def db_path(self, name: str = "state.db") -> Path:
+        return self.ensure_data_dir() / name
+
+    def __repr__(self) -> str:
+        return (
+            f"Config(tier={self.tier!r}, model={self.model!r}, "
+            f"daily_spend_cap={self.daily_spend_cap!r}, dry_run={self.dry_run!r}, "
+            f"data_dir={str(self.data_dir)!r})"
+        )
+
+
+Settings = Config
