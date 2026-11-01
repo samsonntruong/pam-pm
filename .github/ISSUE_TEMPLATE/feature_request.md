@@ -5,8 +5,8 @@ about: Suggest an idea
 
 ## Problem
 
-TODO: what problem does this solve?
+What problem does this solve, for whom?
 
 ## Proposal
 
-TODO: what should change?
+What should change? Include the rule, screen, or adapter affected.

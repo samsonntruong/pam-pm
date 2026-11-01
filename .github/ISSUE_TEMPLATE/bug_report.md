@@ -5,12 +5,13 @@ about: Report something broken
 
 ## What happened
 
-TODO: describe the bug.
+Describe the bug and what you expected instead.
 
 ## Steps to reproduce
 
-1. TODO
+1.
+2.
 
-## Expected behavior
+## Environment
 
-TODO
+Install path (pipx, source, Docker), Python version, `pam doctor` output (names only, no secret values).
