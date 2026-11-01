@@ -9,11 +9,12 @@
   <script>
     (function () {
       try {
-        var name = localStorage.getItem("pam-theme") || "";
-        if (name === "dark" || name === "light") {
-          document.documentElement.setAttribute("data-theme", name);
+        var name = localStorage.getItem("pam-theme") || "dark";
+        if (name !== "light" && name !== "dark") {
+          name = "dark";
         }
-      } catch (err) { /* default theme when storage is blocked */ }
+        document.documentElement.setAttribute("data-theme", name);
+      } catch (err) { /* base CSS already paints the dark default */ }
     })();
   </script>
 </head>
@@ -35,7 +36,7 @@
         {% if project_backend_label %}<span class="muted backend-kind">{{ project_backend_label }}</span>{% endif %}
       </div>
       <a class="btn btn-small" href="/listen?project={{ project }}">Listen</a>
-      <button type="button" id="theme-toggle" aria-pressed="false">Dark theme</button>
+      <button type="button" id="theme-toggle" aria-pressed="true">Light theme</button>
     </div>
   </header>
   <div class="layout">
@@ -80,12 +81,11 @@
       }
       function paint(name) {
         var root = document.documentElement;
-        if (name === "dark" || name === "light") {
-          root.setAttribute("data-theme", name);
-        } else {
-          root.removeAttribute("data-theme");
+        if (name !== "light" && name !== "dark") {
+          name = "dark";
         }
-        var dark = name === "dark" || (name !== "light" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        root.setAttribute("data-theme", name);
+        var dark = name === "dark";
         btn.textContent = dark ? "Light theme" : "Dark theme";
         btn.setAttribute("aria-pressed", dark ? "true" : "false");
       }

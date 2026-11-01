@@ -1,9 +1,12 @@
 ---
 name: Pam
 description: Calm console for small software and data teams.
+default-theme: "dark"
 colors:
-  accent: "#0f766e"
-  accent-deep: "#0b5e56"
+  accent: "#1e40af"
+  accent-deep: "#1e3a8a"
+  dark-accent: "#3768dc"
+  dark-accent-deep: "#2f5cc4"
   app-bg: "#f4f6f8"
   surface: "#ffffff"
   ink: "#16202a"
@@ -118,9 +121,9 @@ components:
 
 **Creative North Star: "The Quiet Control Room"**
 
-Pam looks like a finished tool a lead can trust at 9am on a Monday. One deep teal accent, neutral gray surfaces, system type, and flat cards with thin borders. Density is medium: generous card padding, a narrow 190px side nav, and a 980px content column that keeps lines short. Motion is subtle and only confirms state: a test pill flips to green, a new activity card prepends, a board card moves column.
+Pam looks like a finished tool a lead can trust at 9am on a Monday. One deep blue accent, neutral surfaces, system type, and flat cards with thin borders. Density is medium: generous card padding, a narrow 190px side nav, and a 980px content column that keeps lines short. Motion is subtle and only confirms state: a test pill flips to green, a new activity card prepends, a board card moves column.
 
-The same shell serves all eight screens: Setup wizard, Board, Activity, RAID, Plan, Review, Rules, and Settings. Each screen is a stack of cards under a short title plus a muted helper line. Async results land in live regions. Light theme ships today; dark theme reuses the same roles with flipped surface and ink values.
+The same shell serves all eight screens: Setup wizard, Board, Activity, RAID, Plan, Review, Rules, and Settings. Each screen is a stack of cards under a short title plus a muted helper line. Async results land in live regions. Dark theme is the default and paints first with no script; light theme reuses the same roles with flipped surface and ink values, one toggle click away. A stored preference wins on return visits.
 
 **Key Characteristics:**
 
@@ -132,11 +135,11 @@ The same shell serves all eight screens: Setup wizard, Board, Activity, RAID, Pl
 
 ## Colors
 
-One teal accent on neutral gray. Semantic colors only for status and feedback.
+One blue accent on neutral surfaces. Semantic colors only for status and feedback.
 
 ### Primary
 
-- **Deep Teal** (#0f766e): primary actions, brand wordmark, active nav. Hover deepens to #0b5e56.
+- **Deep Blue** (#1e40af in light, #3768dc in dark): primary actions, brand wordmark, active nav. Hover deepens to #1e3a8a in light and #2f5cc4 in dark.
 
 ### Neutral
 
@@ -156,7 +159,7 @@ One teal accent on neutral gray. Semantic colors only for status and feedback.
 
 ### Named Rules
 
-**The One Accent Rule.** Only teal means clickable or active. Status colors never style buttons or nav.
+**The One Accent Rule.** Only blue means clickable or active. Status colors never style buttons or nav.
 
 **The Label With Color Rule.** Every status color ships with a text label. Dots never stand alone.
 
@@ -194,7 +197,7 @@ Spacing rhythm follows a small rem scale: 0.25rem for tight gaps, 0.5rem to 0.8r
 
 Flat by design. Depth comes from hairline borders and background contrast, not shadows. No box-shadow values exist in the current CSS.
 
-Cards, columns, inputs, and pills all sit at the same level. State changes show through color and label: nav active fills teal, test pills flip to mint or rose, kanban titles take status color.
+Cards, columns, inputs, and pills all sit at the same level. State changes show through color and label: nav active fills Deep Blue, test pills flip to mint or rose, kanban titles take status color.
 
 ### Named Rules
 
@@ -215,8 +218,8 @@ Borders are 1px hairlines except the evidence quote, which keeps top, right, and
 ### Buttons
 
 - **Shape:** softly rounded (6px), no border.
-- **Primary:** Deep Teal fill (#0f766e) with white text, padding 0.5rem 0.9rem, weight 600.
-- **Hover / Focus:** fill deepens to #0b5e56. Focus must stay visible with an outline that meets contrast in both themes.
+- **Primary:** Deep Blue fill (#1e40af in light, #3768dc in dark) with white text, padding 0.5rem 0.9rem, weight 600.
+- **Hover / Focus:** fill deepens to #1e3a8a in light and #2f5cc4 in dark. Focus stays visible with an outline that meets contrast in both themes.
 - **Secondary / Ghost:** not present today. If added, use a hairline button with ink text rather than a second accent.
 
 ### Pills
@@ -240,7 +243,7 @@ Borders are 1px hairlines except the evidence quote, which keeps top, right, and
 
 ### Navigation
 
-Topbar brand in Deep Teal at 800 weight, 1.25rem, 0.02em tracking. Side nav links pad at 0.5rem 0.7rem, 6px radius, 600 weight, muted at rest. Hover fills App Wash with ink text. Active fills Deep Teal with white text. Project switcher is a native select in the topbar. Mobile stacks the nav above content.
+Topbar brand in Deep Blue at 800 weight, 1.25rem, 0.02em tracking. Side nav links pad at 0.5rem 0.7rem, 6px radius, 600 weight, muted at rest. Hover fills App Wash with ink text. Active fills Deep Blue with white text. Project switcher is a native select in the topbar. Mobile stacks the nav above content.
 
 ### Kanban board
 
@@ -254,7 +257,7 @@ Italic blockquote on App Wash with top, right, and bottom hairlines and a 0 6px 
 
 ### Do:
 
-- **Do** keep one accent: teal for actions and active states only, hover at #0b5e56.
+- **Do** keep one accent: blue for actions and active states only, hover at #1e3a8a in light and #2f5cc4 in dark.
 - **Do** pair every status color with a label and keep dots at 0.7rem circles.
 - **Do** use the card stack for new screens such as RAID and Settings, with a title plus muted helper line.
 - **Do** announce async results in a live region next to the control that ran them.
@@ -267,4 +270,4 @@ Italic blockquote on App Wash with top, right, and bottom hairlines and a 0 6px 
 - **Don't** use status colors for buttons, nav, or brand text.
 - **Don't** add a web font, icon font, or CSS framework. Inline SVG only, system stack only.
 - **Don't** put raw transcripts in the console. Show synthesized status plus short evidence quotes.
-- **Don't** invent tokens. If dark theme values are not yet in CSS, mark them unresolved and keep light values normative.
+- **Don't** invent tokens. Both themes are resolved in CSS; keep them in sync and keep dark values normative.

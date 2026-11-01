@@ -1,25 +1,8 @@
+/* Dark is the default theme: these base tokens paint first with no script. */
 :root {
-  --accent: #0f766e;
-  --accent-dark: #0b5e56;
-  --bg: #f4f6f8;
-  --surface: #ffffff;
-  --text: #16202a;
-  --muted: #5b6b7b;
-  --border: #dde5ec;
-  --ok-bg: #dcfce7;
-  --ok-text: #166534;
-  --fail-bg: #fee2e2;
-  --fail-text: #991b1b;
-  --todo: #b45309;
-  --doing: #1d4ed8;
-  --done: #15803d;
-  --blocked: #b91c1c;
-  --tag-bg: #e8eef3;
-}
-
-:root[data-theme="dark"] {
-  --accent: #0f766e;
-  --accent-dark: #0b5e56;
+  color-scheme: dark;
+  --accent: #3768dc;
+  --accent-dark: #2f5cc4;
   --bg: #0e141a;
   --surface: #161e26;
   --text: #e8eef3;
@@ -36,25 +19,45 @@
   --tag-bg: #22303c;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --accent: #0f766e;
-    --accent-dark: #0b5e56;
-    --bg: #0e141a;
-    --surface: #161e26;
-    --text: #e8eef3;
-    --muted: #9fb0bf;
-    --border: #2c3742;
-    --ok-bg: #123f2a;
-    --ok-text: #a7f3d0;
-    --fail-bg: #571b1b;
-    --fail-text: #fecaca;
-    --todo: #e8a13c;
-    --doing: #6ea8fe;
-    --done: #4ade80;
-    --blocked: #f08080;
-    --tag-bg: #22303c;
-  }
+/* Explicit stored choice of dark matches the base tokens. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --accent: #3768dc;
+  --accent-dark: #2f5cc4;
+  --bg: #0e141a;
+  --surface: #161e26;
+  --text: #e8eef3;
+  --muted: #9fb0bf;
+  --border: #2c3742;
+  --ok-bg: #123f2a;
+  --ok-text: #a7f3d0;
+  --fail-bg: #571b1b;
+  --fail-text: #fecaca;
+  --todo: #e8a13c;
+  --doing: #6ea8fe;
+  --done: #4ade80;
+  --blocked: #f08080;
+  --tag-bg: #22303c;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --accent: #1e40af;
+  --accent-dark: #1e3a8a;
+  --bg: #f4f6f8;
+  --surface: #ffffff;
+  --text: #16202a;
+  --muted: #5b6b7b;
+  --border: #dde5ec;
+  --ok-bg: #dcfce7;
+  --ok-text: #166534;
+  --fail-bg: #fee2e2;
+  --fail-text: #991b1b;
+  --todo: #b45309;
+  --doing: #1d4ed8;
+  --done: #15803d;
+  --blocked: #b91c1c;
+  --tag-bg: #e8eef3;
 }
 
 * { box-sizing: border-box; }
