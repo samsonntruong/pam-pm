@@ -666,3 +666,106 @@ input, select, textarea {
 button[aria-busy="true"] {
   opacity: 0.75;
 }
+
+/* Spacing pass: scoped rhythm fixes only. No color, type, or theme changes. */
+
+/* Setup backend and provider pickers: grid rhythm, no nested double margins. */
+.backend-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: 0.6rem;
+  margin: 0.6rem 0;
+}
+
+.backend-card { display: block; margin: 0; }
+.backend-card input[type="radio"] { margin-right: 0.4rem; }
+.backend-card .muted { display: block; margin-top: 0.25rem; }
+
+/* Setup bare labels and inputs: attach each label to its field. */
+section.card[id^="step-"] > label[for],
+section.card[id^="step-"] > div > label[for] {
+  display: block;
+  font-weight: 600;
+  font-size: 0.9rem;
+  margin: 0.6rem 0 0.25rem;
+}
+
+section.card[id^="step-"] > input,
+section.card[id^="step-"] > div > input,
+section.card[id^="step-"] > textarea,
+section.card[id^="step-"] > div > textarea {
+  display: block;
+  width: 100%;
+  max-width: 28rem;
+  margin: 0 0 0.2rem;
+}
+
+/* Setup button rows: same gap as .form-actions without template edits. */
+section.card[id^="step-"] > div:has(> button) {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.8rem;
+}
+
+section.card[id^="step-"] > button { margin-top: 0.6rem; }
+
+/* Setup quote: match evidence inset, drop the 40px browser indent. */
+section.card blockquote:not(.evidence) {
+  margin: 0.6rem 0;
+  padding: 0.6rem 0.8rem;
+}
+
+/* Checkbox rows: keep box beside text instead of stacked above it. */
+form > label:has(input[type="checkbox"]) {
+  flex-direction: row;
+  align-items: center;
+}
+
+/* Detached form fields: block rhythm for label, field, and button. */
+form > label:first-child { margin-top: 0.2rem; }
+form > input { display: block; margin: 0.3rem 0 0.8rem; }
+form > button { margin-top: 0.8rem; }
+main.content > form { margin: 0.8rem 0; }
+
+/* Card textareas fill the card like the tables below them. */
+.card textarea { width: 100%; max-width: 40rem; }
+
+/* Hint lines inside card forms match the 0.4 card rhythm. */
+.card form p.muted { margin: 0.4rem 0; }
+
+/* Board: first card tucks under the header; empty columns and links pad evenly. */
+.kanban-drop > .kanban-card:first-child { margin-top: 0.4rem; }
+.kanban-drop > .muted { padding: 0.4rem 0.2rem; }
+#links-card ul { padding-left: 1.2rem; margin: 0.4rem 0; }
+#links-card li { margin: 0.25rem 0; }
+
+/* Activity: undo result sits beside its button. */
+.event button + .result { margin-left: 0.5rem; }
+.event button + span { display: inline-block; }
+
+/* RAID: edit disclosure clears the action row. */
+article.event details.move-menu { margin-top: 0.6rem; }
+
+/* Review: follow up actions separate with rules, not blank stack. */
+#review-result article { padding: 0.6rem 0; border-top: 1px solid var(--border); }
+#review-result article:first-of-type { border-top: none; padding-top: 0; }
+
+/* Listen: transcript list drops the 40px indent and gains line gaps. */
+#listen-transcript { padding-left: 1.2rem; margin: 0.4rem 0; }
+#listen-transcript li { margin: 0.3rem 0; }
+#listen-root .card p.muted { margin: 0.4rem 0; }
+
+/* Meeting: CTA pair, transcript list, and notes gap match sibling cards. */
+main.content > p:has(> a.btn) { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.card ol { padding-left: 1.3rem; margin: 0.4rem 0; }
+.card ol li { margin: 0.3rem 0; }
+.card .form-actions:first-child { margin-top: 0.4rem; }
+
+/* Narrow screens: topbar wraps and sidenav links flow into rows. */
+.topbar { flex-wrap: wrap; gap: 0.5rem; }
+
+@media (max-width: 800px) {
+  .sidenav nav { flex-direction: row; flex-wrap: wrap; }
+  .sidenav a { padding: 0.4rem 0.6rem; }
+}

@@ -513,3 +513,112 @@ Detector result: `impeccable detect --json src/pam_pm/web/` exit 0,
 zero findings, before and after. The earlier base.html low contrast
 warning is gone: tokens now use the blue accent family in both
 themes. `ruff check src tests` exit 0, `pytest` 329 passed.
+
+## 10. Spacing pass over all 16 screens
+
+Method: dual-agent (A: design review, spacing lens only; B: detector
+plus TestClient render evidence), then parent synthesis and CSS only
+fixes. No template edits, no color or type changes, dark default kept.
+Mode: Operate, all 10 heuristics apply. Before scores are the section
+9 after scores. Questions skipped: the user pre-scoped this pass to
+spacing, CSS only, no redesign.
+
+Evidence: source read for every template and `style.css`; all 16
+routes rendered through TestClient (all 200, no em dashes);
+`impeccable detect --json` over `src/pam_pm/web/` exit 0;
+layout scope over TestClient rendered HTML with stylesheet exit 0.
+Playwright chromium recaptured all 22 PNGs at 1280x800. No servers
+left running.
+
+Scoreboard (before to after, this pass):
+
+| Screen | Critique before | Critique after | Audit before | Audit after |
+|---|---|---|---|---|
+| Setup wizard | 22/40 Acceptable | 24/40 Acceptable | 14/20 Good | 14/20 Good |
+| Board | 25/40 Acceptable | 25/40 Acceptable | 13/20 Acceptable | 13/20 Acceptable |
+| Activity | 23/40 Acceptable | 23/40 Acceptable | 15/20 Good | 15/20 Good |
+| RAID | 24/40 Acceptable | 24/40 Acceptable | 15/20 Good | 15/20 Good |
+| Plan | 19/40 Poor | 20/40 Acceptable | 13/20 Acceptable | 13/20 Acceptable |
+| Review | 20/40 Acceptable | 21/40 Acceptable | 13/20 Acceptable | 13/20 Acceptable |
+| Rules | 25/40 Acceptable | 25/40 Acceptable | 16/20 Good | 16/20 Good |
+| Settings | 26/40 Acceptable | 26/40 Acceptable | 15/20 Good | 15/20 Good |
+| Kickoff | 23/40 Acceptable | 23/40 Acceptable | 15/20 Good | 15/20 Good |
+| Triage | 29/40 Good | 29/40 Good | 17/20 Good | 17/20 Good |
+| Next sprint | 29/40 Good | 29/40 Good | 17/20 Good | 17/20 Good |
+| Add task | 27/40 Acceptable | 27/40 Acceptable | 17/20 Good | 17/20 Good |
+| Mid sprint | 29/40 Good | 29/40 Good | 17/20 Good | 17/20 Good |
+| Listen | 26/40 Acceptable | 27/40 Acceptable | 15/20 Good | 15/20 Good |
+| Meetings | 24/40 Acceptable | 24/40 Acceptable | 15/20 Good | 15/20 Good |
+| Meeting detail | 24/40 Acceptable | 25/40 Acceptable | 16/20 Good | 16/20 Good |
+
+Movers: Setup H6 2 to 3 (labels now attach to fields), H8 2 to 3
+(picker grid, no double margins, quote inset). Plan H4 2 to 3
+(upload form reads as one grouped control). Review H6 2 to 3
+(action separators). Listen H8 2 to 3 (transcript list rhythm).
+Meeting detail H4 2 to 3 (CTA gap and list insets match siblings).
+Audit dims unchanged: the pass moves spacing only, and the sidenav
+mobile wrap plus topbar wrap stay within the current responsive band.
+
+Fixes made (one appended CSS block in `style.css`, no other edits):
+
+- [P1, fixed] Setup backend and provider pickers had no layout rules,
+  so nested card margins doubled. Grid plus block rules added.
+- [P1, fixed] Setup bare labels ran inline, detached from inputs.
+  Block label plus full width input rules added, scoped to step
+  sections.
+- [P2, fixed] Setup button rows had no gap. Flex gap rule added via
+  `:has(> button)`, matching `.form-actions`.
+- [P2, fixed] Setup quote used the 40px browser indent. Inset rule
+  added.
+- [P2, fixed] Setup autostart checkbox stacked above its text. Row
+  rule added for checkbox labels.
+- [P2, fixed] Plan upload label, file input, and button touched.
+  Shared `form >` block rhythm rules added (also serve kickoff,
+  add-task, mid-sprint, setup token).
+- [P2, fixed] Review follow up articles stacked with no separators.
+  Rule plus border added.
+- [P2, fixed] Listen transcript kept the 40px indent with no line
+  gaps. Indent plus gap rules added.
+- [P2, fixed] Meeting CTA pair had about 4px gap; transcript list
+  had the 40px indent; notes form doubled its top gap. Flex, list,
+  and first-child rules added.
+- [P3, fixed] Board first card margin doubled under headers; links
+  list kept the 40px indent. Tuck plus inset rules added.
+- [P3, fixed] Activity undo result touched its button. Margin rule
+  added.
+- [P3, fixed] RAID edit disclosure sat flush on the action row.
+  Margin rule added.
+- [P3, fixed] Card textareas rendered at default width. Full width
+  rule added.
+- [P3, fixed] Topbar could crowd on narrow screens; sidenav pushed
+  content down on mobile. Wrap plus row flow rules added.
+
+New findings left open, with reason:
+
+- [P2, open] Activity empty state is a bare `p`; Rules has no empty
+  state at all. Reason: both need template edits, out of scope for
+  a CSS only pass. Card wrap plus `{% else %}` branch scheduled.
+- [P2, open] Setup nesting (`label.card` in `section.card`) is
+  visually fixed but still nested in markup; the detector
+  nested-cards rule does not fire on it. Reason: un-nesting needs
+  template edits. Scheduled with the stepper work.
+- [P3, open] Rendered HTML scan notes aphoristic-cadence copy on
+  RAID ("Choose New entry to add one. No assumptions yet."). Reason:
+  copy style, not spacing, and edits here are CSS only. Copy tweak
+  scheduled.
+- [P3, open] Source tree detector runs skip the 17 Jinja templates
+  (4 CSS/JS files scanned, regex only), so the exit 0 is thin. The
+  rendered HTML plus stylesheet scan is the real signal and is also
+  exit 0 on the layout scope. A rendered scan step in CI is
+  scheduled.
+
+Screenshots: `tests/test_console_shots.py` recaptured all 11
+covered pages in both themes (22 files, 53KB to 130KB, all real
+captures, no placeholders). Triage, next-sprint, add-task,
+mid-sprint, and meeting detail are not in the test page list, so
+they have no PNGs; extending the list is scheduled. README now
+links `docs/images/board-dark.png`, verified present; dark mean
+brightness 0.12 vs light 0.96.
+
+Detector result: `impeccable detect --json src/pam_pm/web/` exit 0,
+zero findings. `ruff check src tests` exit 0, `pytest` 329 passed.
