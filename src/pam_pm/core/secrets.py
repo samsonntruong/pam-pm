@@ -79,7 +79,9 @@ def save_secret(
     text = (value or "").strip()
     if text:
         path = directory / str(SECRET_FILES[key])
-        path.write_text(text, encoding="utf-8")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
         try:
             os.chmod(path, 0o600)
         except OSError:

@@ -93,10 +93,18 @@ def enqueue(
         ).fetchone()
         if row is not None:
             return int(row[0])
-        cur = conn.execute(
-            "INSERT INTO outbox (key, kind, payload_json) VALUES (?, ?, ?)",
-            (want_key, want_kind, body),
-        )
+        try:
+            cur = conn.execute(
+                "INSERT INTO outbox (key, kind, payload_json) VALUES (?, ?, ?)",
+                (want_key, want_kind, body),
+            )
+        except sqlite3.IntegrityError:
+            row = conn.execute(
+                "SELECT id FROM outbox WHERE key = ?", (want_key,)
+            ).fetchone()
+            if row is not None:
+                return int(row[0])
+            raise
         conn.commit()
         return int(cur.lastrowid or 0)
 
@@ -190,7 +198,16 @@ def _write_log_has_key(db: DbLike, key: str) -> bool:
         if record.status != "applied":
             continue
         detail = record.detail or ""
-        if key and key in detail:
+        if not key or not detail:
+            continue
+        try:
+            parsed = json.loads(detail)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            if parsed.get("idempotency_key") == key:
+                return True
+        elif detail.strip() == key:
             return True
     return False
 
