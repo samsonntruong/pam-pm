@@ -59,6 +59,9 @@ Build log for Pam. Three lines per entry.
 | Muse Code | Board kanban restyle | Compact cards with badges and avatars, traditional columns, 349 pass |
 | Muse Code | Grouped sidenav plus shots | 4 nav sections, avatars confirmed, 32 screenshots, 352 pass |
 | Muse Code | Agent memory system | Team roles plus lifecycle plus forecast recall, 361 pass |
+| Muse Code | Brand icon colors | Official fills on all 7 icons, drafts removed, 361 pass |
+| Muse Code | Collapsible sidenav | Dropdown groups with persisted state, 361 pass |
+| Muse Code | Spacing audit pass 2 | 6 CSS fixes, scores held, 361 pass |
 
 ## Entries
 
