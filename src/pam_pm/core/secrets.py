@@ -23,6 +23,9 @@ SECRET_FILES = {
     "ADO_PAT": "ado_pat.txt",
     "JIRA_API_TOKEN": "jira_api_token.txt",
     "LINEAR_API_KEY": "linear_api_key.txt",
+    "TRELLO_API_KEY": "trello_api_key.txt",
+    "TRELLO_TOKEN": "trello_token.txt",
+    "CLICKUP_API_TOKEN": "clickup_api_token.txt",
 }
 
 META_FILENAME = "meta.json"
@@ -30,6 +33,8 @@ SLACK_FILENAME = "slack.json"
 ADO_FILENAME = "ado.json"
 JIRA_FILENAME = "jira.json"
 LINEAR_FILENAME = "linear.json"
+TRELLO_FILENAME = "trello.json"
+CLICKUP_FILENAME = "clickup.json"
 
 
 def _data_dir(explicit: str | Path | None = None) -> Path:
@@ -359,3 +364,91 @@ def effective_linear_config(
     team = os.environ.get("LINEAR_TEAM", "").strip() or saved["team"]
     key = effective_secret("LINEAR_API_KEY", data_dir)
     return {"team": team, "api_key": key}
+
+
+def save_trello_config(
+    data_dir: str | Path | None = None,
+    board: str = "",
+    api_key: str = "",
+    token: str = "",
+) -> dict[str, Any]:
+    saved = _read_json(TRELLO_FILENAME, data_dir)
+    new_board = (board or "").strip() or str(saved.get("board", "") or "")
+    has_key = save_secret("TRELLO_API_KEY", api_key, data_dir)
+    has_token = save_secret("TRELLO_TOKEN", token, data_dir)
+    payload = {
+        "board": new_board.strip(),
+        "has_key": bool(has_key),
+        "has_token": bool(has_token),
+    }
+    _write_json(TRELLO_FILENAME, payload, data_dir)
+    logger.info(
+        "trello config saved: board=%s has_key=%s has_token=%s",
+        payload["board"],
+        payload["has_key"],
+        payload["has_token"],
+    )
+    return dict(payload)
+
+
+def load_trello_config(data_dir: str | Path | None = None) -> dict[str, Any]:
+    saved = _read_json(TRELLO_FILENAME, data_dir)
+    return {
+        "board": str(saved.get("board", "") or "").strip(),
+        "has_key": has_secret("TRELLO_API_KEY", data_dir),
+        "has_token": has_secret("TRELLO_TOKEN", data_dir),
+    }
+
+
+def effective_trello_config(
+    data_dir: str | Path | None = None,
+) -> dict[str, str]:
+    saved = load_trello_config(data_dir)
+    board = os.environ.get("TRELLO_BOARD", "").strip() or saved["board"]
+    key = effective_secret("TRELLO_API_KEY", data_dir)
+    token = effective_secret("TRELLO_TOKEN", data_dir)
+    return {"board": board, "api_key": key, "token": token}
+
+
+def save_clickup_config(
+    data_dir: str | Path | None = None,
+    team: str = "",
+    list_ref: str = "",
+    api_token: str = "",
+) -> dict[str, Any]:
+    saved = _read_json(CLICKUP_FILENAME, data_dir)
+    new_team = (team or "").strip() or str(saved.get("team", "") or "")
+    new_list = (list_ref or "").strip() or str(saved.get("list", "") or "")
+    has_token = save_secret("CLICKUP_API_TOKEN", api_token, data_dir)
+    payload = {
+        "team": new_team.strip(),
+        "list": new_list.strip(),
+        "has_token": bool(has_token),
+    }
+    _write_json(CLICKUP_FILENAME, payload, data_dir)
+    logger.info(
+        "clickup config saved: team=%s list=%s has_token=%s",
+        payload["team"],
+        payload["list"],
+        payload["has_token"],
+    )
+    return dict(payload)
+
+
+def load_clickup_config(data_dir: str | Path | None = None) -> dict[str, Any]:
+    saved = _read_json(CLICKUP_FILENAME, data_dir)
+    return {
+        "team": str(saved.get("team", "") or "").strip(),
+        "list": str(saved.get("list", "") or "").strip(),
+        "has_token": has_secret("CLICKUP_API_TOKEN", data_dir),
+    }
+
+
+def effective_clickup_config(
+    data_dir: str | Path | None = None,
+) -> dict[str, str]:
+    saved = load_clickup_config(data_dir)
+    team = os.environ.get("CLICKUP_TEAM", "").strip() or saved["team"]
+    wanted = os.environ.get("CLICKUP_LIST", "").strip() or saved["list"]
+    token = effective_secret("CLICKUP_API_TOKEN", data_dir)
+    return {"team": team, "list": wanted, "api_token": token}

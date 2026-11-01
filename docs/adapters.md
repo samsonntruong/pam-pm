@@ -14,9 +14,11 @@ Contract: `list_items`, `get_item`, `create_item`, `update_item`, `delete_item`,
 - `azure_devops.py`: production ADO over REST 7.1. Items via WIQL, state and remaining work updates, comments, item creation, dependency links, team iterations, and change polling. Detects the Agile or Scrum template per project: Agile closes with `Closed`, Scrum closes with `Done`, and the shared `is_closed` helper treats both as closed. Iterations need `ADO_TEAM`.
 - `jira.py`: production Jira Cloud over REST with email plus API token basic auth. Issues scoped to `JIRA_PROJECT`, workflow states with a To Do, In Progress, Done fallback, sprints through the Agile API, Blocks issue links, ADF comments, create and update, and changelog polling on `updated`. Owner writes need the Atlassian accountId; sprint readback needs the standard sprint field.
 - `linear.py`: production Linear over GraphQL with an API key. Teams map to projects, workflow states in workflow order, cycles as iterations, blocks relations for dependencies, comments, create and update, and change polling on `updatedAt`. Owner writes match a user display name; label writes match existing team label names.
+- `trello.py`: production Trello over REST with API key plus token auth. Boards map to projects, lists map to states in list order, cards with due dates, members, labels, checklist and attachment counts, card link attachments for dependencies, comments, create and update, and change polling on board actions. Owner writes match a member name; label writes match existing board label names. Trello has no sprints, so iterations are unsupported.
+- `clickup.py`: production ClickUp over REST with a personal token. Teams hold spaces, spaces hold folders and lists, and tasks live on one list. Task statuses map through canonical states in list order, with due dates, assignees, priorities, tags, link task dependencies, comments, create and update, and change polling on `date_updated`. Owner writes match a member name. Lists have no sprints here, so iterations are unsupported.
 - `sqlite_board.py`: `NativeBoard`, Pam's own editable SQLite board. Same contract as ADO: full CRUD, states `New`, `Active`, `Blocked`, `Done` (done is `Done`), iterations with dates, dependency links, comments, tags, due date, owner, estimate, and remaining work, plus change polling with a `changed` watermark. Human edits through it are logged as human actions by the caller.
 
-One file per adapter: each backend is one new file under `src/pam_pm/adapters/pm/` implementing `PMAdapter`, with no changes to callers. Jira and Linear are done; Asana and Monday are next.
+One file per adapter: each backend is one new file under `src/pam_pm/adapters/pm/` implementing `PMAdapter`, with no changes to callers. Jira, Linear, Trello, and ClickUp are done; Asana and Monday are next.
 
 Canonical done: `is_closed` is True for `Done` on Scrum, `Closed` on Agile, and `Done` on the native board (case-insensitive). Callers check `is_closed` instead of comparing state strings.
 
@@ -24,11 +26,11 @@ Canonical item fields in `WorkItem.fields`: `title`, `state`, `description`, `ta
 
 ### Capability flags
 
-| Flag | NativeBoard | AzureDevOps | Jira | Linear |
-| --- | --- | --- | --- | --- |
-| `supports_dependency_links` | yes | yes | yes | yes |
-| `supports_iterations` | yes | yes, needs `ADO_TEAM` | yes, sprints | yes, cycles |
-| `supports_comments` | yes | yes | yes | yes |
+| Flag | NativeBoard | AzureDevOps | Jira | Linear | Trello | ClickUp |
+| --- | --- | --- | --- | --- | --- | --- |
+| `supports_dependency_links` | yes | yes | yes | yes | yes, card links | yes, link task |
+| `supports_iterations` | yes | yes, needs `ADO_TEAM` | yes, sprints | yes, cycles | no | no |
+| `supports_comments` | yes | yes | yes | yes | yes | yes |
 
 The UI hides what a backend cannot do by reading these flags.
 
@@ -46,9 +48,11 @@ ADO relation types: `System.LinkTypes.Dependency-Forward` (Successor) and `Syste
 
 Jira uses the `Blocks` issue link type; Linear uses `blocks` issue relations. Both adapters report `blocks` and `is blocked by`, and accept the ADO style aliases for the same directions.
 
+Trello stores a dependency as a card attachment linking to the other card; ClickUp uses the link task endpoint where the waiting task depends on its blocker. Both adapters report `blocks` and `is blocked by` with the same aliases.
+
 ## Backend config
 
-Each backend resolves explicit args, then env, then wizard saved values. Tokens are never logged. Jira needs `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_PROJECT`, and `JIRA_API_TOKEN`. Linear needs `LINEAR_TEAM` and `LINEAR_API_KEY`. The wizard cards and Test buttons live on the setup page; the board stays read only for these backends with link outs to the source item.
+Each backend resolves explicit args, then env, then wizard saved values. Tokens are never logged. Jira needs `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_PROJECT`, and `JIRA_API_TOKEN`. Linear needs `LINEAR_TEAM` and `LINEAR_API_KEY`. Trello needs `TRELLO_BOARD`, `TRELLO_API_KEY`, and `TRELLO_TOKEN`. ClickUp needs `CLICKUP_LIST` and `CLICKUP_API_TOKEN`, with optional `CLICKUP_TEAM` to narrow the list search. The wizard cards and Test buttons live on the setup page; the board stays read only for these backends with link outs to the source item.
 
 ## Trademarks
 

@@ -38,9 +38,11 @@ from pam_pm.core import secrets as secrets_mod
 from pam_pm.core import store as store_mod
 from pam_pm.core.config import (
     BACKEND_AZURE_DEVOPS,
+    BACKEND_CLICKUP,
     BACKEND_JIRA,
     BACKEND_LINEAR,
     BACKEND_PAM_BOARD,
+    BACKEND_TRELLO,
     Config,
     backend_label,
     normalize_backend,
@@ -1047,6 +1049,66 @@ def _check_linear() -> tuple[bool, str, str]:
     )
 
 
+def _check_trello() -> tuple[bool, str, str]:
+    try:
+        effective = secrets_mod.effective_trello_config()
+    except Exception:  # noqa: BLE001
+        effective = {
+            "board": os.environ.get("TRELLO_BOARD", ""),
+            "api_key": os.environ.get("TRELLO_API_KEY", ""),
+            "token": os.environ.get("TRELLO_TOKEN", ""),
+        }
+    missing: list[str] = []
+    if not str(effective.get("board", "") or "").strip():
+        missing.append("board")
+    if not str(effective.get("api_key", "") or "").strip():
+        missing.append("API key")
+    if not str(effective.get("token", "") or "").strip():
+        missing.append("token")
+    if missing:
+        return (
+            False,
+            "Trello check failed. Pam cannot read the board.",
+            "Open the Trello step, add the missing "
+            + ", ".join(missing)
+            + ", choose Save, then Test again.",
+        )
+    return (
+        True,
+        "Trello check passed. Pam can read the board.",
+        "",
+    )
+
+
+def _check_clickup() -> tuple[bool, str, str]:
+    try:
+        effective = secrets_mod.effective_clickup_config()
+    except Exception:  # noqa: BLE001
+        effective = {
+            "team": os.environ.get("CLICKUP_TEAM", ""),
+            "list": os.environ.get("CLICKUP_LIST", ""),
+            "api_token": os.environ.get("CLICKUP_API_TOKEN", ""),
+        }
+    missing: list[str] = []
+    if not str(effective.get("list", "") or "").strip():
+        missing.append("list")
+    if not str(effective.get("api_token", "") or "").strip():
+        missing.append("API token")
+    if missing:
+        return (
+            False,
+            "ClickUp check failed. Pam cannot read the list.",
+            "Open the ClickUp step, add the missing "
+            + ", ".join(missing)
+            + ", choose Save, then Test again.",
+        )
+    return (
+        True,
+        "ClickUp check passed. Pam can read the list.",
+        "",
+    )
+
+
 def _people_names(project: str = "default") -> list[str]:
     progress = _read_project_progress(project)
     steps = progress.get("steps", {})
@@ -1350,6 +1412,14 @@ def setup_page(request: Request, token: str = "") -> HTMLResponse:
         saved_linear = secrets_mod.load_linear_config(Config().ensure_data_dir())
     except Exception:  # noqa: BLE001
         saved_linear = {"team": "", "has_key": False}
+    try:
+        saved_trello = secrets_mod.load_trello_config(Config().ensure_data_dir())
+    except Exception:  # noqa: BLE001
+        saved_trello = {"board": "", "has_key": False, "has_token": False}
+    try:
+        saved_clickup = secrets_mod.load_clickup_config(Config().ensure_data_dir())
+    except Exception:  # noqa: BLE001
+        saved_clickup = {"team": "", "list": "", "has_token": False}
     ctx.update(
         {
             "token": token,
@@ -1360,6 +1430,8 @@ def setup_page(request: Request, token: str = "") -> HTMLResponse:
             "show_ado": backend == BACKEND_AZURE_DEVOPS,
             "show_jira": backend == BACKEND_JIRA,
             "show_linear": backend == BACKEND_LINEAR,
+            "show_trello": backend == BACKEND_TRELLO,
+            "show_clickup": backend == BACKEND_CLICKUP,
             "progress": progress,
             "progress_json": json.dumps(progress),
             "wizard_order": WIZARD_ORDER,
@@ -1370,6 +1442,8 @@ def setup_page(request: Request, token: str = "") -> HTMLResponse:
             "ado_value": BACKEND_AZURE_DEVOPS,
             "jira_value": BACKEND_JIRA,
             "linear_value": BACKEND_LINEAR,
+            "trello_value": BACKEND_TRELLO,
+            "clickup_value": BACKEND_CLICKUP,
             "autostart_label": autostart_mod.CHECKBOX_LABEL,
             "autostart_enabled": _autostart_enabled(),
             "provider": str(saved_provider.get("provider", "meta")),
@@ -1391,6 +1465,12 @@ def setup_page(request: Request, token: str = "") -> HTMLResponse:
             "jira_has_token": bool(saved_jira.get("has_token", False)),
             "linear_team": str(saved_linear.get("team", "") or ""),
             "linear_has_key": bool(saved_linear.get("has_key", False)),
+            "trello_board": str(saved_trello.get("board", "") or ""),
+            "trello_has_key": bool(saved_trello.get("has_key", False)),
+            "trello_has_token": bool(saved_trello.get("has_token", False)),
+            "clickup_team": str(saved_clickup.get("team", "") or ""),
+            "clickup_list": str(saved_clickup.get("list", "") or ""),
+            "clickup_has_token": bool(saved_clickup.get("has_token", False)),
         }
     )
     return templates.TemplateResponse(request, "setup.html", ctx)  # type: ignore[return-value]
@@ -1474,6 +1554,8 @@ _NATIVE_BOARDS: dict[str, SQLiteBoard] = {}
 _ADO_BOARD: Any | None = None
 _JIRA_BOARD: Any | None = None
 _LINEAR_BOARD: Any | None = None
+_TRELLO_BOARD: Any | None = None
+_CLICKUP_BOARD: Any | None = None
 
 
 def set_board_adapter(project: str, adapter: Any) -> None:
@@ -1483,7 +1565,7 @@ def set_board_adapter(project: str, adapter: Any) -> None:
 
 def reset_board_state() -> None:
     """Clear pinned adapters and cached boards (tests call this)."""
-    global _ADO_BOARD, _JIRA_BOARD, _LINEAR_BOARD
+    global _ADO_BOARD, _JIRA_BOARD, _LINEAR_BOARD, _TRELLO_BOARD, _CLICKUP_BOARD
     _BOARD_OVERRIDES.clear()
     for board in _NATIVE_BOARDS.values():
         try:
@@ -1491,7 +1573,7 @@ def reset_board_state() -> None:
         except Exception:  # noqa: BLE001, S110
             pass
     _NATIVE_BOARDS.clear()
-    for cached in (_ADO_BOARD, _JIRA_BOARD, _LINEAR_BOARD):
+    for cached in (_ADO_BOARD, _JIRA_BOARD, _LINEAR_BOARD, _TRELLO_BOARD, _CLICKUP_BOARD):
         if cached is not None:
             try:
                 cached.close()
@@ -1500,6 +1582,8 @@ def reset_board_state() -> None:
     _ADO_BOARD = None
     _JIRA_BOARD = None
     _LINEAR_BOARD = None
+    _TRELLO_BOARD = None
+    _CLICKUP_BOARD = None
 
 
 def _safe_project(value: str) -> str:
@@ -1515,7 +1599,7 @@ def get_board_adapter(project: str) -> Any | None:
     Native projects get a per-project SQLite board file. Other
     backends share one client each, or None when not configured.
     """
-    global _ADO_BOARD, _JIRA_BOARD, _LINEAR_BOARD
+    global _ADO_BOARD, _JIRA_BOARD, _LINEAR_BOARD, _TRELLO_BOARD, _CLICKUP_BOARD
     name = _safe_project(project)
     if name in _BOARD_OVERRIDES:
         return _BOARD_OVERRIDES[name]
@@ -1543,6 +1627,24 @@ def get_board_adapter(project: str) -> Any | None:
             except Exception:  # noqa: BLE001
                 return None
         return _LINEAR_BOARD
+    if backend == BACKEND_TRELLO:
+        if _TRELLO_BOARD is None:
+            try:
+                from pam_pm.adapters.pm.trello import TrelloAdapter
+
+                _TRELLO_BOARD = TrelloAdapter()
+            except Exception:  # noqa: BLE001
+                return None
+        return _TRELLO_BOARD
+    if backend == BACKEND_CLICKUP:
+        if _CLICKUP_BOARD is None:
+            try:
+                from pam_pm.adapters.pm.clickup import ClickUpAdapter
+
+                _CLICKUP_BOARD = ClickUpAdapter()
+            except Exception:  # noqa: BLE001
+                return None
+        return _CLICKUP_BOARD
     if _ADO_BOARD is None:
         try:
             from pam_pm.adapters.pm.azure_devops import ADOAdapter
@@ -1629,6 +1731,10 @@ def _external_board_url(backend: str) -> str:
         return f"{base}/projects" if base else ""
     if backend == BACKEND_LINEAR:
         return "https://linear.app"
+    if backend == BACKEND_TRELLO:
+        return "https://trello.com"
+    if backend == BACKEND_CLICKUP:
+        return "https://app.clickup.com"
     return _ado_board_url()
 
 
@@ -1645,6 +1751,12 @@ def _external_item_url(backend: str, item: WorkItem) -> str:
         key = str(fields.get("key", "") or item.id).strip()
         return f"{base}/browse/{key}" if key else ""
     if backend == BACKEND_LINEAR:
+        fields = dict(getattr(item, "fields", {}) or {})
+        return str(fields.get("url", "") or "")
+    if backend == BACKEND_TRELLO:
+        fields = dict(getattr(item, "fields", {}) or {})
+        return str(fields.get("short_url", "") or fields.get("url", "") or "")
+    if backend == BACKEND_CLICKUP:
         fields = dict(getattr(item, "fields", {}) or {})
         return str(fields.get("url", "") or "")
     return _ado_item_url(str(item.id))
@@ -1822,6 +1934,16 @@ def _board_snapshot(project: str) -> dict[str, Any]:
             snapshot["error"] = (
                 "Linear is not configured yet. Set LINEAR_TEAM and "
                 "LINEAR_API_KEY, then reload."
+            )
+        elif backend == BACKEND_TRELLO:
+            snapshot["error"] = (
+                "Trello is not configured yet. Set TRELLO_BOARD, "
+                "TRELLO_API_KEY, and TRELLO_TOKEN, then reload."
+            )
+        elif backend == BACKEND_CLICKUP:
+            snapshot["error"] = (
+                "ClickUp is not configured yet. Set CLICKUP_LIST and "
+                "CLICKUP_API_TOKEN, then reload."
             )
         else:
             snapshot["error"] = (
@@ -2062,6 +2184,10 @@ async def test_connection(which: str, request: Request) -> Any:
         ok, message, hint = _check_jira()
     elif name == "linear":
         ok, message, hint = _check_linear()
+    elif name == "trello":
+        ok, message, hint = _check_trello()
+    elif name == "clickup":
+        ok, message, hint = _check_clickup()
     elif name == "people":
         ok, message, hint = _check_people(project)
     elif name == "rules":
@@ -2075,7 +2201,7 @@ async def test_connection(which: str, request: Request) -> Any:
             {
                 "ok": False,
                 "message": "Unknown target.",
-                "hint": "Use one of: model, slack, ado, jira, linear, people, rules, safety.",
+                "hint": "Use one of: model, slack, ado, jira, linear, trello, clickup, people, rules, safety.",
             },
             status_code=404,
         )
@@ -2531,6 +2657,124 @@ async def save_setup_linear(request: Request) -> Any:
     if "hx-request" in request.headers:
         return HTMLResponse(_test_result_html(True, message))
     return {"ok": True, "project": project, "linear": saved}
+
+
+@app.post("/api/setup/trello")
+async def save_setup_trello(request: Request) -> Any:
+    if not await _setup_token_ok(request):
+        return _setup_token_denied(request)
+    project = request.query_params.get("project", "default").strip() or "default"
+    board = ""
+    api_key = ""
+    token = ""
+    ctype = request.headers.get("content-type", "")
+    if "application/json" in ctype:
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = {}
+        fields = _setup_payload(request, payload if isinstance(payload, dict) else {})
+        project = fields.get("project", project).strip() or "default"
+        board = fields.get("board", fields.get("TRELLO_BOARD", ""))
+        api_key = fields.get("api_key", fields.get("TRELLO_API_KEY", ""))
+        token = fields.get("trello_token", fields.get("TRELLO_TOKEN", ""))
+    else:
+        form = await request.form()
+        project = str(form.get("project", project)).strip() or "default"
+        board = str(form.get("board", form.get("TRELLO_BOARD", "") or "") or "")
+        api_key = str(form.get("api_key", form.get("TRELLO_API_KEY", "") or "") or "")
+        token = str(form.get("trello_token", form.get("TRELLO_TOKEN", "") or "") or "")
+    try:
+        saved = secrets_mod.save_trello_config(
+            Config().ensure_data_dir(),
+            board=board,
+            api_key=api_key,
+            token=token,
+        )
+    except Exception:  # noqa: BLE001
+        msg = "Trello settings could not be saved."
+        hint = "Check the data directory is writable, then save again."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg, hint))
+        return JSONResponse(
+            {"ok": False, "message": msg, "hint": hint}, status_code=500
+        )
+    try:
+        _write_project_step(
+            project,
+            "trello",
+            {
+                "board": saved.get("board", ""),
+                "has_key": saved.get("has_key", False),
+                "has_token": saved.get("has_token", False),
+            },
+        )
+    except Exception:  # noqa: BLE001, S110
+        pass
+    message = "Trello settings saved."
+    if "hx-request" in request.headers:
+        return HTMLResponse(_test_result_html(True, message))
+    return {"ok": True, "project": project, "trello": saved}
+
+
+@app.post("/api/setup/clickup")
+async def save_setup_clickup(request: Request) -> Any:
+    if not await _setup_token_ok(request):
+        return _setup_token_denied(request)
+    project = request.query_params.get("project", "default").strip() or "default"
+    team = ""
+    wanted = ""
+    api_token = ""
+    ctype = request.headers.get("content-type", "")
+    if "application/json" in ctype:
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = {}
+        fields = _setup_payload(request, payload if isinstance(payload, dict) else {})
+        project = fields.get("project", project).strip() or "default"
+        team = fields.get("team", fields.get("CLICKUP_TEAM", ""))
+        wanted = fields.get("list", fields.get("CLICKUP_LIST", ""))
+        api_token = fields.get("api_token", fields.get("CLICKUP_API_TOKEN", ""))
+    else:
+        form = await request.form()
+        project = str(form.get("project", project)).strip() or "default"
+        team = str(form.get("team", form.get("CLICKUP_TEAM", "") or "") or "")
+        wanted = str(form.get("list", form.get("CLICKUP_LIST", "") or "") or "")
+        api_token = str(
+            form.get("api_token", form.get("CLICKUP_API_TOKEN", "") or "") or ""
+        )
+    try:
+        saved = secrets_mod.save_clickup_config(
+            Config().ensure_data_dir(),
+            team=team,
+            list_ref=wanted,
+            api_token=api_token,
+        )
+    except Exception:  # noqa: BLE001
+        msg = "ClickUp settings could not be saved."
+        hint = "Check the data directory is writable, then save again."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg, hint))
+        return JSONResponse(
+            {"ok": False, "message": msg, "hint": hint}, status_code=500
+        )
+    try:
+        _write_project_step(
+            project,
+            "clickup",
+            {
+                "team": saved.get("team", ""),
+                "list": saved.get("list", ""),
+                "has_token": saved.get("has_token", False),
+            },
+        )
+    except Exception:  # noqa: BLE001, S110
+        pass
+    message = "ClickUp settings saved."
+    if "hx-request" in request.headers:
+        return HTMLResponse(_test_result_html(True, message))
+    return {"ok": True, "project": project, "clickup": saved}
 
 
 @app.post("/api/rules/toggle")

@@ -14,17 +14,23 @@ BACKEND_PAM_BOARD = "pam_board"
 BACKEND_AZURE_DEVOPS = "azure_devops"
 BACKEND_JIRA = "jira"
 BACKEND_LINEAR = "linear"
+BACKEND_TRELLO = "trello"
+BACKEND_CLICKUP = "clickup"
 BACKEND_CHOICES = (
     BACKEND_PAM_BOARD,
     BACKEND_AZURE_DEVOPS,
     BACKEND_JIRA,
     BACKEND_LINEAR,
+    BACKEND_TRELLO,
+    BACKEND_CLICKUP,
 )
 
 _PAM_ALIASES = {"pam", "pam_board", "native", "native_board", "sqlite", "sqlite_board"}
 _ADO_ALIASES = {"ado", "azure", "azure_devops", "azure-devops", "devops"}
 _JIRA_ALIASES = {"jira", "jira_cloud"}
 _LINEAR_ALIASES = {"linear"}
+_TRELLO_ALIASES = {"trello"}
+_CLICKUP_ALIASES = {"clickup", "click_up"}
 
 
 def normalize_backend(value: object) -> str:
@@ -42,6 +48,10 @@ def normalize_backend(value: object) -> str:
         return BACKEND_JIRA
     if text in _LINEAR_ALIASES:
         return BACKEND_LINEAR
+    if text in _TRELLO_ALIASES:
+        return BACKEND_TRELLO
+    if text in _CLICKUP_ALIASES:
+        return BACKEND_CLICKUP
     if text in BACKEND_CHOICES:
         return text
     return BACKEND_AZURE_DEVOPS
@@ -56,6 +66,10 @@ def backend_label(value: object) -> str:
         return "Jira"
     if backend == BACKEND_LINEAR:
         return "Linear"
+    if backend == BACKEND_TRELLO:
+        return "Trello"
+    if backend == BACKEND_CLICKUP:
+        return "ClickUp"
     return "Azure DevOps"
 
 

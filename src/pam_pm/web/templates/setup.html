@@ -37,6 +37,16 @@
       <strong><img src="/static/icons/linear.svg" alt="" width="16" height="16"> Linear</strong>
       <span class="muted">Use your Linear team. Enter the team key and API key below.</span>
     </label>
+    <label class="card backend-card">
+      <input type="radio" name="backend" value="{{ trello_value }}" {% if backend == trello_value %}checked{% endif %} onchange="saveBackend(this.value)">
+      <strong><img src="/static/icons/trello.svg" alt="" width="16" height="16"> Trello</strong>
+      <span class="muted">Use your Trello board. Enter the board, API key, and token below.</span>
+    </label>
+    <label class="card backend-card">
+      <input type="radio" name="backend" value="{{ clickup_value }}" {% if backend == clickup_value %}checked{% endif %} onchange="saveBackend(this.value)">
+      <strong><img src="/static/icons/clickup.svg" alt="" width="16" height="16"> ClickUp</strong>
+      <span class="muted">Use your ClickUp list. Enter the team, list, and API token below.</span>
+    </label>
     <div class="card backend-card" aria-disabled="true">
       <strong>Asana, Monday</strong> <span class="pill">Coming soon</span>
       <span class="muted">Not built yet. See <a href="docs/adapters.md">docs/adapters.md</a> for details.</span>
@@ -158,6 +168,40 @@
   </div>
   <div id="linear-save-result" class="result" aria-live="polite"></div>
   <div id="linear-result" class="result" aria-live="polite"></div>
+</section>
+
+<section class="card" id="step-3-trello" {% if not show_trello %}hidden{% endif %}>
+  <h2>Step 3: Trello</h2>
+  <p>Only needed when Trello is chosen above. Paste the values below, choose Save, then Test.</p>
+  <label for="trello-board">Board</label>
+  <input id="trello-board" name="board" type="text" value="{{ trello_board }}" placeholder="My board" autocomplete="off">
+  <label for="trello-key">API key</label>
+  <input id="trello-key" name="api_key" type="password" value="" placeholder="{% if trello_has_key %}Saved on this machine{% else %}Paste key here{% endif %}" autocomplete="off">
+  <label for="trello-token">Token</label>
+  <input id="trello-token" name="token" type="password" value="" placeholder="{% if trello_has_token %}Saved on this machine{% else %}Paste token here{% endif %}" autocomplete="off">
+  <div>
+    <button type="button" onclick="saveTrello()">Save</button>
+    <button hx-post="/api/test/trello?project={{ project }}" hx-target="#trello-result" hx-swap="innerHTML">Test</button>
+  </div>
+  <div id="trello-save-result" class="result" aria-live="polite"></div>
+  <div id="trello-result" class="result" aria-live="polite"></div>
+</section>
+
+<section class="card" id="step-3-clickup" {% if not show_clickup %}hidden{% endif %}>
+  <h2>Step 3: ClickUp</h2>
+  <p>Only needed when ClickUp is chosen above. Paste the values below, choose Save, then Test.</p>
+  <label for="clickup-team">Team (optional)</label>
+  <input id="clickup-team" name="team" type="text" value="{{ clickup_team }}" placeholder="My team" autocomplete="off">
+  <label for="clickup-list">List</label>
+  <input id="clickup-list" name="list" type="text" value="{{ clickup_list }}" placeholder="Sprint list" autocomplete="off">
+  <label for="clickup-token">API token</label>
+  <input id="clickup-token" name="api_token" type="password" value="" placeholder="{% if clickup_has_token %}Saved on this machine{% else %}Paste token here{% endif %}" autocomplete="off">
+  <div>
+    <button type="button" onclick="saveClickup()">Save</button>
+    <button hx-post="/api/test/clickup?project={{ project }}" hx-target="#clickup-result" hx-swap="innerHTML">Test</button>
+  </div>
+  <div id="clickup-save-result" class="result" aria-live="polite"></div>
+  <div id="clickup-result" class="result" aria-live="polite"></div>
 </section>
 
 <section class="card" id="step-4">
@@ -325,6 +369,41 @@
       await saveStep("linear", {data: {}});
     } catch (err) { saveResult("linear-save-result", false, "Save failed. Check your connection and try again."); }
   }
+  async function saveTrello() {
+    const project = projectName();
+    const board = document.getElementById("trello-board");
+    const key = document.getElementById("trello-key");
+    const token = document.getElementById("trello-token");
+    try {
+      const resp = await fetch("/api/setup/trello", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({project: project, board: board ? board.value : "", api_key: key ? key.value : "", trello_token: token ? token.value : "", token: setupToken()})
+      });
+      const data = await resp.json().catch(function () { return {}; });
+      saveResult("trello-save-result", resp.ok && data.ok !== false, (resp.ok && data.ok !== false) ? "Saved Trello settings." : ((data && data.message) ? data.message : "Save failed. Check the fields and try again."));
+      if (key) key.value = "";
+      if (token) token.value = "";
+      await saveStep("trello", {data: {}});
+    } catch (err) { saveResult("trello-save-result", false, "Save failed. Check your connection and try again."); }
+  }
+  async function saveClickup() {
+    const project = projectName();
+    const team = document.getElementById("clickup-team");
+    const list = document.getElementById("clickup-list");
+    const token = document.getElementById("clickup-token");
+    try {
+      const resp = await fetch("/api/setup/clickup", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({project: project, team: team ? team.value : "", list: list ? list.value : "", api_token: token ? token.value : "", token: setupToken()})
+      });
+      const data = await resp.json().catch(function () { return {}; });
+      saveResult("clickup-save-result", resp.ok && data.ok !== false, (resp.ok && data.ok !== false) ? "Saved ClickUp settings." : ((data && data.message) ? data.message : "Save failed. Check the fields and try again."));
+      if (token) token.value = "";
+      await saveStep("clickup", {data: {}});
+    } catch (err) { saveResult("clickup-save-result", false, "Save failed. Check your connection and try again."); }
+  }
   async function saveProvider() {
     const project = projectName();
     const picked = document.querySelector('input[name="provider"]:checked');
@@ -395,6 +474,8 @@
       const ado = document.getElementById("step-3");
       const jira = document.getElementById("step-3-jira");
       const linear = document.getElementById("step-3-linear");
+      const trello = document.getElementById("step-3-trello");
+      const clickup = document.getElementById("step-3-clickup");
       if (ado) {
         if (value === "{{ ado_value }}") { ado.removeAttribute("hidden"); }
         else { ado.setAttribute("hidden", ""); }
@@ -406,6 +487,14 @@
       if (linear) {
         if (value === "{{ linear_value }}") { linear.removeAttribute("hidden"); }
         else { linear.setAttribute("hidden", ""); }
+      }
+      if (trello) {
+        if (value === "{{ trello_value }}") { trello.removeAttribute("hidden"); }
+        else { trello.setAttribute("hidden", ""); }
+      }
+      if (clickup) {
+        if (value === "{{ clickup_value }}") { clickup.removeAttribute("hidden"); }
+        else { clickup.setAttribute("hidden", ""); }
       }
       await saveStep("backend", {data: {backend: value}});
     } catch (err) {
