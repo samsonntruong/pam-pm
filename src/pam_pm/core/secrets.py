@@ -26,6 +26,8 @@ SECRET_FILES = {
     "TRELLO_API_KEY": "trello_api_key.txt",
     "TRELLO_TOKEN": "trello_token.txt",
     "CLICKUP_API_TOKEN": "clickup_api_token.txt",
+    "ASANA_API_TOKEN": "asana_api_token.txt",
+    "MONDAY_API_TOKEN": "monday_api_token.txt",
 }
 
 META_FILENAME = "meta.json"
@@ -35,6 +37,8 @@ JIRA_FILENAME = "jira.json"
 LINEAR_FILENAME = "linear.json"
 TRELLO_FILENAME = "trello.json"
 CLICKUP_FILENAME = "clickup.json"
+ASANA_FILENAME = "asana.json"
+MONDAY_FILENAME = "monday.json"
 
 
 def _data_dir(explicit: str | Path | None = None) -> Path:
@@ -452,3 +456,79 @@ def effective_clickup_config(
     wanted = os.environ.get("CLICKUP_LIST", "").strip() or saved["list"]
     token = effective_secret("CLICKUP_API_TOKEN", data_dir)
     return {"team": team, "list": wanted, "api_token": token}
+
+
+def save_asana_config(
+    data_dir: str | Path | None = None,
+    project: str = "",
+    api_token: str = "",
+) -> dict[str, Any]:
+    saved = _read_json(ASANA_FILENAME, data_dir)
+    new_project = (project or "").strip() or str(saved.get("project", "") or "")
+    has_token = save_secret("ASANA_API_TOKEN", api_token, data_dir)
+    payload = {
+        "project": new_project.strip(),
+        "has_token": bool(has_token),
+    }
+    _write_json(ASANA_FILENAME, payload, data_dir)
+    logger.info(
+        "asana config saved: project=%s has_token=%s",
+        payload["project"],
+        payload["has_token"],
+    )
+    return dict(payload)
+
+
+def load_asana_config(data_dir: str | Path | None = None) -> dict[str, Any]:
+    saved = _read_json(ASANA_FILENAME, data_dir)
+    return {
+        "project": str(saved.get("project", "") or "").strip(),
+        "has_token": has_secret("ASANA_API_TOKEN", data_dir),
+    }
+
+
+def effective_asana_config(
+    data_dir: str | Path | None = None,
+) -> dict[str, str]:
+    saved = load_asana_config(data_dir)
+    project = os.environ.get("ASANA_PROJECT", "").strip() or saved["project"]
+    token = effective_secret("ASANA_API_TOKEN", data_dir)
+    return {"project": project, "api_token": token}
+
+
+def save_monday_config(
+    data_dir: str | Path | None = None,
+    board: str = "",
+    api_token: str = "",
+) -> dict[str, Any]:
+    saved = _read_json(MONDAY_FILENAME, data_dir)
+    new_board = (board or "").strip() or str(saved.get("board", "") or "")
+    has_token = save_secret("MONDAY_API_TOKEN", api_token, data_dir)
+    payload = {
+        "board": new_board.strip(),
+        "has_token": bool(has_token),
+    }
+    _write_json(MONDAY_FILENAME, payload, data_dir)
+    logger.info(
+        "monday config saved: board=%s has_token=%s",
+        payload["board"],
+        payload["has_token"],
+    )
+    return dict(payload)
+
+
+def load_monday_config(data_dir: str | Path | None = None) -> dict[str, Any]:
+    saved = _read_json(MONDAY_FILENAME, data_dir)
+    return {
+        "board": str(saved.get("board", "") or "").strip(),
+        "has_token": has_secret("MONDAY_API_TOKEN", data_dir),
+    }
+
+
+def effective_monday_config(
+    data_dir: str | Path | None = None,
+) -> dict[str, str]:
+    saved = load_monday_config(data_dir)
+    board = os.environ.get("MONDAY_BOARD", "").strip() or saved["board"]
+    token = effective_secret("MONDAY_API_TOKEN", data_dir)
+    return {"board": board, "api_token": token}

@@ -882,8 +882,11 @@ def test_wizard_save_then_test_green_no_leaks(wiz_client, caplog) -> None:
     assert "ClickUp" in page
     assert "/static/icons/trello.svg" in page
     assert "/static/icons/clickup.svg" in page
-    assert "Asana, Monday" in page
-    assert "Coming soon" in page
+    assert "Asana" in page
+    assert "Monday" in page
+    assert "/static/icons/asana.svg" in page
+    assert "/static/icons/monday.svg" in page
+    assert "Coming soon" not in page
     assert "/api/test/trello" in page
     assert "/api/test/clickup" in page
     assert TRELLO_KEY not in page

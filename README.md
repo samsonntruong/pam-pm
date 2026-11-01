@@ -55,7 +55,7 @@ If the `pam` name is taken on your machine, use the `pam-pm` alias instead:
 pam-pm start
 ```
 
-`pam start` prints a one-time setup token and opens the setup wizard at `http://127.0.0.1:8765/setup?token=...`. Pick a board backend first (Pam board, Azure DevOps, Jira, Linear, Trello, or ClickUp, saved per project), then work through each step until every Test button is green. The console lands on the live Board. See [docs/setup.md](docs/setup.md) for the full walkthrough.
+`pam start` prints a one-time setup token and opens the setup wizard at `http://127.0.0.1:8765/setup?token=...`. Pick a board backend first (Pam board, Azure DevOps, Jira, Linear, Trello, ClickUp, Asana, or Monday, saved per project), then work through each step until every Test button is green. The console lands on the live Board. See [docs/setup.md](docs/setup.md) for the full walkthrough.
 
 Check your environment at any time with:
 

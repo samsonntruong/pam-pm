@@ -47,13 +47,19 @@
       <strong><img src="/static/icons/clickup.svg" alt="" width="16" height="16"> ClickUp</strong>
       <span class="muted">Use your ClickUp list. Enter the team, list, and API token below.</span>
     </label>
-    <div class="card backend-card" aria-disabled="true">
-      <strong>Asana, Monday</strong> <span class="pill">Coming soon</span>
-      <span class="muted">Not built yet. See <a href="docs/adapters.md">docs/adapters.md</a> for details.</span>
-      <span><input type="radio" disabled> <span class="muted">Unavailable</span></span>
-    </div>
+    <label class="card backend-card">
+      <input type="radio" name="backend" value="{{ asana_value }}" {% if backend == asana_value %}checked{% endif %} onchange="saveBackend(this.value)">
+      <strong><img src="/static/icons/asana.svg" alt="" width="16" height="16"> Asana</strong>
+      <span class="muted">Use your Asana project. Enter the project and API token below.</span>
+    </label>
+    <label class="card backend-card">
+      <input type="radio" name="backend" value="{{ monday_value }}" {% if backend == monday_value %}checked{% endif %} onchange="saveBackend(this.value)">
+      <strong><img src="/static/icons/monday.svg" alt="" width="16" height="16"> Monday</strong>
+      <span class="muted">Use your Monday board. Enter the board and API token below.</span>
+    </label>
   </div>
   <div id="backend-result" class="result" aria-live="polite"></div>
+  <p class="muted"><a href="docs/adapters.md">Backend docs</a></p>
 </section>
 
 <section class="card" id="step-1">
@@ -202,6 +208,36 @@
   </div>
   <div id="clickup-save-result" class="result" aria-live="polite"></div>
   <div id="clickup-result" class="result" aria-live="polite"></div>
+</section>
+
+<section class="card" id="step-3-asana" {% if not show_asana %}hidden{% endif %}>
+  <h2>Step 3: Asana</h2>
+  <p>Only needed when Asana is chosen above. Paste the values below, choose Save, then Test.</p>
+  <label for="asana-project">Project</label>
+  <input id="asana-project" name="project_name" type="text" value="{{ asana_project }}" placeholder="My project" autocomplete="off">
+  <label for="asana-token">API token</label>
+  <input id="asana-token" name="api_token" type="password" value="" placeholder="{% if asana_has_token %}Saved on this machine{% else %}Paste token here{% endif %}" autocomplete="off">
+  <div>
+    <button type="button" onclick="saveAsana()">Save</button>
+    <button hx-post="/api/test/asana?project={{ project }}" hx-target="#asana-result" hx-swap="innerHTML">Test</button>
+  </div>
+  <div id="asana-save-result" class="result" aria-live="polite"></div>
+  <div id="asana-result" class="result" aria-live="polite"></div>
+</section>
+
+<section class="card" id="step-3-monday" {% if not show_monday %}hidden{% endif %}>
+  <h2>Step 3: Monday</h2>
+  <p>Only needed when Monday is chosen above. Paste the values below, choose Save, then Test.</p>
+  <label for="monday-board">Board</label>
+  <input id="monday-board" name="board" type="text" value="{{ monday_board }}" placeholder="My board" autocomplete="off">
+  <label for="monday-token">API token</label>
+  <input id="monday-token" name="api_token" type="password" value="" placeholder="{% if monday_has_token %}Saved on this machine{% else %}Paste token here{% endif %}" autocomplete="off">
+  <div>
+    <button type="button" onclick="saveMonday()">Save</button>
+    <button hx-post="/api/test/monday?project={{ project }}" hx-target="#monday-result" hx-swap="innerHTML">Test</button>
+  </div>
+  <div id="monday-save-result" class="result" aria-live="polite"></div>
+  <div id="monday-result" class="result" aria-live="polite"></div>
 </section>
 
 <section class="card" id="step-4">
@@ -404,6 +440,38 @@
       await saveStep("clickup", {data: {}});
     } catch (err) { saveResult("clickup-save-result", false, "Save failed. Check your connection and try again."); }
   }
+  async function saveAsana() {
+    const project = projectName();
+    const proj = document.getElementById("asana-project");
+    const token = document.getElementById("asana-token");
+    try {
+      const resp = await fetch("/api/setup/asana", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({project: project, project_name: proj ? proj.value : "", api_token: token ? token.value : "", token: setupToken()})
+      });
+      const data = await resp.json().catch(function () { return {}; });
+      saveResult("asana-save-result", resp.ok && data.ok !== false, (resp.ok && data.ok !== false) ? "Saved Asana settings." : ((data && data.message) ? data.message : "Save failed. Check the fields and try again."));
+      if (token) token.value = "";
+      await saveStep("asana", {data: {}});
+    } catch (err) { saveResult("asana-save-result", false, "Save failed. Check your connection and try again."); }
+  }
+  async function saveMonday() {
+    const project = projectName();
+    const board = document.getElementById("monday-board");
+    const token = document.getElementById("monday-token");
+    try {
+      const resp = await fetch("/api/setup/monday", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({project: project, board: board ? board.value : "", api_token: token ? token.value : "", token: setupToken()})
+      });
+      const data = await resp.json().catch(function () { return {}; });
+      saveResult("monday-save-result", resp.ok && data.ok !== false, (resp.ok && data.ok !== false) ? "Saved Monday settings." : ((data && data.message) ? data.message : "Save failed. Check the fields and try again."));
+      if (token) token.value = "";
+      await saveStep("monday", {data: {}});
+    } catch (err) { saveResult("monday-save-result", false, "Save failed. Check your connection and try again."); }
+  }
   async function saveProvider() {
     const project = projectName();
     const picked = document.querySelector('input[name="provider"]:checked');
@@ -476,6 +544,8 @@
       const linear = document.getElementById("step-3-linear");
       const trello = document.getElementById("step-3-trello");
       const clickup = document.getElementById("step-3-clickup");
+      const asana = document.getElementById("step-3-asana");
+      const monday = document.getElementById("step-3-monday");
       if (ado) {
         if (value === "{{ ado_value }}") { ado.removeAttribute("hidden"); }
         else { ado.setAttribute("hidden", ""); }
@@ -495,6 +565,14 @@
       if (clickup) {
         if (value === "{{ clickup_value }}") { clickup.removeAttribute("hidden"); }
         else { clickup.setAttribute("hidden", ""); }
+      }
+      if (asana) {
+        if (value === "{{ asana_value }}") { asana.removeAttribute("hidden"); }
+        else { asana.setAttribute("hidden", ""); }
+      }
+      if (monday) {
+        if (value === "{{ monday_value }}") { monday.removeAttribute("hidden"); }
+        else { monday.setAttribute("hidden", ""); }
       }
       await saveStep("backend", {data: {backend: value}});
     } catch (err) {

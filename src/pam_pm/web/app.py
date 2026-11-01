@@ -37,10 +37,12 @@ from pam_pm.core import recovery as recovery_mod
 from pam_pm.core import secrets as secrets_mod
 from pam_pm.core import store as store_mod
 from pam_pm.core.config import (
+    BACKEND_ASANA,
     BACKEND_AZURE_DEVOPS,
     BACKEND_CLICKUP,
     BACKEND_JIRA,
     BACKEND_LINEAR,
+    BACKEND_MONDAY,
     BACKEND_PAM_BOARD,
     BACKEND_TRELLO,
     Config,
@@ -1109,6 +1111,62 @@ def _check_clickup() -> tuple[bool, str, str]:
     )
 
 
+def _check_asana() -> tuple[bool, str, str]:
+    try:
+        effective = secrets_mod.effective_asana_config()
+    except Exception:  # noqa: BLE001
+        effective = {
+            "project": os.environ.get("ASANA_PROJECT", ""),
+            "api_token": os.environ.get("ASANA_API_TOKEN", ""),
+        }
+    missing: list[str] = []
+    if not str(effective.get("project", "") or "").strip():
+        missing.append("project")
+    if not str(effective.get("api_token", "") or "").strip():
+        missing.append("API token")
+    if missing:
+        return (
+            False,
+            "Asana check failed. Pam cannot read the project.",
+            "Open the Asana step, add the missing "
+            + ", ".join(missing)
+            + ", choose Save, then Test again.",
+        )
+    return (
+        True,
+        "Asana check passed. Pam can read the project.",
+        "",
+    )
+
+
+def _check_monday() -> tuple[bool, str, str]:
+    try:
+        effective = secrets_mod.effective_monday_config()
+    except Exception:  # noqa: BLE001
+        effective = {
+            "board": os.environ.get("MONDAY_BOARD", ""),
+            "api_token": os.environ.get("MONDAY_API_TOKEN", ""),
+        }
+    missing = []
+    if not str(effective.get("board", "") or "").strip():
+        missing.append("board")
+    if not str(effective.get("api_token", "") or "").strip():
+        missing.append("API token")
+    if missing:
+        return (
+            False,
+            "Monday check failed. Pam cannot read the board.",
+            "Open the Monday step, add the missing "
+            + ", ".join(missing)
+            + ", choose Save, then Test again.",
+        )
+    return (
+        True,
+        "Monday check passed. Pam can read the board.",
+        "",
+    )
+
+
 def _people_names(project: str = "default") -> list[str]:
     progress = _read_project_progress(project)
     steps = progress.get("steps", {})
@@ -1420,6 +1478,14 @@ def setup_page(request: Request, token: str = "") -> HTMLResponse:
         saved_clickup = secrets_mod.load_clickup_config(Config().ensure_data_dir())
     except Exception:  # noqa: BLE001
         saved_clickup = {"team": "", "list": "", "has_token": False}
+    try:
+        saved_asana = secrets_mod.load_asana_config(Config().ensure_data_dir())
+    except Exception:  # noqa: BLE001
+        saved_asana = {"project": "", "has_token": False}
+    try:
+        saved_monday = secrets_mod.load_monday_config(Config().ensure_data_dir())
+    except Exception:  # noqa: BLE001
+        saved_monday = {"board": "", "has_token": False}
     ctx.update(
         {
             "token": token,
@@ -1432,6 +1498,8 @@ def setup_page(request: Request, token: str = "") -> HTMLResponse:
             "show_linear": backend == BACKEND_LINEAR,
             "show_trello": backend == BACKEND_TRELLO,
             "show_clickup": backend == BACKEND_CLICKUP,
+            "show_asana": backend == BACKEND_ASANA,
+            "show_monday": backend == BACKEND_MONDAY,
             "progress": progress,
             "progress_json": json.dumps(progress),
             "wizard_order": WIZARD_ORDER,
@@ -1444,6 +1512,8 @@ def setup_page(request: Request, token: str = "") -> HTMLResponse:
             "linear_value": BACKEND_LINEAR,
             "trello_value": BACKEND_TRELLO,
             "clickup_value": BACKEND_CLICKUP,
+            "asana_value": BACKEND_ASANA,
+            "monday_value": BACKEND_MONDAY,
             "autostart_label": autostart_mod.CHECKBOX_LABEL,
             "autostart_enabled": _autostart_enabled(),
             "provider": str(saved_provider.get("provider", "meta")),
@@ -1471,6 +1541,10 @@ def setup_page(request: Request, token: str = "") -> HTMLResponse:
             "clickup_team": str(saved_clickup.get("team", "") or ""),
             "clickup_list": str(saved_clickup.get("list", "") or ""),
             "clickup_has_token": bool(saved_clickup.get("has_token", False)),
+            "asana_project": str(saved_asana.get("project", "") or ""),
+            "asana_has_token": bool(saved_asana.get("has_token", False)),
+            "monday_board": str(saved_monday.get("board", "") or ""),
+            "monday_has_token": bool(saved_monday.get("has_token", False)),
         }
     )
     return templates.TemplateResponse(request, "setup.html", ctx)  # type: ignore[return-value]
@@ -1556,6 +1630,8 @@ _JIRA_BOARD: Any | None = None
 _LINEAR_BOARD: Any | None = None
 _TRELLO_BOARD: Any | None = None
 _CLICKUP_BOARD: Any | None = None
+_ASANA_BOARD: Any | None = None
+_MONDAY_BOARD: Any | None = None
 
 
 def set_board_adapter(project: str, adapter: Any) -> None:
@@ -1565,7 +1641,7 @@ def set_board_adapter(project: str, adapter: Any) -> None:
 
 def reset_board_state() -> None:
     """Clear pinned adapters and cached boards (tests call this)."""
-    global _ADO_BOARD, _JIRA_BOARD, _LINEAR_BOARD, _TRELLO_BOARD, _CLICKUP_BOARD
+    global _ADO_BOARD, _JIRA_BOARD, _LINEAR_BOARD, _TRELLO_BOARD, _CLICKUP_BOARD, _ASANA_BOARD, _MONDAY_BOARD
     _BOARD_OVERRIDES.clear()
     for board in _NATIVE_BOARDS.values():
         try:
@@ -1573,7 +1649,7 @@ def reset_board_state() -> None:
         except Exception:  # noqa: BLE001, S110
             pass
     _NATIVE_BOARDS.clear()
-    for cached in (_ADO_BOARD, _JIRA_BOARD, _LINEAR_BOARD, _TRELLO_BOARD, _CLICKUP_BOARD):
+    for cached in (_ADO_BOARD, _JIRA_BOARD, _LINEAR_BOARD, _TRELLO_BOARD, _CLICKUP_BOARD, _ASANA_BOARD, _MONDAY_BOARD):
         if cached is not None:
             try:
                 cached.close()
@@ -1584,6 +1660,8 @@ def reset_board_state() -> None:
     _LINEAR_BOARD = None
     _TRELLO_BOARD = None
     _CLICKUP_BOARD = None
+    _ASANA_BOARD = None
+    _MONDAY_BOARD = None
 
 
 def _safe_project(value: str) -> str:
@@ -1599,7 +1677,7 @@ def get_board_adapter(project: str) -> Any | None:
     Native projects get a per-project SQLite board file. Other
     backends share one client each, or None when not configured.
     """
-    global _ADO_BOARD, _JIRA_BOARD, _LINEAR_BOARD, _TRELLO_BOARD, _CLICKUP_BOARD
+    global _ADO_BOARD, _JIRA_BOARD, _LINEAR_BOARD, _TRELLO_BOARD, _CLICKUP_BOARD, _ASANA_BOARD, _MONDAY_BOARD
     name = _safe_project(project)
     if name in _BOARD_OVERRIDES:
         return _BOARD_OVERRIDES[name]
@@ -1645,6 +1723,24 @@ def get_board_adapter(project: str) -> Any | None:
             except Exception:  # noqa: BLE001
                 return None
         return _CLICKUP_BOARD
+    if backend == BACKEND_ASANA:
+        if _ASANA_BOARD is None:
+            try:
+                from pam_pm.adapters.pm.asana import AsanaAdapter
+
+                _ASANA_BOARD = AsanaAdapter()
+            except Exception:  # noqa: BLE001
+                return None
+        return _ASANA_BOARD
+    if backend == BACKEND_MONDAY:
+        if _MONDAY_BOARD is None:
+            try:
+                from pam_pm.adapters.pm.monday import MondayAdapter
+
+                _MONDAY_BOARD = MondayAdapter()
+            except Exception:  # noqa: BLE001
+                return None
+        return _MONDAY_BOARD
     if _ADO_BOARD is None:
         try:
             from pam_pm.adapters.pm.azure_devops import ADOAdapter
@@ -1735,6 +1831,10 @@ def _external_board_url(backend: str) -> str:
         return "https://trello.com"
     if backend == BACKEND_CLICKUP:
         return "https://app.clickup.com"
+    if backend == BACKEND_ASANA:
+        return "https://app.asana.com"
+    if backend == BACKEND_MONDAY:
+        return "https://monday.com"
     return _ado_board_url()
 
 
@@ -1757,6 +1857,12 @@ def _external_item_url(backend: str, item: WorkItem) -> str:
         fields = dict(getattr(item, "fields", {}) or {})
         return str(fields.get("short_url", "") or fields.get("url", "") or "")
     if backend == BACKEND_CLICKUP:
+        fields = dict(getattr(item, "fields", {}) or {})
+        return str(fields.get("url", "") or "")
+    if backend == BACKEND_ASANA:
+        fields = dict(getattr(item, "fields", {}) or {})
+        return str(fields.get("permalink_url", "") or fields.get("url", "") or "")
+    if backend == BACKEND_MONDAY:
         fields = dict(getattr(item, "fields", {}) or {})
         return str(fields.get("url", "") or "")
     return _ado_item_url(str(item.id))
@@ -1944,6 +2050,16 @@ def _board_snapshot(project: str) -> dict[str, Any]:
             snapshot["error"] = (
                 "ClickUp is not configured yet. Set CLICKUP_LIST and "
                 "CLICKUP_API_TOKEN, then reload."
+            )
+        elif backend == BACKEND_ASANA:
+            snapshot["error"] = (
+                "Asana is not configured yet. Set ASANA_PROJECT and "
+                "ASANA_API_TOKEN, then reload."
+            )
+        elif backend == BACKEND_MONDAY:
+            snapshot["error"] = (
+                "Monday is not configured yet. Set MONDAY_BOARD and "
+                "MONDAY_API_TOKEN, then reload."
             )
         else:
             snapshot["error"] = (
@@ -2188,6 +2304,10 @@ async def test_connection(which: str, request: Request) -> Any:
         ok, message, hint = _check_trello()
     elif name == "clickup":
         ok, message, hint = _check_clickup()
+    elif name == "asana":
+        ok, message, hint = _check_asana()
+    elif name == "monday":
+        ok, message, hint = _check_monday()
     elif name == "people":
         ok, message, hint = _check_people(project)
     elif name == "rules":
@@ -2201,7 +2321,7 @@ async def test_connection(which: str, request: Request) -> Any:
             {
                 "ok": False,
                 "message": "Unknown target.",
-                "hint": "Use one of: model, slack, ado, jira, linear, trello, clickup, people, rules, safety.",
+                "hint": "Use one of: model, slack, ado, jira, linear, trello, clickup, asana, monday, people, rules, safety.",
             },
             status_code=404,
         )
@@ -2775,6 +2895,90 @@ async def save_setup_clickup(request: Request) -> Any:
     if "hx-request" in request.headers:
         return HTMLResponse(_test_result_html(True, message))
     return {"ok": True, "project": project, "clickup": saved}
+
+
+@app.post("/api/setup/asana")
+async def save_setup_asana(request: Request) -> Any:
+    if not await _setup_token_ok(request):
+        return _setup_token_denied(request)
+    project = request.query_params.get("project", "default").strip() or "default"
+    asana_project = ""
+    api_token = ""
+    ctype = request.headers.get("content-type", "")
+    if "application/json" in ctype:
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = {}
+        fields = _setup_payload(request, payload if isinstance(payload, dict) else {})
+        project = fields.get("project", project).strip() or "default"
+        asana_project = fields.get("project_name", fields.get("project", fields.get("ASANA_PROJECT", "")))
+        api_token = fields.get("api_token", fields.get("ASANA_API_TOKEN", ""))
+    else:
+        form = await request.form()
+        project = str(form.get("project", project)).strip() or "default"
+        asana_project = str(form.get("project_name", form.get("project", "") or "") or "") or str(form.get("ASANA_PROJECT", "") or "")
+        api_token = str(form.get("api_token", form.get("ASANA_API_TOKEN", "") or "") or "")
+    try:
+        saved = secrets_mod.save_asana_config(
+            Config().ensure_data_dir(),
+            project=asana_project,
+            api_token=api_token,
+        )
+    except Exception:  # noqa: BLE001
+        msg = "Asana settings could not be saved."
+        hint = "Check the data directory is writable, then save again."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg, hint))
+        return JSONResponse({"ok": False, "message": msg, "hint": hint}, status_code=500)
+    try:
+        _write_project_step(project, "asana", {"project": saved.get("project", ""), "has_token": saved.get("has_token", False)})
+    except Exception:  # noqa: BLE001, S110
+        pass
+    message = "Asana settings saved."
+    if "hx-request" in request.headers:
+        return HTMLResponse(_test_result_html(True, message))
+    return {"ok": True, "project": project, "asana": saved}
+
+
+@app.post("/api/setup/monday")
+async def save_setup_monday(request: Request) -> Any:
+    if not await _setup_token_ok(request):
+        return _setup_token_denied(request)
+    project = request.query_params.get("project", "default").strip() or "default"
+    board = ""
+    api_token = ""
+    ctype = request.headers.get("content-type", "")
+    if "application/json" in ctype:
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = {}
+        fields = _setup_payload(request, payload if isinstance(payload, dict) else {})
+        project = fields.get("project", project).strip() or "default"
+        board = fields.get("board", fields.get("MONDAY_BOARD", ""))
+        api_token = fields.get("api_token", fields.get("MONDAY_API_TOKEN", ""))
+    else:
+        form = await request.form()
+        project = str(form.get("project", project)).strip() or "default"
+        board = str(form.get("board", form.get("MONDAY_BOARD", "") or "") or "")
+        api_token = str(form.get("api_token", form.get("MONDAY_API_TOKEN", "") or "") or "")
+    try:
+        saved = secrets_mod.save_monday_config(Config().ensure_data_dir(), board=board, api_token=api_token)
+    except Exception:  # noqa: BLE001
+        msg = "Monday settings could not be saved."
+        hint = "Check the data directory is writable, then save again."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg, hint))
+        return JSONResponse({"ok": False, "message": msg, "hint": hint}, status_code=500)
+    try:
+        _write_project_step(project, "monday", {"board": saved.get("board", ""), "has_token": saved.get("has_token", False)})
+    except Exception:  # noqa: BLE001, S110
+        pass
+    message = "Monday settings saved."
+    if "hx-request" in request.headers:
+        return HTMLResponse(_test_result_html(True, message))
+    return {"ok": True, "project": project, "monday": saved}
 
 
 @app.post("/api/rules/toggle")

@@ -998,8 +998,11 @@ def test_wizard_save_then_test_green_no_leaks(wiz_client, caplog) -> None:
     assert "Linear" in page
     assert "/static/icons/jira.svg" in page
     assert "/static/icons/linear.svg" in page
-    assert "Asana, Monday" in page
-    assert "Coming soon" in page
+    assert "Asana" in page
+    assert "Monday" in page
+    assert "/static/icons/asana.svg" in page
+    assert "/static/icons/monday.svg" in page
+    assert "Coming soon" not in page
     assert "Jira, Asana, Linear" not in page
     assert "/api/test/jira" in page
     assert "/api/test/linear" in page
