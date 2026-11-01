@@ -12,14 +12,42 @@ Screenshots for each console screen live in `docs/images/`.
 
 ## Quickstart
 
-You need Python 3.12 or newer, a Meta Model API key, a Slack workspace where you can create an app, and an Azure DevOps project with a PAT.
+You need nothing installed: no Python, no git, no admin rights. You will need a Meta Model API key, a Slack workspace where you can create an app, and an Azure DevOps project with a PAT for the wizard steps.
 
-Install with pipx (recommended, no PyPI release yet):
+Windows (PowerShell):
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/OWNER/pam-pm/main/install.ps1 | iex"
+```
+
+macOS or Linux:
+
+```sh
+curl -LsSf https://raw.githubusercontent.com/OWNER/pam-pm/main/install.sh | sh
+```
+
+Your browser opens the Pam setup console. Follow the wizard.
+
+Prefer to read the script first? Download `install.ps1` (Windows) or `install.sh` (macOS or Linux) from the repo root, read it, then run it:
+
+```powershell
+powershell -ExecutionPolicy ByPass -File install.ps1
+```
+
+```sh
+sh install.sh
+```
+
+Details and troubleshooting: [docs/install.md](docs/install.md).
+
+Alternative installs:
 
 ```sh
 pipx install git+https://github.com/OWNER/pam-pm.git
 pam start
 ```
+
+For server hosting with Docker, see [docs/deploy.md](docs/deploy.md).
 
 If the `pam` name is taken on your machine, use the `pam-pm` alias instead:
 

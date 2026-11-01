@@ -1,0 +1,98 @@
+name: install-test
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build repo archive
+        shell: powershell
+        run: git archive -o "$env:RUNNER_TEMP\pam-test.zip" HEAD
+      - name: Install with Windows PowerShell 5.1
+        shell: powershell
+        run: .\install.ps1 -Source "$env:RUNNER_TEMP\pam-test.zip" -NoStart
+      - name: Install with PowerShell 7
+        shell: pwsh
+        run: .\install.ps1 -Source "$env:RUNNER_TEMP\pam-test.zip" -NoStart
+      - name: Check pam version
+        shell: powershell
+        run: |
+          & "$env:USERPROFILE\.local\bin\pam.exe" --version
+      - name: Start console and check health
+        shell: powershell
+        run: |
+          $pam = "$env:USERPROFILE\.local\bin\pam.exe"
+          Start-Process -FilePath $pam -ArgumentList "start", "--no-browser" -NoNewWindow
+          $ok = $false
+          for ($i = 0; $i -lt 30; $i++) {
+            Start-Sleep -Seconds 2
+            try {
+              $r = Invoke-WebRequest -Uri "http://127.0.0.1:8765" -TimeoutSec 3 -UseBasicParsing
+              if ($r.StatusCode -lt 500) { $ok = $true; break }
+            } catch { }
+          }
+          if (-not $ok) { throw "console did not respond on 127.0.0.1:8765" }
+          Get-Process pam -ErrorAction SilentlyContinue | Stop-Process -Force
+
+  ubuntu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build repo archive
+        run: git archive -o /tmp/pam-test.zip HEAD
+      - name: Install with install.sh
+        run: sh install.sh --source /tmp/pam-test.zip --no-start
+      - name: Check pam version
+        run: ~/.local/bin/pam --version
+      - name: Start console and check health
+        run: |
+          ~/.local/bin/pam start --no-browser &
+          PAM_PID=$!
+          ok=0
+          for i in $(seq 1 30); do
+            sleep 2
+            if curl -sf -o /dev/null http://127.0.0.1:8765; then ok=1; break; fi
+          done
+          kill $PAM_PID
+          [ "$ok" -eq 1 ] || (echo "console did not respond" && exit 1)
+      - name: Docker compose build and health check
+        run: |
+          cp .env.example .env
+          docker compose build
+          docker compose up -d
+          ok=0
+          for i in $(seq 1 30); do
+            sleep 3
+            if curl -sf -o /dev/null http://127.0.0.1:8765; then ok=1; break; fi
+          done
+          docker compose logs --tail=20
+          docker compose down
+          [ "$ok" -eq 1 ] || (echo "container did not respond" && exit 1)
+
+  macos:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build repo archive
+        run: git archive -o /tmp/pam-test.zip HEAD
+      - name: Install with install.sh
+        run: sh install.sh --source /tmp/pam-test.zip --no-start
+      - name: Check pam version
+        run: ~/.local/bin/pam --version
+      - name: Start console and check health
+        run: |
+          ~/.local/bin/pam start --no-browser &
+          PAM_PID=$!
+          ok=0
+          for i in $(seq 1 30); do
+            sleep 2
+            if curl -sf -o /dev/null http://127.0.0.1:8765; then ok=1; break; fi
+          done
+          kill $PAM_PID
+          [ "$ok" -eq 1 ] || (echo "console did not respond" && exit 1)
