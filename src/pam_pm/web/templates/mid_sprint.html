@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Mid-sprint - Pam{% endblock %}
+{% block content %}
+<h1>Mid-sprint adjustment</h1>
+<p class="muted">Pam checks the sprint for project {{ project }} ({{ project_backend_label }}) midday and when the board changes. Each proposed change names its effect on the sprint goal. Approve applies it.</p>
+
+<section class="card">
+  <h2>Check the sprint</h2>
+  <p class="muted">The check is plain code and costs nothing. Approve proposes first when dry run is on.</p>
+  <form hx-post="/api/mid-sprint/run?project={{ project }}" hx-target="#mid-sprint-card-wrap" hx-swap="innerHTML">
+    <label for="ms-goal">Sprint goal (optional)</label>
+    <input id="ms-goal" name="goal" type="text" maxlength="200" placeholder="Finish the planned sprint scope.">
+    <div class="form-actions">
+      <button type="submit">Check mid-sprint now</button>
+    </div>
+  </form>
+</section>
+
+<div id="mid-sprint-card-wrap" aria-live="polite">
+{{ mid_sprint_html | safe }}
+</div>
+{% endblock %}

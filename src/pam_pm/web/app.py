@@ -172,6 +172,12 @@ RULE_TEMPLATES: list[dict[str, Any]] = [
         "description": "Scan the board for stale, unassigned, and blocked items and propose a fix for each.",
         "trigger": "Runs each day and when the board changes.",
     },
+    {
+        "name": "mid_sprint",
+        "title": "Mid-sprint adjustment",
+        "description": "Propose move out, swap, reassign, or pull from backlog when the sprint is off track, with the effect on the goal.",
+        "trigger": "Runs midday and when the board changes.",
+    },
 ]
 
 RULE_STATES: dict[str, bool] = {
@@ -179,6 +185,7 @@ RULE_STATES: dict[str, bool] = {
     "follow_up": True,
     "blocker": False,
     "triage": True,
+    "mid_sprint": True,
 }
 
 SAMPLE_EVENTS: list[dict[str, Any]] = [
@@ -4215,3 +4222,209 @@ async def next_sprint_approve_route(request: Request) -> Any:
             return HTMLResponse(_test_result_html(True, f"Created {name}."))
         return HTMLResponse(_test_result_html(True, "Proposed. Dry run is on, so nothing changed."))
     return {"ok": True, "applied": result.get("applied"), "name": name}
+
+
+LAST_MID_SPRINT: dict[str, Any] = {
+    "proposal": None,
+    "project": "default",
+    "sprint": "",
+}
+
+_MID_SPRINT_ACTIONS = {
+    "move_out": "Move out",
+    "swap": "Swap",
+    "reassign": "Reassign",
+    "pull": "Pull",
+}
+
+
+def _mid_sprint_project(request: Request) -> str:
+    return _safe_project(request.query_params.get("project", "default"))
+
+
+def _mid_sprint_sprint(adapter: Any) -> str:
+    try:
+        iters = list(adapter.list_iterations() or [])
+    except Exception:  # noqa: BLE001
+        return ""
+    if not iters:
+        return ""
+    return str(getattr(iters[-1], "id", "") or "")
+
+
+def _mid_sprint_result_html(
+    proposal: dict[str, Any], dry_run: bool, sprint: str
+) -> str:
+    changes = list((proposal or {}).get("changes", []))
+    goal = str((proposal or {}).get("goal", "") or "")
+    parts: list[str] = ['<section class="card" id="mid-sprint-card">']
+    if not changes:
+        parts.append("<h2>Mid-sprint: on track</h2>")
+        if goal:
+            parts.append(f"<p><strong>Goal:</strong> {html.escape(goal)}</p>")
+        parts.append(
+            '<p class="muted">No stalled blockers, overload, urgent scope, '
+            "or surplus found. Check again after the board changes.</p>"
+        )
+    else:
+        word = "change" if len(changes) == 1 else "changes"
+        parts.append(f"<h2>Mid-sprint: {len(changes)} {word} proposed</h2>")
+        if dry_run:
+            parts.append(
+                '<p class="pill">Dry run is on. Approve proposes a change first.</p>'
+            )
+        else:
+            parts.append(
+                '<p class="pill">Dry run is off. Approve applies the change.</p>'
+            )
+        if goal:
+            parts.append(f"<p><strong>Goal:</strong> {html.escape(goal)}</p>")
+        for index, change in enumerate(changes):
+            title = html.escape(str(change.get("title", "")))
+            raw = str(change.get("action", "") or "").strip()
+            action = html.escape(_MID_SPRINT_ACTIONS.get(raw, "Change"))
+            reason = html.escape(str(change.get("reason", "")))
+            effect = html.escape(str(change.get("goal_effect", "")))
+            evidence = html.escape(str(change.get("evidence", "")))
+            owner = str(change.get("owner", "") or "").strip()
+            target = str(change.get("target_owner", "") or "").strip()
+            if owner and target:
+                who = f"{owner} to {target}"
+            else:
+                who = owner or target or "Unassigned"
+            try:
+                hours = f"{float(change.get('estimate', 0.0)):g}h"
+            except (TypeError, ValueError):
+                hours = ""
+            meta = " &middot; ".join(
+                part for part in (action, hours, html.escape(who)) if part
+            )
+            parts.append(
+                "<article>"
+                f"<h3>{title}</h3>"
+                f'<p class="muted">{meta}</p>'
+                f"<p>{reason}</p>"
+                + (f"<p><strong>Goal effect:</strong> {effect}</p>" if effect else "")
+                + (f'<p class="muted">Evidence: {evidence}</p>' if evidence else "")
+                + f'<button hx-post="/api/mid-sprint/approve?index={index}" '
+                f'hx-target="#mid-sprint-result-{index}" hx-swap="innerHTML">'
+                "Approve</button>"
+                f'<span id="mid-sprint-result-{index}" class="result" '
+                'aria-live="polite"></span>'
+                "</article>"
+            )
+        overall = str((proposal or {}).get("goal_effect", "") or "").strip()
+        if overall:
+            parts.append(f"<p><strong>Overall:</strong> {html.escape(overall)}</p>")
+    _ = sprint
+    parts.append("</section>")
+    return "\n".join(parts)
+
+
+@app.get("/mid-sprint", response_class=HTMLResponse)
+def mid_sprint_page(request: Request) -> HTMLResponse:
+    ctx = _context(request, "mid-sprint")
+    project = str(ctx["project"])
+    dry_run, _ = _effective_safety()
+    stored = LAST_MID_SPRINT.get("proposal")
+    if stored and LAST_MID_SPRINT.get("project") == project:
+        ctx["mid_sprint_html"] = _mid_sprint_result_html(
+            stored, dry_run, str(LAST_MID_SPRINT.get("sprint", ""))
+        )
+    else:
+        ctx["mid_sprint_html"] = _mid_sprint_result_html(
+            {"changes": [], "goal": ""}, dry_run, ""
+        )
+    return templates.TemplateResponse(request, "mid_sprint.html", ctx)  # type: ignore[return-value]
+
+
+@app.post("/api/mid-sprint/run")
+async def mid_sprint_run_route(request: Request) -> Any:
+    from pam_pm.agents import mid_sprint as ms_mod
+
+    project = _mid_sprint_project(request)
+    adapter = get_board_adapter(project)
+    if adapter is None:
+        msg = "The board is not configured yet."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg))
+        return JSONResponse({"ok": False, "message": msg}, status_code=502)
+    goal = request.query_params.get("goal", "").strip()
+    if not goal:
+        try:
+            form = await request.form()
+            goal = str(form.get("goal", "") or "").strip()
+        except Exception:  # noqa: BLE001
+            goal = ""
+    roster = _roster_entries(project)
+    sprint = _mid_sprint_sprint(adapter)
+    try:
+        proposal = ms_mod.propose_adjustment(
+            adapter, roster, sprint or None, goal=goal
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("mid-sprint propose failed: %s", exc)
+        msg = "The sprint could not be checked."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg))
+        return JSONResponse({"ok": False, "message": msg}, status_code=502)
+    LAST_MID_SPRINT["proposal"] = proposal
+    LAST_MID_SPRINT["project"] = project
+    LAST_MID_SPRINT["sprint"] = sprint
+    dry_run, _ = _effective_safety()
+    if "hx-request" in request.headers:
+        return HTMLResponse(_mid_sprint_result_html(proposal, dry_run, sprint))
+    return {
+        "ok": True,
+        "project": project,
+        "count": len(proposal["changes"]),
+        "proposal": proposal,
+    }
+
+
+@app.post("/api/mid-sprint/approve")
+async def mid_sprint_approve_route(request: Request) -> Any:
+    from pam_pm.agents import mid_sprint as ms_mod
+
+    project = str(LAST_MID_SPRINT.get("project", "default"))
+    proposal = LAST_MID_SPRINT.get("proposal") or {}
+    changes = list(proposal.get("changes", []))
+    index = await _retro_index(request)
+    if index is None or index < 0 or index >= len(changes):
+        msg = "Unknown change. Check the sprint first."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg))
+        return JSONResponse({"ok": False, "message": msg}, status_code=404)
+    adapter = get_board_adapter(project)
+    if adapter is None:
+        msg = "The board is not configured yet."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg))
+        return JSONResponse({"ok": False, "message": msg}, status_code=502)
+    dry_run, _ = _effective_safety()
+    writes = WriteService(_db_path(), dry_run=dry_run)
+    result = ms_mod.apply_change(
+        adapter,
+        changes[index],
+        str(LAST_MID_SPRINT.get("sprint", "") or ""),
+        writes=writes,
+        db=_db_path(),
+        dry_run=dry_run,
+    )
+    if "hx-request" in request.headers:
+        if result.get("applied"):
+            return HTMLResponse(_test_result_html(True, "Applied."))
+        if dry_run and result.get("write_id"):
+            return HTMLResponse(
+                _test_result_html(True, "Proposed. Dry run is on, so nothing changed.")
+            )
+        detail = str(result.get("detail", ""))
+        if detail:
+            return HTMLResponse(_test_result_html(False, detail))
+        return HTMLResponse(
+            _test_result_html(False, "Approve did not work. Try again.")
+        )
+    return {
+        "ok": bool(result.get("applied") or result.get("write_id")),
+        **result,
+    }
