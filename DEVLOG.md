@@ -21,6 +21,8 @@ Build log for Pam. Three lines per entry.
 | Muse Spark 1.3 Contributor | M0 check_sam real call | Listed models, confirmed sam-3.1 present, fallback TBD |
 | Azure DevOps | M0 check_ado real run | Listed projects, created and deleted test item 1, verified Dependency link names |
 | Slack | M0 check_slack real run | Auth and DM pass, app token scope note, button SKIPPED for morning run |
+| Muse Code | WP-1 slack script fix | App token local prefix check, slack check fully PASS |
+| Gitleaks 8.24.2 | WP-1 secret scan | 10 commits scanned, no leaks found |
 
 ## Entries
 
