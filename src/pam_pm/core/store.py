@@ -35,7 +35,8 @@ INTERVIEWS_TABLE_DDL = """CREATE TABLE IF NOT EXISTS interviews (
 
 PROJECTS_TABLE_DDL = """CREATE TABLE IF NOT EXISTS projects (
   name TEXT PRIMARY KEY,
-  backend TEXT NOT NULL DEFAULT 'azure_devops'
+  backend TEXT NOT NULL DEFAULT 'azure_devops',
+  share_on_lan INTEGER NOT NULL DEFAULT 0
 )"""
 
 CONVERSATIONS_TABLE_DDL = """CREATE TABLE IF NOT EXISTS conversations (
@@ -182,6 +183,16 @@ def _migrate_projects(conn: sqlite3.Connection) -> None:
     conn.execute(
         "UPDATE projects SET backend = 'azure_devops'"
         " WHERE backend IS NULL OR backend = ''"
+    )
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(projects)").fetchall()]
+    if "share_on_lan" not in cols:
+        conn.execute(
+            "ALTER TABLE projects ADD COLUMN share_on_lan"
+            " INTEGER NOT NULL DEFAULT 0"
+        )
+    conn.execute(
+        "UPDATE projects SET share_on_lan = 0"
+        " WHERE share_on_lan IS NULL OR share_on_lan NOT IN (0, 1)"
     )
     conn.commit()
 
@@ -351,6 +362,50 @@ def set_project_backend(db: DbLike, name: str, backend: str) -> str:
         )
         conn.commit()
     return canonical
+
+
+def get_project_share_on_lan(db: DbLike, name: str) -> bool:
+    """Return True when LAN sharing is on for a project (default off)."""
+    want = (name or "").strip()
+    with _connect(db) as conn:
+        _ensure_tables(conn)
+        row = conn.execute(
+            "SELECT share_on_lan FROM projects WHERE name = ?", (want,)
+        ).fetchone()
+    if row is None:
+        return False
+    try:
+        return int(row[0] or 0) != 0
+    except (TypeError, ValueError):
+        return False
+
+
+def set_project_share_on_lan(db: DbLike, name: str, enabled: bool) -> bool:
+    """Store a project's LAN sharing flag, returning the stored value."""
+    want = (name or "").strip() or "default"
+    flag = 1 if enabled else 0
+    with _connect(db) as conn:
+        _ensure_tables(conn)
+        conn.execute(
+            "INSERT INTO projects (name, share_on_lan) VALUES (?, ?)"
+            " ON CONFLICT(name) DO UPDATE SET share_on_lan = excluded.share_on_lan",
+            (want, flag),
+        )
+        conn.commit()
+    return flag == 1
+
+
+def any_project_shared(db: DbLike) -> bool:
+    """Return True when any project has LAN sharing on."""
+    try:
+        with _connect(db) as conn:
+            _ensure_tables(conn)
+            row = conn.execute(
+                "SELECT 1 FROM projects WHERE share_on_lan != 0 LIMIT 1"
+            ).fetchone()
+    except Exception:  # noqa: BLE001
+        return False
+    return row is not None
 
 
 def save_kickoff_proposal(

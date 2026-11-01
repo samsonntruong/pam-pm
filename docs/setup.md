@@ -51,6 +51,14 @@ Pick a board backend first, then work the numbered steps.
 - Step 6, Safety: dry run stays on by default. Review the daily spend cap, then Test.
 - Step 7, Done: paste the one-time setup token printed by `pam start` to finish. The autostart box is checked by default so Pam starts at sign-in.
 
+## Share on your network (team mode)
+
+One machine hosts the Pam board and teammates open it in a browser. Nothing for them to install: they join the same Wi-Fi or network, open the LAN link from the Share section of the wizard, enter the console password, and land on the Board.
+
+Use share mode for a quick co-located review or a small team on one trusted network. Use a shared backend (Azure DevOps or Jira) for real teams that need remote access, per-user permissions, and history outside one laptop. With a shared backend each person works in the system of record and Pam stays on the host machine.
+
+Security limits: share mode works on the same Wi-Fi or network only and has no encryption, so only use it on a network you trust. A console password is required to start shared mode, and anyone with the URL plus the password gets in. Keep the host machine on and Pam running while the team uses the board.
+
 ## Provider limits
 
 Meta is the default transport and uses the Responses API. A custom OpenAI-compatible endpoint works for chat, tools, structured output, and image input when the endpoint supports them. SAM 3.1 planning is Meta only: with a custom provider the planner skips segmentation and reads the whole photo as one image. This choice is independent of the board backend and works with both the Pam board and Azure DevOps.

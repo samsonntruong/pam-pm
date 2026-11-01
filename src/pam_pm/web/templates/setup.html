@@ -280,6 +280,38 @@
   <p>Open the <a href="/board?project={{ project }}">Board</a> and <a href="/activity?project={{ project }}">Activity</a> pages to confirm your work shows up.</p>
 </section>
 
+<section class="card" id="share">
+  <h2>Share on your network</h2>
+  <p>Let teammates on the same network open this board in their browser. Nothing for them to install.</p>
+  <label for="share-toggle"><input id="share-toggle" name="share_on_lan" type="checkbox" value="on" {% if share_on_lan %}checked{% endif %}> Share this board on my network</label>
+  <p class="muted">Warning: sharing works on the same Wi-Fi or network only. There is no encryption, so anyone with the URL plus the console password gets in. Only share on a network you trust.</p>
+  <div id="share-password-fields">
+    <label for="share-password">Console password</label>
+    <input id="share-password" name="share_password" type="password" value="" placeholder="{% if console_has_password %}Saved on this machine{% else %}At least 8 characters{% endif %}" autocomplete="off">
+    <label for="share-confirm">Confirm password</label>
+    <input id="share-confirm" name="share_confirm" type="password" value="" placeholder="Type it again" autocomplete="off">
+    {% if console_has_password %}<p class="muted">A console password is already saved. Fill both boxes only to change it.</p>{% endif %}
+  </div>
+  <div>
+    <button type="button" onclick="saveShare()">Save sharing</button>
+  </div>
+  <div id="share-result" class="result" aria-live="polite"></div>
+  {% if share_on_lan %}
+  <div id="share-invite">
+    <h3>Tell your team</h3>
+    <p>Copy and send this to your team:</p>
+    <blockquote>Open {{ share_url }} in your browser, enter the console password, and you land on the Board. You must be on the same Wi-Fi or network. There is nothing to install.</blockquote>
+    <ol>
+      <li>Make sure your teammate is on the same Wi-Fi or network as this machine.</li>
+      <li>Send them this link: <code>{{ share_url }}</code></li>
+      <li>Share the console password separately, in person or over a channel you trust.</li>
+      <li>They open the link, enter the password, and land on the Board.</li>
+    </ol>
+    <p class="muted">Keep Pam running on this machine while the team uses the board. Restart with sharing on to bind the network address.</p>
+  </div>
+  {% endif %}
+</section>
+
 <script id="wizard-progress" type="application/json">{{ progress_json | safe }}</script>
 <script>
   function setupToken() {
@@ -587,6 +619,27 @@
     } finally {
       radios.forEach(function (radio) { radio.disabled = false; });
     }
+  }
+  async function saveShare() {
+    const project = projectName();
+    const toggle = document.getElementById("share-toggle");
+    const pw = document.getElementById("share-password");
+    const confirm = document.getElementById("share-confirm");
+    const enabled = !!(toggle && toggle.checked);
+    try {
+      const resp = await fetch("/api/setup/share", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({project: project, enabled: enabled, password: pw ? pw.value : "", confirm: confirm ? confirm.value : "", token: setupToken()})
+      });
+      const data = await resp.json().catch(function () { return {}; });
+      const ok = resp.ok && data && data.ok !== false;
+      saveResult("share-result", ok, ok ? (enabled ? "Sharing is on. Send your team the link below." : "Sharing is off.") : ((data && data.message) ? data.message : "Save failed. Check the fields and try again."));
+      if (pw) pw.value = "";
+      if (confirm) confirm.value = "";
+      if (ok) { window.location.reload(); }
+      await saveStep("share", {data: {share_on_lan: enabled}});
+    } catch (err) { saveResult("share-result", false, "Save failed. Check your connection and try again."); }
   }
   (function restore() {
     const project = projectName();

@@ -61,6 +61,8 @@ pam-pm start
 
 `pam start` prints a one-time setup token and opens the setup wizard at `http://127.0.0.1:8765/setup?token=...`. Pick a board backend first (Pam board, Azure DevOps, Jira, Linear, Trello, ClickUp, Asana, or Monday, saved per project), then work through each step until every Test button is green. The console lands on the live Board. See [docs/setup.md](docs/setup.md) for the full walkthrough.
 
+To show the Pam board to teammates on the same Wi-Fi with nothing for them to install, see [Share on your network](docs/setup.md#share-on-your-network-team-mode).
+
 Check your environment at any time with:
 
 ```sh

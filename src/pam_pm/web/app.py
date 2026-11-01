@@ -12,6 +12,7 @@ import mimetypes
 import os
 import re
 import secrets
+import socket
 from pathlib import Path
 from typing import Any
 
@@ -186,6 +187,51 @@ def _projects_with_backends() -> list[dict[str, str]]:
         }
         for name in _known_project_names()
     ]
+
+
+def get_lan_ip() -> str:
+    """Return the machine LAN IP, falling back to the hostname."""
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.settimeout(2)
+            sock.connect(("8.8.8.8", 80))
+            ip = str(sock.getsockname()[0] or "").strip()
+            if ip and not ip.startswith("127."):
+                return ip
+        finally:
+            try:
+                sock.close()
+            except OSError:
+                pass
+    except OSError:
+        pass
+    try:
+        name = socket.gethostname().strip()
+    except OSError:
+        return "localhost"
+    if not name:
+        return "localhost"
+    try:
+        resolved = socket.gethostbyname(name)
+    except OSError:
+        return name
+    if resolved and not resolved.startswith("127."):
+        return resolved
+    return name
+
+
+def get_share_url(project: str, port: int = PORT) -> str:
+    """Return the LAN URL teammates open for a shared project."""
+    name = (project or "default").strip() or "default"
+    return f"http://{get_lan_ip()}:{int(port)}/board?project={name}"
+
+
+def _project_share_on_lan(name: str) -> bool:
+    try:
+        return store_mod.get_project_share_on_lan(_db_path(), name)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 RULE_TEMPLATES: list[dict[str, Any]] = [
@@ -1553,6 +1599,13 @@ def setup_page(request: Request, token: str = "") -> HTMLResponse:
             "asana_has_token": bool(saved_asana.get("has_token", False)),
             "monday_board": str(saved_monday.get("board", "") or ""),
             "monday_has_token": bool(saved_monday.get("has_token", False)),
+            "share_on_lan": _project_share_on_lan(project),
+            "share_url": (
+                get_share_url(project) if _project_share_on_lan(project) else ""
+            ),
+            "console_has_password": auth_mod.has_password(
+                Config().ensure_data_dir()
+            ),
         }
     )
     return templates.TemplateResponse(request, "setup.html", ctx)  # type: ignore[return-value]
@@ -2638,6 +2691,135 @@ async def save_setup_backend(request: Request) -> Any:
     if "hx-request" in request.headers:
         return HTMLResponse(_test_result_html(True, f"Tasks will live on {label}."))
     return {"ok": True, "project": project, "backend": stored, "label": label}
+
+
+@app.get("/api/setup/share")
+def get_setup_share(request: Request) -> dict[str, Any]:
+    project = request.query_params.get("project", "default").strip() or "default"
+    enabled = _project_share_on_lan(project)
+    try:
+        has_pw = auth_mod.has_password(Config().data_dir)
+    except Exception:  # noqa: BLE001
+        has_pw = False
+    return {
+        "ok": True,
+        "project": project,
+        "share_on_lan": enabled,
+        "share_url": get_share_url(project) if enabled else "",
+        "has_password": has_pw,
+    }
+
+
+@app.post("/api/setup/share")
+async def save_setup_share(request: Request) -> Any:
+    if not await _setup_token_ok(request):
+        return _setup_token_denied(request)
+    project = request.query_params.get("project", "default").strip() or "default"
+    enabled_raw: Any = request.query_params.get("enabled", "")
+    password = ""
+    confirm = ""
+    ctype = request.headers.get("content-type", "")
+    if "application/json" in ctype:
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = {}
+        if isinstance(payload, dict):
+            project = str(payload.get("project", project)).strip() or "default"
+            if "enabled" in payload:
+                enabled_raw = payload.get("enabled")
+            elif "share_on_lan" in payload:
+                enabled_raw = payload.get("share_on_lan")
+            password = str(payload.get("password", "") or "")
+            confirm = str(payload.get("confirm", "") or "")
+    else:
+        form = await request.form()
+        if "project" in form:
+            project = str(form.get("project", project)).strip() or "default"
+        if "enabled" in form:
+            enabled_raw = str(form.get("enabled", ""))
+        password = str(form.get("password", "") or "")
+        confirm = str(form.get("confirm", "") or "")
+    if isinstance(enabled_raw, bool):
+        enabled = enabled_raw
+    else:
+        enabled = str(enabled_raw).strip().lower() in ("1", "true", "yes", "on")
+    data_dir = Config().ensure_data_dir()
+    password_set = auth_mod.has_password(data_dir)
+    new_session = ""
+    if enabled:
+        if password.strip():
+            if not confirm.strip():
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "message": "Type the console password twice to confirm it.",
+                    },
+                    status_code=400,
+                )
+            if password.strip() != confirm.strip():
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "message": "The two passwords did not match. Try again.",
+                    },
+                    status_code=400,
+                )
+            try:
+                auth_mod.set_password(password, data_dir)
+            except ValueError as exc:
+                return JSONResponse(
+                    {"ok": False, "message": str(exc)}, status_code=400
+                )
+            password_set = True
+            new_session = auth_mod.create_session()
+            auth_mod.record_login_success(_client_ip(request))
+        if not password_set:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "message": (
+                        "Set a console password to share this board. "
+                        "Anyone on your network with the link needs the "
+                        "password to get in."
+                    ),
+                },
+                status_code=400,
+            )
+    try:
+        stored = store_mod.set_project_share_on_lan(_db_path(), project, enabled)
+    except Exception:  # noqa: BLE001
+        return JSONResponse(
+            {"ok": False, "message": "Sharing choice could not be saved. Try again."},
+            status_code=500,
+        )
+    try:
+        _write_project_step(project, "share", {"share_on_lan": stored})
+    except Exception:  # noqa: BLE001, S110
+        pass
+    if "hx-request" in request.headers:
+        note = "Sharing is on." if stored else "Sharing is off."
+        return HTMLResponse(_test_result_html(True, note))
+    resp = JSONResponse(
+        {
+            "ok": True,
+            "project": project,
+            "share_on_lan": stored,
+            "share_url": get_share_url(project) if stored else "",
+            "has_password": auth_mod.has_password(data_dir),
+        }
+    )
+    if new_session:
+        resp.set_cookie(
+            auth_mod.SESSION_COOKIE,
+            new_session,
+            max_age=auth_mod.SESSION_TTL_SECONDS,
+            path="/",
+            httponly=True,
+            samesite="lax",
+            secure=request.url.scheme == "https",
+        )
+    return resp
 
 
 @app.post("/api/setup/provider")

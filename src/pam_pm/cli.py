@@ -42,12 +42,33 @@ def cmd_start(args: argparse.Namespace) -> None:
     host = str(getattr(args, "host", HOST) or HOST)
     port = int(getattr(args, "port", PORT) or PORT)
     data_dir = Config().data_dir
+    share_enabled = False
+    try:
+        share_enabled = bool(Config().share_on_lan)
+    except Exception:  # noqa: BLE001
+        share_enabled = False
+    if not share_enabled:
+        try:
+            from pam_pm.core import store as store_mod
+
+            db_path = data_dir / "state.db"
+            if db_path.exists():
+                share_enabled = store_mod.any_project_shared(db_path)
+        except Exception:  # noqa: BLE001
+            share_enabled = False
+    if share_enabled and auth_mod.is_loopback_host(host):
+        host = "0.0.0.0"
     try:
         if auth_mod.provision_password_from_env(data_dir):
             print("Console password saved from PAM_CONSOLE_PASSWORD (stored hashed).")
     except ValueError as exc:
         print(str(exc))
         raise SystemExit(2)
+    if share_enabled:
+        share_error = auth_mod.share_console_error(data_dir)
+        if share_error is not None:
+            print(share_error)
+            raise SystemExit(2)
     error = auth_mod.console_bind_error(host, data_dir)
     if error is not None:
         print(error)

@@ -117,6 +117,7 @@ class Config:
         model_tier: str | None = None,
         backend: str | None = None,
         allowed_host: str | None = None,
+        share_on_lan: bool | None = None,
     ) -> None:
         want_tier = model_tier or tier or os.environ.get("META_TIER", "")
         want_tier = (want_tier or "standard").strip().lower()
@@ -193,6 +194,15 @@ class Config:
             self.allowed_host = str(allowed_host).strip()
         else:
             self.allowed_host = os.environ.get("PAM_ALLOWED_HOST", "").strip()
+        env_share = os.environ.get("PAM_SHARE_ON_LAN", "").strip().lower()
+        if share_on_lan is not None:
+            self.share_on_lan = bool(share_on_lan)
+        elif env_share in ("1", "true", "yes", "on"):
+            self.share_on_lan = True
+        elif env_share in ("0", "false", "no", "off"):
+            self.share_on_lan = False
+        else:
+            self.share_on_lan = False
 
     @property
     def model_tier(self) -> str:

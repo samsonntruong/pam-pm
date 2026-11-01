@@ -197,6 +197,23 @@ def console_bind_error(
     )
 
 
+def share_console_error(explicit: str | Path | None = None) -> str | None:
+    """Return a plain-English error when shared mode must be refused.
+
+    Returns None once a console password is stored.
+    """
+    if has_password(explicit):
+        return None
+    return (
+        "Cannot start shared mode because no console password is set. "
+        "Sharing puts your board on your local network, so a password is "
+        "required. Set one first, then start again. Either run pam start on "
+        "this machine without sharing, open the login page, and choose a "
+        "password, or set the PAM_CONSOLE_PASSWORD environment variable to "
+        f"at least {MIN_PASSWORD_LENGTH} characters for first run."
+    )
+
+
 def create_session(ttl_seconds: float | None = None) -> str:
     """Create a session token valid for ttl_seconds from now."""
     token = secrets.token_urlsafe(32)
