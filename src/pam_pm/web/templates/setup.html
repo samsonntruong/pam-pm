@@ -2,62 +2,150 @@
 {% block title %}Setup - Pam{% endblock %}
 {% block content %}
 <h1>Setup wizard</h1>
-<p class="muted">Seven short steps. This console runs on 127.0.0.1 only.</p>
+<p class="muted">Seven short steps in order: Model, Slack, ADO if chosen, People, Rules, Safety, Done. Progress saves after each step as JSON so you can close the browser and resume.</p>
 
 {% if setup_done %}
-<p><span class="pill pill-ok">OK: Setup is complete</span></p>
+<p><span class="pill pill-ok">Pass: Setup is complete</span></p>
 {% elif token_ok %}
-<p><span class="pill pill-ok">OK: Token accepted</span></p>
+<p><span class="pill pill-ok">Pass: Token accepted</span></p>
+{% endif %}
+{% if progress and progress.done %}
+<p><span class="pill">Welcome back. Progress restored. Current step: {{ progress.current }}.</span></p>
 {% endif %}
 
+<section class="card" id="backend-choice">
+  <h2>Where should your tasks live?</h2>
+  <p class="muted">Saved per project. Current project {{ project }} uses {{ backend_label }}.</p>
+  <div class="backend-cards">
+    <label class="card backend-card">
+      <input type="radio" name="backend" value="{{ pam_board_value }}" {% if backend == pam_board_value %}checked{% endif %} onchange="saveBackend(this.value)">
+      <strong>Pam board</strong> <span class="pill pill-ok">Recommended</span>
+      <span class="muted">Built in. No outside account needed. Creates a project with a default sprint.</span>
+    </label>
+    <label class="card backend-card">
+      <input type="radio" name="backend" value="{{ ado_value }}" {% if backend == ado_value %}checked{% endif %} onchange="saveBackend(this.value)">
+      <strong>Azure DevOps</strong>
+      <span class="muted">Use your existing project. Needs ADO_ORG_URL, ADO_PROJECT, and ADO_PAT.</span>
+    </label>
+    <div class="card backend-card" aria-disabled="true">
+      <strong>Jira, Asana, Linear</strong> <span class="pill">Coming soon</span>
+      <span class="muted">Not built yet. See <a href="docs/adapters.md">docs/adapters.md</a> for the adapter contract.</span>
+      <span><input type="radio" disabled> <span class="muted">Unavailable</span></span>
+    </div>
+  </div>
+  <div id="backend-result" class="result" aria-live="polite"></div>
+</section>
+
 <section class="card" id="step-1">
-  <h2>Step 1: Welcome</h2>
+  <h2>Step 1: Model</h2>
+  <p>Set META_MODEL, META_BASE_URL, and META_API_KEY in your secrets file, then test.</p>
+  <button hx-post="/api/test/meta?project={{ project }}" hx-target="#meta-result" hx-swap="innerHTML" onclick="saveStep('model')">Test Model</button>
+  <div id="meta-result" class="result" aria-live="polite"></div>
+</section>
+
+<section class="card" id="step-2">
+  <h2>Step 2: Slack</h2>
+  <p>The team lead or a workspace admin creates ONE internal Slack app once from the manifest in slack-app-manifest.yaml. Everyone else installs nothing and just gets DMs from Pam. If app installs are restricted in the workspace, ask a workspace admin to approve the install.</p>
+  <p>Set SLACK_BOT_TOKEN in your secrets file, then test.</p>
+  <button hx-post="/api/test/slack?project={{ project }}" hx-target="#slack-result" hx-swap="innerHTML" onclick="saveStep('slack')">Test Slack</button>
+  <div id="slack-result" class="result" aria-live="polite"></div>
+  <h3>Tell your team</h3>
+  <p>Copy and send this to the team:</p>
+  <blockquote>Pam was added to the workspace. You will get a morning check-in DM about your work. Raw answers stay private. There is nothing to install.</blockquote>
+</section>
+
+<section class="card" id="step-3" {% if not show_ado %}hidden{% endif %}>
+  <h2>Step 3: ADO</h2>
+  <p>Only needed when Azure DevOps is chosen. Set ADO_ORG_URL, ADO_PROJECT, and ADO_PAT in your secrets file, then test.</p>
+  <button hx-post="/api/test/ado?project={{ project }}" hx-target="#ado-result" hx-swap="innerHTML" onclick="saveStep('ado')">Test ADO</button>
+  <div id="ado-result" class="result" aria-live="polite"></div>
+</section>
+
+<section class="card" id="step-4">
+  <h2>Step 4: People</h2>
+  <p>Add teammates who will get check-ins, one name per line. Saved as JSON with the step.</p>
+  <label for="people">Teammates</label>
+  <textarea id="people" name="people" rows="3" placeholder="Ana&#10;Sam">{{ people_names }}</textarea>
+  <div>
+    <button onclick="savePeople()">Save People</button>
+    <button hx-post="/api/test/people?project={{ project }}" hx-target="#people-result" hx-swap="innerHTML">Test People</button>
+  </div>
+  <div id="people-result" class="result" aria-live="polite"></div>
+</section>
+
+<section class="card" id="step-5">
+  <h2>Step 5: Rules</h2>
+  <p>Turn on the rule templates you want on the <a href="/rules?project={{ project }}">Rules</a> page, then test.</p>
+  <button hx-post="/api/test/rules?project={{ project }}" hx-target="#rules-result" hx-swap="innerHTML" onclick="saveStep('rules')">Test Rules</button>
+  <div id="rules-result" class="result" aria-live="polite"></div>
+</section>
+
+<section class="card" id="step-6">
+  <h2>Step 6: Safety</h2>
+  <p>Dry run is {% if dry_run %}on{% else %}off{% endif %}. Daily spend cap is {{ spend_cap }}. Review before going live, then test.</p>
+  <button hx-post="/api/test/safety?project={{ project }}" hx-target="#safety-result" hx-swap="innerHTML" onclick="saveStep('safety')">Test Safety</button>
+  <div id="safety-result" class="result" aria-live="polite"></div>
+</section>
+
+<section class="card" id="step-7">
+  <h2>Step 7: Done</h2>
   <p>Paste your one time setup token to finish the wizard. The token was printed by pam start.</p>
-  <form hx-post="/api/setup/complete" hx-target="#setup-result" hx-swap="innerHTML">
+  <form hx-post="/api/setup/complete" hx-target="#setup-result" hx-swap="innerHTML" onsubmit="saveStep('done')">
     <label for="token">Setup token</label>
     <input id="token" name="token" type="text" value="{{ token }}" placeholder="Paste token here" autocomplete="off">
     <button type="submit">Complete setup</button>
   </form>
   <div id="setup-result" class="result" aria-live="polite"></div>
+  <p>Check the <a href="/board?project={{ project }}">Board</a> and <a href="/activity?project={{ project }}">Activity</a> pages to confirm data flows.</p>
 </section>
 
-<section class="card" id="step-2">
-  <h2>Step 2: Connect Meta model</h2>
-  <p>Set META_MODEL, META_BASE_URL, and META_API_KEY in your secrets file, then test.</p>
-  <button hx-post="/api/test/meta" hx-target="#meta-result" hx-swap="innerHTML">Test Meta</button>
-  <div id="meta-result" class="result" aria-live="polite"></div>
-</section>
-
-<section class="card" id="step-3">
-  <h2>Step 3: Connect Slack</h2>
-  <p>The team lead or a workspace admin creates ONE internal Slack app once from the manifest in slack-app-manifest.yaml. Everyone else installs nothing and just gets DMs from Pam. If app installs are restricted in the workspace, ask a workspace admin to approve the install.</p>
-  <p>Set SLACK_BOT_TOKEN in your secrets file, then test.</p>
-  <button hx-post="/api/test/slack" hx-target="#slack-result" hx-swap="innerHTML">Test Slack</button>
-  <div id="slack-result" class="result" aria-live="polite"></div>
-</section>
-
-<section class="card" id="step-4">
-  <h2>Step 4: Connect ADO</h2>
-  <p>Set ADO_ORG_URL, ADO_PROJECT, and ADO_PAT in your secrets file, then test.</p>
-  <button hx-post="/api/test/ado" hx-target="#ado-result" hx-swap="innerHTML">Test ADO</button>
-  <div id="ado-result" class="result" aria-live="polite"></div>
-</section>
-
-<section class="card" id="step-5">
-  <h2>Step 5: Choose project</h2>
-  <p>Pick the active project with the switcher at the top. Current project: {{ project }}.</p>
-</section>
-
-<section class="card" id="step-6">
-  <h2>Step 6: Enable rules</h2>
-  <p>Turn on the rule templates you want on the <a href="/rules">Rules</a> page.</p>
-</section>
-
-<section class="card" id="step-7">
-  <h2>Step 7: Done</h2>
-  <p>Check the <a href="/board">Board</a> and <a href="/activity">Activity</a> pages to confirm data flows.</p>
-  <h3>Tell your team</h3>
-  <p>Copy and send this to the team:</p>
-  <blockquote>Pam was added to the workspace. You will get a morning check-in DM about your work. Raw answers stay private. There is nothing to install.</blockquote>
-</section>
+<script id="wizard-progress" type="application/json">{{ progress_json | safe }}</script>
+<script>
+  function projectName() {
+    const url = new URL(window.location.href);
+    return url.searchParams.get("project") || "{{ project }}";
+  }
+  async function saveStep(step, extra) {
+    const project = projectName();
+    const payload = Object.assign({project: project, step: step, data: {}}, extra || {});
+    try {
+      localStorage.setItem("pam-wizard-" + project, JSON.stringify(payload));
+    } catch (err) { /* storage full or blocked, server copy still saves */ }
+    try {
+      await fetch("/api/setup/progress", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)
+      });
+    } catch (err) { /* offline, local copy keeps progress */ }
+  }
+  async function savePeople() {
+    const box = document.getElementById("people");
+    const value = box ? box.value : "";
+    await saveStep("people", {data: {people: value}});
+  }
+  async function saveBackend(value) {
+    const project = projectName();
+    try {
+      await fetch("/api/setup/backend", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({project: project, backend: value})
+      });
+    } catch (err) { /* keep local state on failure */ }
+    const ado = document.getElementById("step-3");
+    if (ado) {
+      if (value === "{{ pam_board_value }}") { ado.setAttribute("hidden", ""); }
+      else { ado.removeAttribute("hidden"); }
+    }
+    await saveStep("backend", {data: {backend: value}});
+  }
+  (function restore() {
+    const project = projectName();
+    try {
+      const raw = localStorage.getItem("pam-wizard-" + project);
+      if (raw) { saveStep(JSON.parse(raw).step || "backend"); }
+    } catch (err) { /* ignore bad local copy, server copy wins */ }
+  })();
+</script>
 {% endblock %}

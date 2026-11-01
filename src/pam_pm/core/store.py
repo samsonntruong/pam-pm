@@ -31,6 +31,11 @@ INTERVIEWS_TABLE_DDL = """CREATE TABLE IF NOT EXISTS interviews (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 )"""
 
+PROJECTS_TABLE_DDL = """CREATE TABLE IF NOT EXISTS projects (
+  name TEXT PRIMARY KEY,
+  backend TEXT NOT NULL DEFAULT 'azure_devops'
+)"""
+
 
 @contextmanager
 def _connect(db: DbLike) -> Iterator[sqlite3.Connection]:
@@ -45,10 +50,27 @@ def _connect(db: DbLike) -> Iterator[sqlite3.Connection]:
             conn.close()
 
 
+def _migrate_projects(conn: sqlite3.Connection) -> None:
+    """Add the backend column to old projects tables and backfill it."""
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(projects)").fetchall()]
+    if "backend" not in cols:
+        conn.execute(
+            "ALTER TABLE projects ADD COLUMN backend"
+            " TEXT NOT NULL DEFAULT 'azure_devops'"
+        )
+    conn.execute(
+        "UPDATE projects SET backend = 'azure_devops'"
+        " WHERE backend IS NULL OR backend = ''"
+    )
+    conn.commit()
+
+
 def _ensure_tables(conn: sqlite3.Connection) -> None:
     conn.execute(WRITES_TABLE_DDL)
     conn.execute(CALLS_TABLE_DDL)
     conn.execute(INTERVIEWS_TABLE_DDL)
+    conn.execute(PROJECTS_TABLE_DDL)
+    _migrate_projects(conn)
     conn.commit()
 
 
@@ -129,3 +151,50 @@ def insert_call(db: DbLike, usage: CallUsage | dict) -> int:
     with _connect(db) as conn:
         _ensure_tables(conn)
         return log_call(conn, item)
+
+
+def _norm_backend(value: object) -> str:
+    from pam_pm.core.config import normalize_backend
+
+    return normalize_backend(value)
+
+
+def list_projects(db: DbLike) -> list[dict[str, str]]:
+    """List projects with canonical backends, migrating old rows."""
+    with _connect(db) as conn:
+        _ensure_tables(conn)
+        rows = conn.execute(
+            "SELECT name, backend FROM projects ORDER BY name ASC"
+        ).fetchall()
+    return [
+        {"name": str(name), "backend": _norm_backend(backend)}
+        for name, backend in rows
+    ]
+
+
+def get_project_backend(db: DbLike, name: str) -> str:
+    """Return a project's backend, defaulting to azure_devops."""
+    want = (name or "").strip()
+    with _connect(db) as conn:
+        _ensure_tables(conn)
+        row = conn.execute(
+            "SELECT backend FROM projects WHERE name = ?", (want,)
+        ).fetchone()
+    if row is None:
+        return "azure_devops"
+    return _norm_backend(row[0])
+
+
+def set_project_backend(db: DbLike, name: str, backend: str) -> str:
+    """Store a project's backend choice, returning the canonical value."""
+    want = (name or "").strip() or "default"
+    canonical = _norm_backend(backend)
+    with _connect(db) as conn:
+        _ensure_tables(conn)
+        conn.execute(
+            "INSERT INTO projects (name, backend) VALUES (?, ?)"
+            " ON CONFLICT(name) DO UPDATE SET backend = excluded.backend",
+            (want, canonical),
+        )
+        conn.commit()
+    return canonical

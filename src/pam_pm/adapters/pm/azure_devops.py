@@ -14,9 +14,17 @@ from urllib.parse import quote
 
 import httpx
 
-from pam_pm.adapters.pm.base import Link, PMAdapter, WorkItem, is_closed
+from pam_pm.adapters.pm.base import (
+    Comment,
+    Iteration,
+    Link,
+    PMAdapter,
+    WorkItem,
+    is_closed,
+)
 
 API_VERSION = "7.1"
+COMMENTS_VERSION = "7.1-preview.3"
 
 STATE_MAP = {
     "Agile": {"open": "New", "active": "Active", "done": "Closed"},
@@ -39,7 +47,10 @@ FIELD_MAP = {
     "description": "System.Description",
     "tags": "System.Tags",
     "assigned_to": "System.AssignedTo",
+    "owner": "System.AssignedTo",
     "remaining": "Microsoft.VSTS.Scheduling.RemainingWork",
+    "estimate": "Microsoft.VSTS.Scheduling.OriginalEstimate",
+    "due_date": "Microsoft.VSTS.Scheduling.DueDate",
 }
 
 _BEARER_RE = re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]+")
@@ -60,6 +71,10 @@ class ADOError(RuntimeError):
 
 class ADOAdapter(PMAdapter):
     """PM adapter backed by the ADO work item REST API."""
+
+    supports_dependency_links: bool = True
+    supports_iterations: bool = True
+    supports_comments: bool = True
 
     def __init__(
         self,
@@ -167,6 +182,25 @@ class ADOAdapter(PMAdapter):
     def activate_item(self, item_id: str) -> WorkItem:
         """Move one item to its mapped active state."""
         return self.update_item(item_id, {"state": self._mapped_state("active")})
+
+    def list_states(self) -> list[str]:
+        """List the canonical open, active, and done states in order."""
+        proc = self._process if self._process in STATE_MAP else None
+        if proc is None:
+            proc = self.detect_process()
+        mapping = STATE_MAP.get(str(proc), STATE_MAP["Agile"])
+        return [
+            str(mapping.get("open", "")),
+            str(mapping.get("active", "")),
+            str(mapping.get("done", "")),
+        ]
+
+    def delete_item(self, item_id: str) -> None:
+        """Delete one item (ADO moves it to the recycle bin)."""
+        url = self._url(
+            f"/_apis/wit/workitems/{item_id}?api-version={API_VERSION}"
+        )
+        self._request("DELETE", url)
 
     def _clean(self, text: object) -> str:
         return redact(text, self._pat, self._basic)
@@ -354,6 +388,133 @@ class ADOAdapter(PMAdapter):
                 continue
             out.append(Link(source_id=item_id, target_id=other, rel=rel))
         return out
+
+    def _team_prefix(self) -> str:
+        if not self._team:
+            raise ADOError("ADO_TEAM is required for iterations.")
+        return (
+            f"{self._org}/{quote(self._project, safe='')}"
+            f"/{quote(self._team, safe='')}"
+        )
+
+    @staticmethod
+    def _to_iteration(data: dict[str, Any]) -> Iteration:
+        attrs = data.get("attributes", {})
+        if not isinstance(attrs, dict):
+            attrs = {}
+        return Iteration(
+            id=str(data.get("id", "")),
+            name=str(data.get("name", "")),
+            start_date=str(attrs.get("startDate", "") or "")[:10],
+            end_date=str(attrs.get("finishDate", "") or "")[:10],
+            path=str(data.get("path", "")),
+        )
+
+    def list_iterations(self) -> list[Iteration]:
+        """List team sprints, oldest first."""
+        url = self._team_prefix()
+        url += f"/_apis/work/teamsettings/iterations?api-version={API_VERSION}"
+        data = self._request("GET", url)
+        values = data.get("value", []) if isinstance(data, dict) else []
+        out = [
+            self._to_iteration(entry)
+            for entry in values
+            if isinstance(entry, dict)
+        ]
+        return sorted(out, key=lambda it: (it.start_date, it.id))
+
+    def create_iteration(
+        self, name: str, start_date: str = "", end_date: str = ""
+    ) -> Iteration:
+        """Create a sprint node with dates, then add it to the team."""
+        label = name.strip()
+        if not label:
+            raise ADOError("iteration name is required")
+        if not self._team:
+            raise ADOError("ADO_TEAM is required for iterations.")
+        attrs: dict[str, str] = {}
+        if start_date.strip():
+            attrs["startDate"] = start_date.strip()
+        if end_date.strip():
+            attrs["finishDate"] = end_date.strip()
+        node_url = self._url(
+            "/_apis/wit/classificationnodes/iterations"
+            f"?api-version={API_VERSION}"
+        )
+        node = self._request(
+            "POST", node_url, {"name": label, "attributes": attrs}
+        )
+        guid = ""
+        if isinstance(node, dict):
+            guid = str(node.get("identifier", "") or node.get("id", ""))
+        team_url = self._team_prefix()
+        team_url += (
+            f"/_apis/work/teamsettings/iterations?api-version={API_VERSION}"
+        )
+        data = self._request("POST", team_url, {"id": guid})
+        if not isinstance(data, dict) or not data.get("id"):
+            raise ADOError("create iteration failed: no id returned")
+        return self._to_iteration(data)
+
+    def set_item_iteration(
+        self, item_id: str, iteration_id: str
+    ) -> WorkItem:
+        """Move one item to a sprint by id, name, or path."""
+        path = iteration_id
+        for cand in self.list_iterations():
+            if iteration_id in (cand.id, cand.name, cand.path):
+                path = cand.path or cand.name
+                break
+        item = self.update_item(item_id, {"System.IterationPath": path})
+        item.fields["iteration_id"] = iteration_id
+        return item
+
+    @staticmethod
+    def _to_comment(item_id: str, data: dict[str, Any]) -> Comment:
+        made_by = data.get("createdBy", {})
+        author = ""
+        if isinstance(made_by, dict):
+            author = str(made_by.get("displayName", ""))
+        return Comment(
+            id=str(data.get("id", "")),
+            item_id=item_id,
+            text=str(data.get("text", "")),
+            author=author,
+            created=str(data.get("createdDate", "")),
+        )
+
+    def list_comments(self, item_id: str) -> list[Comment]:
+        """List comments on one item, oldest first."""
+        url = self._url(
+            f"/_apis/wit/workitems/{item_id}/comments"
+            f"?api-version={COMMENTS_VERSION}"
+        )
+        data = self._request("GET", url)
+        values = data.get("value", []) if isinstance(data, dict) else []
+        return [
+            self._to_comment(item_id, entry)
+            for entry in values
+            if isinstance(entry, dict)
+        ]
+
+    def add_comment(
+        self, item_id: str, text: str, author: str = ""
+    ) -> Comment:
+        """Add a comment; ADO sets the author from the PAT identity."""
+        body = text.strip()
+        if not body:
+            raise ADOError("comment text is required")
+        url = self._url(
+            f"/_apis/wit/workitems/{item_id}/comments"
+            f"?api-version={COMMENTS_VERSION}"
+        )
+        data = self._request("POST", url, {"text": body})
+        if not isinstance(data, dict) or not data.get("id"):
+            raise ADOError(f"add comment failed for item: {item_id}")
+        comment = self._to_comment(item_id, data)
+        if author.strip() and not comment.author:
+            comment.author = author.strip()
+        return comment
 
     def poll_changes(self, since: str | None = None) -> list[WorkItem]:
         """List changed items; closed means is_closed state on any process."""

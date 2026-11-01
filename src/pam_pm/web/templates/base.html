@@ -14,9 +14,14 @@
       <label for="project-switcher">Project</label>
       <select id="project-switcher" name="project" onchange="switchProject(this.value)">
         {% for p in projects %}
+        {% if p is mapping %}
+        <option value="{{ p.name }}" {% if p.name == project %}selected{% endif %}>{{ p.name }} ({{ p.label }})</option>
+        {% else %}
         <option value="{{ p }}" {% if p == project %}selected{% endif %}>{{ p }}</option>
+        {% endif %}
         {% endfor %}
       </select>
+      {% if project_backend_label %}<span class="muted backend-kind">{{ project_backend_label }}</span>{% endif %}
     </div>
   </header>
   <div class="layout">

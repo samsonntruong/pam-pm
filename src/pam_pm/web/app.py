@@ -20,7 +20,13 @@ from pam_pm.adapters.pm.sqlite_board import SQLiteBoard
 from pam_pm.agents.lead import synthesize_review
 from pam_pm.agents.planner import approve_proposal, propose_sprint
 from pam_pm.core import store as store_mod
-from pam_pm.core.config import Config
+from pam_pm.core.config import (
+    BACKEND_AZURE_DEVOPS,
+    BACKEND_PAM_BOARD,
+    Config,
+    backend_label,
+    normalize_backend,
+)
 from pam_pm.models.vision import plan_from_photo
 
 logger = logging.getLogger(__name__)
@@ -38,8 +44,96 @@ PORT = 8765
 
 PROJECTS = ["default", "atlas", "demo"]
 
+WIZARD_ORDER = ["model", "slack", "ado", "people", "rules", "safety", "done"]
+WIZARD_PROGRESS_FILENAME = "wizard_progress.json"
+
 SETUP_TOKEN = os.environ.get("PAM_SETUP_TOKEN", "").strip() or secrets.token_urlsafe(32)
 SETUP_DONE = False
+
+
+def _db_path() -> Path:
+    return Config().db_path()
+
+
+def _progress_path() -> Path:
+    return Config().ensure_data_dir() / WIZARD_PROGRESS_FILENAME
+
+
+def _read_all_progress() -> dict[str, Any]:
+    try:
+        raw = _progress_path().read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except OSError:
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _read_project_progress(project: str) -> dict[str, Any]:
+    all_progress = _read_all_progress()
+    item = all_progress.get(project or "default", {})
+    return dict(item) if isinstance(item, dict) else {}
+
+
+def _write_project_step(
+    project: str, step: str, data: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    name = (project or "default").strip() or "default"
+    all_progress = _read_all_progress()
+    entry = all_progress.get(name, {})
+    if not isinstance(entry, dict):
+        entry = {}
+    steps = entry.get("steps", {})
+    if not isinstance(steps, dict):
+        steps = {}
+    steps[str(step)] = dict(data or {})
+    done = entry.get("done", [])
+    if not isinstance(done, list):
+        done = []
+    if str(step) not in done:
+        done = [*done, str(step)]
+    entry["steps"] = steps
+    entry["done"] = done
+    entry["current"] = str(step)
+    all_progress[name] = entry
+    path = _progress_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(all_progress, indent=2), encoding="utf-8")
+    return dict(entry)
+
+
+def _project_backend(name: str) -> str:
+    try:
+        return normalize_backend(store_mod.get_project_backend(_db_path(), name))
+    except Exception:  # noqa: BLE001
+        return BACKEND_AZURE_DEVOPS
+
+
+def _known_project_names() -> list[str]:
+    names = list(PROJECTS)
+    try:
+        for row in store_mod.list_projects(_db_path()):
+            label = str(row.get("name", "")).strip()
+            if label and label not in names:
+                names.append(label)
+    except Exception:  # noqa: BLE001
+        return sorted(names)
+    return sorted(names)
+
+
+def _projects_with_backends() -> list[dict[str, str]]:
+    return [
+        {
+            "name": name,
+            "backend": _project_backend(name),
+            "label": backend_label(_project_backend(name)),
+        }
+        for name in _known_project_names()
+    ]
 
 RULE_TEMPLATES: list[dict[str, Any]] = [
     {
@@ -289,51 +383,168 @@ def is_valid_token(token: str | None) -> bool:
 
 
 def _project(request: Request) -> str:
-    want = request.query_params.get("project", "default").strip()
-    return want if want in PROJECTS else "default"
+    want = request.query_params.get("project", "default").strip() or "default"
+    if want in PROJECTS:
+        return want
+    if want in _known_project_names():
+        return want
+    if len(want) <= 64 and all(c.isalnum() or c in ("-", "_", ".") for c in want):
+        return want
+    return "default"
 
 
 def _context(request: Request, active: str) -> dict[str, Any]:
+    project = _project(request)
     return {
         "request": request,
         "active": active,
-        "project": _project(request),
-        "projects": PROJECTS,
+        "project": project,
+        "projects": _projects_with_backends(),
+        "project_backend": _project_backend(project),
+        "project_backend_label": backend_label(_project_backend(project)),
     }
 
 
-def _check_meta() -> tuple[bool, str]:
+def _check_meta() -> tuple[bool, str, str]:
     missing = [
         key
         for key in ("META_MODEL", "META_BASE_URL", "META_API_KEY")
         if not os.environ.get(key, "").strip()
     ]
     if missing:
-        return False, "Missing: " + ", ".join(missing)
-    return True, "Meta config looks good"
+        return (
+            False,
+            "Model check failed. Pam cannot reach the model.",
+            "Set " + ", ".join(missing) + " in your secrets file, then test again.",
+        )
+    return (
+        True,
+        "Model check passed. Pam can reach the model.",
+        "",
+    )
 
 
-def _check_slack() -> tuple[bool, str]:
+def _check_slack() -> tuple[bool, str, str]:
     if not os.environ.get("SLACK_BOT_TOKEN", "").strip():
-        return False, "Missing: SLACK_BOT_TOKEN"
-    return True, "Slack config looks good"
+        return (
+            False,
+            "Slack check failed. Pam cannot send DMs.",
+            "Set SLACK_BOT_TOKEN in your secrets file, then test again.",
+        )
+    return (
+        True,
+        "Slack check passed. Pam can send DMs.",
+        "",
+    )
 
 
-def _check_ado() -> tuple[bool, str]:
+def _check_ado() -> tuple[bool, str, str]:
     missing = [
         key
         for key in ("ADO_ORG_URL", "ADO_PROJECT", "ADO_PAT")
         if not os.environ.get(key, "").strip()
     ]
     if missing:
-        return False, "Missing: " + ", ".join(missing)
-    return True, "ADO config looks good"
+        return (
+            False,
+            "Azure DevOps check failed. Pam cannot read the project.",
+            "Set " + ", ".join(missing) + " in your secrets file, then test again.",
+        )
+    return (
+        True,
+        "Azure DevOps check passed. Pam can read the project.",
+        "",
+    )
 
 
-def _test_result_html(ok: bool, message: str) -> str:
+def _check_people(project: str = "default") -> tuple[bool, str, str]:
+    progress = _read_project_progress(project)
+    steps = progress.get("steps", {})
+    people: list[str] = []
+    if isinstance(steps, dict):
+        entry = steps.get("people", {})
+        if isinstance(entry, dict):
+            raw = entry.get("people", entry.get("names", []))
+            if isinstance(raw, str):
+                people = [p.strip() for p in raw.replace(",", "\n").splitlines()]
+            elif isinstance(raw, list):
+                people = [str(p).strip() for p in raw]
+    env_people = os.environ.get("PAM_PEOPLE", "").strip()
+    if not people and env_people:
+        people = [p.strip() for p in env_people.replace(",", "\n").splitlines()]
+    people = [p for p in people if p]
+    if people:
+        return (
+            True,
+            f"People check passed. {len(people)} teammate(s) added.",
+            "",
+        )
+    return (
+        False,
+        "People check failed. No teammates added yet.",
+        "Add at least one teammate name, save the step, then test again.",
+    )
+
+
+def _check_rules() -> tuple[bool, str, str]:
+    enabled = [name for name, on in RULE_STATES.items() if on]
+    if enabled:
+        return (
+            True,
+            f"Rules check passed. {len(enabled)} rule(s) turned on.",
+            "",
+        )
+    return (
+        False,
+        "Rules check failed. All rules are turned off.",
+        "Turn on at least one rule on the Rules page, then test again.",
+    )
+
+
+def _check_safety() -> tuple[bool, str, str]:
+    try:
+        cfg = Config()
+    except Exception:  # noqa: BLE001
+        return (
+            False,
+            "Safety check failed. Settings could not be read.",
+            "Check the data directory is writable, then test again.",
+        )
+    if cfg.daily_spend_cap <= 0:
+        return (
+            False,
+            "Safety check failed. Daily spend cap is missing.",
+            "Set DAILY_SPEND_CAP to a value above zero, then test again.",
+        )
+    mode = "Dry run is on" if cfg.dry_run else "Dry run is off"
+    return (
+        True,
+        f"Safety check passed. {mode} and spend cap is set.",
+        "",
+    )
+
+
+def _check_backend(project: str = "default") -> tuple[bool, str, str]:
+    backend = _project_backend(project)
+    label = backend_label(backend)
+    return (
+        True,
+        f"Backend check passed. Tasks will live on {label}.",
+        "",
+    )
+
+
+def _test_result_html(ok: bool, message: str, hint: str = "") -> str:
+    safe_message = html.escape(message)
+    safe_hint = html.escape(hint)
     if ok:
-        return f'<span class="pill pill-ok">OK: {message}</span>'
-    return f'<span class="pill pill-fail">{message}</span>'
+        return f'<span class="pill pill-ok">Pass: {safe_message}</span>'
+    if safe_hint:
+        return (
+            f'<span class="pill pill-fail">Fail: {safe_message}</span>'
+            f'<p class="muted fix-hint">Fix: {safe_hint}</p>'
+        )
+    return f'<span class="pill pill-fail">Fail: {safe_message}</span>'
 
 
 def _load_writes() -> list[dict[str, Any]]:
@@ -376,11 +587,36 @@ def health_alias() -> dict[str, str]:
 @app.get("/setup", response_class=HTMLResponse)
 def setup_page(request: Request, token: str = "") -> HTMLResponse:
     ctx = _context(request, "setup")
+    project = str(ctx["project"])
+    backend = _project_backend(project)
+    progress = _read_project_progress(project)
+    try:
+        cfg = Config()
+        spend_cap = cfg.daily_spend_cap
+        dry_run = cfg.dry_run
+    except Exception:  # noqa: BLE001
+        spend_cap = 0.0
+        dry_run = True
+    people_entry: dict[str, Any] = {}
+    steps = progress.get("steps", {})
+    if isinstance(steps, dict) and isinstance(steps.get("people"), dict):
+        people_entry = dict(steps["people"])
     ctx.update(
         {
             "token": token,
             "token_ok": is_valid_token(token) if token else False,
             "setup_done": SETUP_DONE,
+            "backend": backend,
+            "backend_label": backend_label(backend),
+            "show_ado": backend == BACKEND_AZURE_DEVOPS,
+            "progress": progress,
+            "progress_json": json.dumps(progress),
+            "wizard_order": WIZARD_ORDER,
+            "spend_cap": spend_cap,
+            "dry_run": dry_run,
+            "people_names": people_entry.get("people", ""),
+            "pam_board_value": BACKEND_PAM_BOARD,
+            "ado_value": BACKEND_AZURE_DEVOPS,
         }
     )
     return templates.TemplateResponse(request, "setup.html", ctx)  # type: ignore[return-value]
@@ -447,17 +683,101 @@ def review_page(request: Request) -> HTMLResponse:
 @app.post("/api/test/{which}")
 async def test_connection(which: str, request: Request) -> Any:
     name = (which or "").strip().lower()
-    if name == "meta":
-        ok, message = _check_meta()
+    project = request.query_params.get("project", "default").strip() or "default"
+    if name in ("meta", "model"):
+        ok, message, hint = _check_meta()
     elif name == "slack":
-        ok, message = _check_slack()
+        ok, message, hint = _check_slack()
     elif name == "ado":
-        ok, message = _check_ado()
+        ok, message, hint = _check_ado()
+    elif name == "people":
+        ok, message, hint = _check_people(project)
+    elif name == "rules":
+        ok, message, hint = _check_rules()
+    elif name == "safety":
+        ok, message, hint = _check_safety()
+    elif name == "backend":
+        ok, message, hint = _check_backend(project)
     else:
-        return JSONResponse({"ok": False, "message": "Unknown target"}, status_code=404)
+        return JSONResponse(
+            {"ok": False, "message": "Unknown target.", "hint": "Use one of: model, slack, ado, people, rules, safety."},
+            status_code=404,
+        )
     if "hx-request" in request.headers:
-        return HTMLResponse(_test_result_html(ok, message))
-    return {"ok": ok, "message": message}
+        return HTMLResponse(_test_result_html(ok, message, hint))
+    return {"ok": ok, "message": message, "hint": hint}
+
+
+@app.get("/api/setup/progress")
+def get_setup_progress(request: Request) -> dict[str, Any]:
+    project = request.query_params.get("project", "default").strip() or "default"
+    return {"ok": True, "project": project, "progress": _read_project_progress(project)}
+
+
+@app.post("/api/setup/progress")
+async def save_setup_progress(request: Request) -> Any:
+    project = request.query_params.get("project", "").strip()
+    step = request.query_params.get("step", "").strip()
+    data: dict[str, Any] = {}
+    ctype = request.headers.get("content-type", "")
+    if "application/json" in ctype:
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = {}
+        if isinstance(payload, dict):
+            project = str(payload.get("project", project or "default")).strip() or "default"
+            step = str(payload.get("step", step)).strip()
+            raw_data = payload.get("data", {})
+            if isinstance(raw_data, dict):
+                data = {str(k): v for k, v in raw_data.items()}
+            for key in ("people", "names", "notes"):
+                if key in payload and key not in data:
+                    data[key] = payload[key]
+    else:
+        form = await request.form()
+        project = str(form.get("project", project or "default")).strip() or "default"
+        step = str(form.get("step", step)).strip()
+        for key in ("people", "names", "notes", "backend"):
+            if key in form:
+                data[key] = str(form.get(key, ""))
+    if not step:
+        return JSONResponse({"ok": False, "message": "Missing step.", "hint": "Send a step name."}, status_code=400)
+    entry = _write_project_step(project, step, data)
+    if "hx-request" in request.headers:
+        return HTMLResponse(_test_result_html(True, f"Saved step {step}. Progress restored on return."))
+    return {"ok": True, "project": project, "progress": entry}
+
+
+@app.post("/api/setup/backend")
+async def save_setup_backend(request: Request) -> Any:
+    project = request.query_params.get("project", "default").strip() or "default"
+    backend = request.query_params.get("backend", "").strip()
+    ctype = request.headers.get("content-type", "")
+    if "application/json" in ctype:
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = {}
+        if isinstance(payload, dict):
+            project = str(payload.get("project", project)).strip() or "default"
+            backend = str(payload.get("backend", backend)).strip()
+    else:
+        form = await request.form()
+        if "project" in form:
+            project = str(form.get("project", project)).strip() or "default"
+        if "backend" in form:
+            backend = str(form.get("backend", backend)).strip()
+    canonical = normalize_backend(backend)
+    try:
+        stored = store_mod.set_project_backend(_db_path(), project, canonical)
+    except Exception:  # noqa: BLE001
+        stored = canonical
+    _write_project_step(project, "backend", {"backend": stored})
+    label = backend_label(stored)
+    if "hx-request" in request.headers:
+        return HTMLResponse(_test_result_html(True, f"Tasks will live on {label}."))
+    return {"ok": True, "project": project, "backend": stored, "label": label}
 
 
 @app.post("/api/rules/toggle")

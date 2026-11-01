@@ -10,6 +10,36 @@ from platformdirs import user_data_dir
 APP_NAME = "pam-pm"
 DEFAULT_DAILY_SPEND_CAP = 2.0
 
+BACKEND_PAM_BOARD = "pam_board"
+BACKEND_AZURE_DEVOPS = "azure_devops"
+BACKEND_CHOICES = (BACKEND_PAM_BOARD, BACKEND_AZURE_DEVOPS)
+
+_PAM_ALIASES = {"pam", "pam_board", "native", "native_board", "sqlite", "sqlite_board"}
+_ADO_ALIASES = {"ado", "azure", "azure_devops", "azure-devops", "devops"}
+
+
+def normalize_backend(value: object) -> str:
+    """Return the canonical backend for a user or stored value.
+
+    Unknown, empty, or missing values default to azure_devops so
+    existing projects keep working with no user step.
+    """
+    text = str(value or "").strip().lower().replace("-", "_")
+    if text in _PAM_ALIASES:
+        return BACKEND_PAM_BOARD
+    if text in _ADO_ALIASES or not text:
+        return BACKEND_AZURE_DEVOPS
+    if text in BACKEND_CHOICES:
+        return text
+    return BACKEND_AZURE_DEVOPS
+
+
+def backend_label(value: object) -> str:
+    """Return the display label for a backend value."""
+    if normalize_backend(value) == BACKEND_PAM_BOARD:
+        return "Pam board"
+    return "Azure DevOps"
+
 
 def resolve_data_dir(explicit: str | Path | None = None) -> Path:
     """Return the data dir, honoring PAM_HOME then platformdirs."""
@@ -39,6 +69,7 @@ class Config:
         dry_run: bool | None = None,
         data_dir: str | Path | None = None,
         model_tier: str | None = None,
+        backend: str | None = None,
     ) -> None:
         want_tier = model_tier or tier or os.environ.get("META_TIER", "")
         want_tier = (want_tier or "standard").strip().lower()
@@ -84,6 +115,8 @@ class Config:
             self.data_dir = Path(env_home).expanduser()
         else:
             self.data_dir = Path(user_data_dir(APP_NAME))
+        want_backend = backend if backend is not None else os.environ.get("PAM_BACKEND", "")
+        self.backend = normalize_backend(want_backend)
 
     @property
     def model_tier(self) -> str:

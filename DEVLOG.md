@@ -25,6 +25,7 @@ Build log for Pam. Three lines per entry.
 | Gitleaks 8.24.2 | WP-1 secret scan | 10 commits scanned, no leaks found |
 | Muse Code | WP-1 SAM discovery | Responses shape confirmed live, masks and boxes back on synthetic image |
 | Impeccable 4.8.0 | WP0 design tooling | Project skill install, telemetry off, PRODUCT.md DESIGN.md, detector clean |
+| Muse Code | WP1 backends and wizard | NativeBoard real adapter, capability flags, backend choice, saved progress, 90 pass |
 
 ## Entries
 
