@@ -57,6 +57,7 @@ Build log for Pam. Three lines per entry.
 | Muse Code | Clickable desktop icon | Start Menu shortcut, Pam.app, .desktop file, no packaging or certs, 349 pass |
 | Muse Code | One-line install URLs | Real repo name in installers plus docs, private testing note, 349 pass |
 | Muse Code | Board kanban restyle | Compact cards with badges and avatars, traditional columns, 349 pass |
+| Muse Code | Grouped sidenav plus shots | 4 nav sections, avatars confirmed, 32 screenshots, 352 pass |
 
 ## Entries
 
