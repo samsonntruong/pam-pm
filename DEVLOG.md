@@ -24,6 +24,7 @@ Build log for Pam. Three lines per entry.
 | Muse Code | WP-1 slack script fix | App token local prefix check, slack check fully PASS |
 | Gitleaks 8.24.2 | WP-1 secret scan | 10 commits scanned, no leaks found |
 | Muse Code | WP-1 SAM discovery | Responses shape confirmed live, masks and boxes back on synthetic image |
+| Impeccable 4.8.0 | WP0 design tooling | Project skill install, telemetry off, PRODUCT.md DESIGN.md, detector clean |
 
 ## Entries
 

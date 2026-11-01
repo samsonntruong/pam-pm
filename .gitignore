@@ -9,3 +9,9 @@ build/
 .ruff_cache/
 .mypy_cache/
 .env
+# Impeccable vendored skill files (project tooling, never commit)
+.github/skills/impeccable/
+.github/agents/
+.agents/skills/impeccable/
+.claude/skills/impeccable/
+.tools/
