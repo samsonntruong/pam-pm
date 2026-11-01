@@ -6,7 +6,7 @@
 {% if editable %}
 <p class="muted">Live board for project {{ project }}. Drag cards between columns or use Move to. Every change is saved with evidence and can be undone from Activity.</p>
 {% else %}
-<p class="muted">Read only view for project {{ project }}. Changes happen through rules.{% if ado_url %} <a href="{{ ado_url }}">Open in Azure DevOps</a>.{% endif %}</p>
+<p class="muted">Read only view for project {{ project }}. Pam cannot edit here.{% if ado_url %} <a href="{{ ado_url }}">Open in Azure DevOps</a> to make changes.{% endif %}</p>
 {% endif %}
 
 <div class="board-toolbar" role="toolbar" aria-label="Board tools">
@@ -31,7 +31,6 @@
     {% else %}
     <a class="btn" href="/api/board/export?project={{ project }}">Export CSV</a>
     {% endif %}
-    <button type="button" id="theme-toggle" aria-pressed="false">Dark theme</button>
     <span id="board-status" class="pill" role="status">Stream: connecting</span>
   </div>
 </div>
@@ -73,7 +72,7 @@
 
 <section class="card" id="import-panel" hidden>
   <h2>Import CSV</h2>
-  <p class="muted">Columns: title, state, owner, estimate, remaining, priority, tags, due_date, iteration_id, description. Title is required on each row.</p>
+  <p class="muted">Each row needs a title. You can also include state, owner, estimate, remaining, priority, tags, due_date, iteration_id, and description.</p>
   <form id="import-form">
     <label>CSV file <input type="file" name="file" accept=".csv,text/csv"></label>
     <label>Or paste CSV <textarea name="csv" rows="4" placeholder="title,state,owner"></textarea></label>
@@ -101,10 +100,10 @@
           <h3>{{ item.title }}</h3>
           <p class="muted card-state">{{ item.state }}{% if item.owner %} &middot; {{ item.owner }}{% endif %}</p>
           <dl class="card-fields">
-            {% if item.estimate != "" %}<div><dt>Est</dt><dd>{{ item.estimate }}</dd></div>{% endif %}
-            {% if item.remaining != "" %}<div><dt>Left</dt><dd>{{ item.remaining }}</dd></div>{% endif %}
-            {% if item.priority %}<div><dt>Pri</dt><dd>{{ item.priority }}</dd></div>{% endif %}
-            {% if item.due_date %}<div><dt>Due</dt><dd>{{ item.due_date }}</dd></div>{% endif %}
+            {% if item.estimate != "" %}<div><dt>Estimate</dt><dd>{{ item.estimate }}</dd></div>{% endif %}
+            {% if item.remaining != "" %}<div><dt>Remaining</dt><dd>{{ item.remaining }}</dd></div>{% endif %}
+            {% if item.priority %}<div><dt>Priority</dt><dd>{{ item.priority }}</dd></div>{% endif %}
+            {% if item.due_date %}<div><dt>Due date</dt><dd>{{ item.due_date }}</dd></div>{% endif %}
             {% if item.sprint %}<div><dt>Sprint</dt><dd>{{ item.sprint }}</dd></div>{% endif %}
             {% if item.link_count %}<div><dt>Links</dt><dd>{{ item.link_count }}</dd></div>{% endif %}
           </dl>
@@ -183,7 +182,7 @@
       <h2>{{ sprint.name }}</h2>
       <p class="muted">
         {% if sprint.start_date or sprint.end_date %}{{ sprint.start_date }} to {{ sprint.end_date }}. {% endif %}
-        Status: {{ sprint.status }}. {{ sprint.cards|length }} item(s).
+        Status: {{ sprint.status }}. {{ sprint.cards|length }} item{% if sprint.cards|length != 1 %}s{% endif %}.
       </p>
       <ul class="sprint-items">
         {% for item in sprint.cards %}
@@ -223,7 +222,7 @@
   {% if links %}
   <ul>
     {% for link in links %}
-    <li>{{ link.label }} <span class="muted">({{ link.rel }})</span></li>
+    <li>{{ link.label }}</li>
     {% endfor %}
   </ul>
   {% else %}

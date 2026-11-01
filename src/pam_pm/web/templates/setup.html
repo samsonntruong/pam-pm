@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Setup - Pam{% endblock %}
 {% block content %}
-<h1>Setup wizard</h1>
-<p class="muted">Seven short steps in order: Model, Slack, ADO if chosen, People, Rules, Safety, Done. Progress saves after each step as JSON so you can close the browser and resume.</p>
+<h1>Setup</h1>
+<p class="muted">Seven short steps in order: Model, Slack, Azure DevOps if chosen, People, Rules, Safety, Done. Progress saves after each step so you can close the browser and come back later.</p>
 
 {% if setup_done %}
 <p><span class="pill pill-ok">Pass: Setup is complete</span></p>
@@ -15,21 +15,21 @@
 
 <section class="card" id="backend-choice">
   <h2>Where should your tasks live?</h2>
-  <p class="muted">Saved per project. Current project {{ project }} uses {{ backend_label }}.</p>
+  <p class="muted">This choice is saved for each project. Project {{ project }} now uses {{ backend_label }}.</p>
   <div class="backend-cards">
     <label class="card backend-card">
       <input type="radio" name="backend" value="{{ pam_board_value }}" {% if backend == pam_board_value %}checked{% endif %} onchange="saveBackend(this.value)">
       <strong>Pam board</strong> <span class="pill pill-ok">Recommended</span>
-      <span class="muted">Built in. No outside account needed. Creates a project with a default sprint.</span>
+      <span class="muted">Built in. No outside account needed. Pam creates a project with a first sprint for you.</span>
     </label>
     <label class="card backend-card">
       <input type="radio" name="backend" value="{{ ado_value }}" {% if backend == ado_value %}checked{% endif %} onchange="saveBackend(this.value)">
       <strong>Azure DevOps</strong>
-      <span class="muted">Use your existing project. Needs ADO_ORG_URL, ADO_PROJECT, and ADO_PAT.</span>
+      <span class="muted">Use your existing project. Add ADO_ORG_URL, ADO_PROJECT, and ADO_PAT to your secrets file.</span>
     </label>
     <div class="card backend-card" aria-disabled="true">
       <strong>Jira, Asana, Linear</strong> <span class="pill">Coming soon</span>
-      <span class="muted">Not built yet. See <a href="docs/adapters.md">docs/adapters.md</a> for the adapter contract.</span>
+      <span class="muted">Not built yet. See <a href="docs/adapters.md">docs/adapters.md</a> for details.</span>
       <span><input type="radio" disabled> <span class="muted">Unavailable</span></span>
     </div>
   </div>
@@ -38,58 +38,58 @@
 
 <section class="card" id="step-1">
   <h2>Step 1: Model</h2>
-  <p>Set META_MODEL, META_BASE_URL, and META_API_KEY in your secrets file, then test.</p>
-  <button hx-post="/api/test/meta?project={{ project }}" hx-target="#meta-result" hx-swap="innerHTML" onclick="saveStep('model')">Test Model</button>
+  <p>Add META_MODEL, META_BASE_URL, and META_API_KEY to your secrets file, then check the connection.</p>
+  <button hx-post="/api/test/meta?project={{ project }}" hx-target="#meta-result" hx-swap="innerHTML" onclick="saveStep('model')">Check model</button>
   <div id="meta-result" class="result" aria-live="polite"></div>
 </section>
 
 <section class="card" id="step-2">
   <h2>Step 2: Slack</h2>
-  <p>The team lead or a workspace admin creates ONE internal Slack app once from the manifest in slack-app-manifest.yaml. Everyone else installs nothing and just gets DMs from Pam. If app installs are restricted in the workspace, ask a workspace admin to approve the install.</p>
-  <p>Set SLACK_BOT_TOKEN in your secrets file, then test.</p>
-  <button hx-post="/api/test/slack?project={{ project }}" hx-target="#slack-result" hx-swap="innerHTML" onclick="saveStep('slack')">Test Slack</button>
+  <p>The team lead or a workspace admin creates ONE internal Slack app once from the file slack-app-manifest.yaml. Everyone else installs nothing and just gets messages from Pam. If installs need approval in your workspace, ask a workspace admin to approve it.</p>
+  <p>Add SLACK_BOT_TOKEN to your secrets file, then check the connection.</p>
+  <button hx-post="/api/test/slack?project={{ project }}" hx-target="#slack-result" hx-swap="innerHTML" onclick="saveStep('slack')">Check Slack</button>
   <div id="slack-result" class="result" aria-live="polite"></div>
   <h3>Tell your team</h3>
   <p>Copy and send this to the team:</p>
-  <blockquote>Pam was added to the workspace. You will get a morning check-in DM about your work. Raw answers stay private. There is nothing to install.</blockquote>
+  <blockquote>Pam was added to the workspace. You will get a morning message about your work. Your answers stay private. There is nothing to install.</blockquote>
 </section>
 
 <section class="card" id="step-3" {% if not show_ado %}hidden{% endif %}>
-  <h2>Step 3: ADO</h2>
-  <p>Only needed when Azure DevOps is chosen. Set ADO_ORG_URL, ADO_PROJECT, and ADO_PAT in your secrets file, then test.</p>
-  <button hx-post="/api/test/ado?project={{ project }}" hx-target="#ado-result" hx-swap="innerHTML" onclick="saveStep('ado')">Test ADO</button>
+  <h2>Step 3: Azure DevOps</h2>
+  <p>Only needed when Azure DevOps is chosen above. Add ADO_ORG_URL, ADO_PROJECT, and ADO_PAT to your secrets file, then check the connection.</p>
+  <button hx-post="/api/test/ado?project={{ project }}" hx-target="#ado-result" hx-swap="innerHTML" onclick="saveStep('ado')">Check Azure DevOps</button>
   <div id="ado-result" class="result" aria-live="polite"></div>
 </section>
 
 <section class="card" id="step-4">
   <h2>Step 4: People</h2>
-  <p>Add teammates who will get check-ins, one name per line. Saved as JSON with the step.</p>
+  <p>Add teammates who will get the morning message, one name per line. Names save with this step.</p>
   <label for="people">Teammates</label>
   <textarea id="people" name="people" rows="3" placeholder="Ana&#10;Sam">{{ people_names }}</textarea>
   <div>
-    <button onclick="savePeople()">Save People</button>
-    <button hx-post="/api/test/people?project={{ project }}" hx-target="#people-result" hx-swap="innerHTML">Test People</button>
+    <button onclick="savePeople()">Save teammates</button>
+    <button hx-post="/api/test/people?project={{ project }}" hx-target="#people-result" hx-swap="innerHTML">Check teammates</button>
   </div>
   <div id="people-result" class="result" aria-live="polite"></div>
 </section>
 
 <section class="card" id="step-5">
   <h2>Step 5: Rules</h2>
-  <p>Turn on the rule templates you want on the <a href="/rules?project={{ project }}">Rules</a> page, then test.</p>
-  <button hx-post="/api/test/rules?project={{ project }}" hx-target="#rules-result" hx-swap="innerHTML" onclick="saveStep('rules')">Test Rules</button>
+  <p>Choose which automatic messages you want on the <a href="/rules?project={{ project }}">Rules</a> page, then check.</p>
+  <button hx-post="/api/test/rules?project={{ project }}" hx-target="#rules-result" hx-swap="innerHTML" onclick="saveStep('rules')">Check rules</button>
   <div id="rules-result" class="result" aria-live="polite"></div>
 </section>
 
 <section class="card" id="step-6">
   <h2>Step 6: Safety</h2>
-  <p>Dry run is {% if dry_run %}on{% else %}off{% endif %}. Daily spend cap is {{ spend_cap }}. Review before going live, then test.</p>
-  <button hx-post="/api/test/safety?project={{ project }}" hx-target="#safety-result" hx-swap="innerHTML" onclick="saveStep('safety')">Test Safety</button>
+  <p>Dry run is {% if dry_run %}on{% else %}off{% endif %}. Daily spend cap is {{ spend_cap }}. When dry run is on, Pam shows what it would do without changing anything. Review these values, then check.</p>
+  <button hx-post="/api/test/safety?project={{ project }}" hx-target="#safety-result" hx-swap="innerHTML" onclick="saveStep('safety')">Check safety</button>
   <div id="safety-result" class="result" aria-live="polite"></div>
 </section>
 
 <section class="card" id="step-7">
   <h2>Step 7: Done</h2>
-  <p>Paste your one time setup token to finish the wizard. The token was printed by pam start.</p>
+  <p>Paste your one time setup token to finish setup. The token was printed when you ran pam start.</p>
   <form hx-post="/api/setup/complete" hx-target="#setup-result" hx-swap="innerHTML" onsubmit="saveStep('done')">
     <label for="token">Setup token</label>
     <input id="token" name="token" type="text" value="{{ token }}" placeholder="Paste token here" autocomplete="off">
@@ -98,7 +98,7 @@
     <button type="submit">Complete setup</button>
   </form>
   <div id="setup-result" class="result" aria-live="polite"></div>
-  <p>Check the <a href="/board?project={{ project }}">Board</a> and <a href="/activity?project={{ project }}">Activity</a> pages to confirm data flows.</p>
+  <p>Open the <a href="/board?project={{ project }}">Board</a> and <a href="/activity?project={{ project }}">Activity</a> pages to confirm your work shows up.</p>
 </section>
 
 <script id="wizard-progress" type="application/json">{{ progress_json | safe }}</script>
@@ -126,21 +126,47 @@
     const value = box ? box.value : "";
     await saveStep("people", {data: {people: value}});
   }
+  function backendPill(box, cls, text) {
+    box.innerHTML = "";
+    const pill = document.createElement("span");
+    pill.className = cls;
+    pill.textContent = text;
+    box.appendChild(pill);
+  }
   async function saveBackend(value) {
     const project = projectName();
+    const box = document.getElementById("backend-result");
+    const radios = document.querySelectorAll('input[name="backend"]:not([disabled])');
+    radios.forEach(function (radio) { radio.disabled = true; });
+    if (box) backendPill(box, "pill", "Saving your choice...");
     try {
-      await fetch("/api/setup/backend", {
+      const resp = await fetch("/api/setup/backend", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({project: project, backend: value})
       });
-    } catch (err) { /* keep local state on failure */ }
-    const ado = document.getElementById("step-3");
-    if (ado) {
-      if (value === "{{ pam_board_value }}") { ado.setAttribute("hidden", ""); }
-      else { ado.removeAttribute("hidden"); }
+      const data = await resp.json().catch(function () { return {}; });
+      if (!resp.ok || (data && data.ok === false)) throw new Error("save failed");
+      const label = (data && data.label) ? data.label : value;
+      if (box) backendPill(box, "pill pill-ok", "Saved. Tasks will live on " + label + ".");
+      const ado = document.getElementById("step-3");
+      if (ado) {
+        if (value === "{{ pam_board_value }}") { ado.setAttribute("hidden", ""); }
+        else { ado.removeAttribute("hidden"); }
+      }
+      await saveStep("backend", {data: {backend: value}});
+    } catch (err) {
+      if (box) {
+        backendPill(box, "pill pill-fail", "Sorry, that choice could not be saved. Check your connection and try again.");
+        const retry = document.createElement("button");
+        retry.type = "button";
+        retry.textContent = "Try again";
+        retry.addEventListener("click", function () { saveBackend(value); });
+        box.appendChild(retry);
+      }
+    } finally {
+      radios.forEach(function (radio) { radio.disabled = false; });
     }
-    await saveStep("backend", {data: {backend: value}});
   }
   (function restore() {
     const project = projectName();

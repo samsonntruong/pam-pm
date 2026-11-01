@@ -6,22 +6,35 @@
   <title>{% block title %}Pam{% endblock %}</title>
   <link rel="stylesheet" href="/static/style.css">
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <script>
+    (function () {
+      try {
+        var name = localStorage.getItem("pam-theme") || "";
+        if (name === "dark" || name === "light") {
+          document.documentElement.setAttribute("data-theme", name);
+        }
+      } catch (err) { /* default theme when storage is blocked */ }
+    })();
+  </script>
 </head>
 <body class="{% block bodyclass %}{% endblock %}">
   <header class="topbar">
     <div class="brand">Pam</div>
-    <div class="project-switcher">
-      <label for="project-switcher">Project</label>
-      <select id="project-switcher" name="project" onchange="switchProject(this.value)">
-        {% for p in projects %}
-        {% if p is mapping %}
-        <option value="{{ p.name }}" {% if p.name == project %}selected{% endif %}>{{ p.name }} ({{ p.label }})</option>
-        {% else %}
-        <option value="{{ p }}" {% if p == project %}selected{% endif %}>{{ p }}</option>
-        {% endif %}
-        {% endfor %}
-      </select>
-      {% if project_backend_label %}<span class="muted backend-kind">{{ project_backend_label }}</span>{% endif %}
+    <div class="topbar-right">
+      <div class="project-switcher">
+        <label for="project-switcher">Project</label>
+        <select id="project-switcher" name="project" onchange="switchProject(this.value)">
+          {% for p in projects %}
+          {% if p is mapping %}
+          <option value="{{ p.name }}" {% if p.name == project %}selected{% endif %}>{{ p.name }} ({{ p.label }})</option>
+          {% else %}
+          <option value="{{ p }}" {% if p == project %}selected{% endif %}>{{ p }}</option>
+          {% endif %}
+          {% endfor %}
+        </select>
+        {% if project_backend_label %}<span class="muted backend-kind">{{ project_backend_label }}</span>{% endif %}
+      </div>
+      <button type="button" id="theme-toggle" aria-pressed="false">Dark theme</button>
     </div>
   </header>
   <div class="layout">
@@ -33,6 +46,7 @@
         <a href="/activity" class="{% if active == 'activity' %}active{% endif %}">Activity</a>
         <a href="/plan" class="{% if active == 'plan' %}active{% endif %}">Plan</a>
         <a href="/review" class="{% if active == 'review' %}active{% endif %}">Review</a>
+        <a href="/settings" class="{% if active == 'settings' %}active{% endif %}">Settings</a>
       </nav>
     </aside>
     <main class="content">
@@ -46,6 +60,79 @@
       url.searchParams.set("project", value);
       window.location.href = url.toString();
     }
+  </script>
+  <script>
+    (function () {
+      var btn = document.getElementById("theme-toggle");
+      if (!btn) return;
+      function stored() {
+        try { return localStorage.getItem("pam-theme") || ""; }
+        catch (err) { return ""; }
+      }
+      function paint(name) {
+        var root = document.documentElement;
+        if (name === "dark" || name === "light") {
+          root.setAttribute("data-theme", name);
+        } else {
+          root.removeAttribute("data-theme");
+        }
+        var dark = name === "dark" || (name !== "light" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        btn.textContent = dark ? "Light theme" : "Dark theme";
+        btn.setAttribute("aria-pressed", dark ? "true" : "false");
+      }
+      paint(stored());
+      btn.addEventListener("click", function () {
+        var dark = btn.getAttribute("aria-pressed") === "true";
+        var next = dark ? "light" : "dark";
+        try { localStorage.setItem("pam-theme", next); }
+        catch (err) { /* private mode keeps the default theme */ }
+        paint(next);
+      });
+    })();
+  </script>
+  <script>
+    (function () {
+      function setBusy(btn, busy) {
+        if (!btn || btn.tagName !== "BUTTON") return;
+        if (busy) {
+          if (btn.dataset.orig === undefined) btn.dataset.orig = btn.textContent;
+          btn.disabled = true;
+          btn.textContent = "Working...";
+          btn.setAttribute("aria-busy", "true");
+        } else {
+          btn.disabled = false;
+          if (btn.dataset.orig !== undefined) btn.textContent = btn.dataset.orig;
+          btn.removeAttribute("aria-busy");
+        }
+      }
+      function plainError(target, text) {
+        if (!target || target.textContent.trim()) return;
+        target.innerHTML = "";
+        var pill = document.createElement("span");
+        pill.className = "pill pill-fail";
+        pill.textContent = text;
+        target.appendChild(pill);
+      }
+      document.body.addEventListener("htmx:beforeRequest", function (evt) {
+        setBusy(evt.detail && evt.detail.elt, true);
+        var target = evt.detail && evt.detail.target;
+        if (target && target.setAttribute) target.setAttribute("aria-busy", "true");
+      });
+      document.body.addEventListener("htmx:afterRequest", function (evt) {
+        setBusy(evt.detail && evt.detail.elt, false);
+        var target = evt.detail && evt.detail.target;
+        if (target && target.removeAttribute) target.removeAttribute("aria-busy");
+      });
+      document.body.addEventListener("htmx:sendError", function (evt) {
+        setBusy(evt.detail && evt.detail.elt, false);
+        var target = evt.detail && evt.detail.target;
+        if (target && target.removeAttribute) target.removeAttribute("aria-busy");
+        plainError(target, "Sorry, that did not work. Check your connection and try again.");
+      });
+      document.body.addEventListener("htmx:responseError", function (evt) {
+        plainError(evt.detail && evt.detail.target, "Sorry, that did not work. Try again in a moment.");
+      });
+    })();
   </script>
   {% block scripts %}{% endblock %}
 </body>

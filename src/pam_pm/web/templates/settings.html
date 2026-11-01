@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Settings - Pam{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+<p class="muted">Team, safety, and cost for project {{ project }}. Changes save here and apply right away.</p>
+
+<section class="card" id="settings-roster">
+  <h2>Team</h2>
+  <p class="muted">Teammates get the morning message. Skills can be any words, such as design or testing. Capacity is hours per week.</p>
+  <form hx-post="/api/settings/roster?project={{ project }}" hx-target="#roster-result" hx-swap="innerHTML">
+    <label for="roster-people">Teammates, one name per line</label>
+    <textarea id="roster-people" name="people" rows="3" placeholder="Ana&#10;Sam">{{ people_text }}</textarea>
+    {% if roster %}
+    <table class="roster">
+      <thead>
+        <tr><th scope="col">Name</th><th scope="col">Skills</th><th scope="col">Capacity (hours per week)</th></tr>
+      </thead>
+      <tbody>
+        {% for entry in roster %}
+        <tr>
+          <td>{{ entry.name }}<input type="hidden" name="name" value="{{ entry.name }}"></td>
+          <td><input type="text" name="skills" value="{{ entry.skills }}" aria-label="Skills for {{ entry.name }}" autocomplete="off"></td>
+          <td><input type="number" name="capacity" value="{{ entry.capacity }}" min="0" step="1" aria-label="Capacity in hours per week for {{ entry.name }}"></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted">No teammates saved yet. Add names above, then save to add skills and capacity.</p>
+    {% endif %}
+    <div class="form-actions">
+      <button type="submit">Save team</button>
+    </div>
+    <div id="roster-result" class="result" aria-live="polite"></div>
+  </form>
+</section>
+
+<section class="card" id="settings-safety">
+  <h2>Safety</h2>
+  <p class="muted">When dry run is on, Pam shows what it would do without changing anything. The daily spend cap stops paid work for the day when reached.</p>
+  <form hx-post="/api/settings/safety" hx-target="#safety-result" hx-swap="innerHTML">
+    <label class="toggle">
+      <input type="checkbox" name="dry_run" value="on" {% if dry_run %}checked{% endif %}>
+      Dry run on
+    </label>
+    <label for="spend-cap">Daily spend cap (USD)</label>
+    <input id="spend-cap" type="number" name="spend_cap" value="{{ spend_cap }}" min="0.01" step="0.01" inputmode="decimal">
+    <div class="form-actions">
+      <button type="submit">Save safety</button>
+    </div>
+    <div id="safety-result" class="result" aria-live="polite"></div>
+  </form>
+</section>
+
+<section class="card" id="settings-cost">
+  <h2>Model cost</h2>
+  {% if cost.calls %}
+  <p>Total spend is <strong>${{ cost_dollars }}</strong> across {{ cost.calls }} request{% if cost.calls != 1 %}s{% endif %}.</p>
+  <p class="muted">{{ cost.cached_pct }}% of the words Pam read were reused from earlier work, which costs less.</p>
+  {% else %}
+  <p class="muted">No paid work logged yet. Spend will show here after the first run.</p>
+  {% endif %}
+</section>
+
+<section class="card" id="settings-access">
+  <h2>Console access</h2>
+  <p class="muted">Pam runs on this computer only. There is no sign in page. The setup token works once. Keep it private and do not paste it into chat.</p>
+</section>
+{% endblock %}

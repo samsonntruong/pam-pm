@@ -2,26 +2,30 @@
 {% block title %}Plan - Pam{% endblock %}
 {% block content %}
 <h1>Plan</h1>
-<p class="muted">Plan from a whiteboard photo for project {{ project }}.</p>
+<p class="muted">Turn a whiteboard photo into tasks for project {{ project }}. Upload a photo, review the suggestions, then create only what you want.</p>
 <form hx-post="/api/plan/upload" hx-target="#plan-result" hx-swap="innerHTML" hx-encoding="multipart/form-data">
   <label for="photo">Board photo</label>
   <input id="photo" name="photo" type="file" accept="image/*">
-  <button type="submit">Upload and propose</button>
+  <button type="submit">Upload photo and suggest tasks</button>
 </form>
 <div id="plan-result" aria-live="polite">
+  {% if plan_html %}
+  {{ plan_html | safe }}
+  {% else %}
   <section class="card">
-    <h2>Masks preview</h2>
-    <p class="muted">Upload a photo to see masks.</p>
+    <h2>Notes found</h2>
+    <p class="muted">Upload a photo to see the notes Pam finds.</p>
   </section>
   <section class="card">
-    <h2>Readings</h2>
-    <p class="muted">Upload a photo to see readings.</p>
+    <h2>What the notes say</h2>
+    <p class="muted">Upload a photo to see the words from each note.</p>
   </section>
   <section class="card">
-    <h2>Proposal</h2>
-    <p class="muted">Upload a photo to see the proposal table.</p>
-    <button hx-post="/api/plan/approve" hx-target="#approve-result" hx-swap="innerHTML">Approve</button>
+    <h2>Suggested tasks</h2>
+    <p class="muted">No suggested tasks yet. Upload a board photo first. The create button stays off until suggestions are ready.</p>
+    <button hx-post="/api/plan/approve" hx-target="#approve-result" hx-swap="innerHTML" disabled>Create these tasks</button>
     <div id="approve-result" class="result" aria-live="polite"></div>
   </section>
+  {% endif %}
 </div>
 {% endblock %}

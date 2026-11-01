@@ -9,6 +9,7 @@ import io
 import json
 import logging
 import os
+import re
 import secrets
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,7 @@ from pam_pm.core.config import (
     backend_label,
     normalize_backend,
 )
+from pam_pm.core.cost import CALLS_TABLE_DDL
 from pam_pm.models.vision import plan_from_photo
 
 logger = logging.getLogger(__name__)
@@ -140,24 +142,25 @@ def _projects_with_backends() -> list[dict[str, str]]:
         for name in _known_project_names()
     ]
 
+
 RULE_TEMPLATES: list[dict[str, Any]] = [
     {
         "name": "morning",
         "title": "Morning check-in",
-        "description": "DM each person with active items each morning.",
-        "trigger": "schedule",
+        "description": "Send each teammate a short morning message about their open work.",
+        "trigger": "Runs each morning.",
     },
     {
         "name": "follow_up",
-        "title": "Follow up on close",
-        "description": "DM the next owner when an item closes.",
-        "trigger": "ado_change",
+        "title": "Follow up when work closes",
+        "description": "Send the next owner a message when an item is finished.",
+        "trigger": "Runs when an item closes.",
     },
     {
         "name": "blocker",
-        "title": "Blocker intake",
-        "description": "Ask what is blocked, link items, request ETA.",
-        "trigger": "slack_blocker",
+        "title": "Help with blocked work",
+        "description": "Ask what is blocked, link the related items, and ask for a finish date.",
+        "trigger": "Runs when someone reports blocked work.",
     },
 ]
 
@@ -309,23 +312,148 @@ def _run_review_now() -> dict[str, Any]:
     return result
 
 
+REVIEW_HEADINGS = {
+    "Sprint review": "Sprint review",
+    "Facts": "Facts",
+    "Interpretations": "Unsure items",
+    "Low confidence flags": "Needs follow up",
+    "Events": "Recent changes",
+    "Retro actions": "Follow up actions",
+}
+
+
+def _markdown_inline(text: str) -> str:
+    """Render inline markdown over escaped text (code, bold, italic, links)."""
+    esc = html.escape(text, quote=False)
+    esc = re.sub(r"`([^`\n]+?)`", r"<code>\1</code>", esc)
+    esc = re.sub(r"\*\*([^*]+?)\*\*", r"<strong>\1</strong>", esc)
+    esc = re.sub(r"(?<!\*)\*([^*\n]+?)\*(?!\*)", r"<em>\1</em>", esc)
+
+    def _link(match: re.Match[str]) -> str:
+        label, url = match.group(1), match.group(2).strip()
+        if re.match(r"(?i)^https?://", url):
+            return f'<a href="{html.escape(url, quote=True)}">{label}</a>'
+        return label
+
+    return re.sub(r"\[([^\]]+?)\]\(([^)\s]+?)\)", _link, esc)
+
+
+def _markdown_to_html(raw: str) -> str:
+    """Render basic markdown to sanitized HTML (headings, lists, quotes, code).
+
+    All text is escaped first, so raw HTML in the input never passes through.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    out: list[str] = []
+    para: list[str] = []
+    in_list = ""
+    in_code = False
+    code_lines: list[str] = []
+
+    def flush_para() -> None:
+        if para:
+            body = " ".join(para).strip()
+            if body:
+                out.append(f"<p>{_markdown_inline(body)}</p>")
+            para.clear()
+
+    def close_list() -> None:
+        nonlocal in_list
+        if in_list:
+            out.append(f"</{in_list}>")
+            in_list = ""
+
+    for line in text.splitlines() + [""]:
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            if in_code:
+                out.append(
+                    "<pre><code>" + html.escape("\n".join(code_lines)) + "</code></pre>"
+                )
+                code_lines.clear()
+                in_code = False
+            else:
+                flush_para()
+                close_list()
+                in_code = True
+            continue
+        if in_code:
+            code_lines.append(line.rstrip())
+            continue
+        if not stripped:
+            flush_para()
+            close_list()
+            continue
+        if stripped.startswith("### "):
+            flush_para()
+            close_list()
+            out.append(f"<h3>{_markdown_inline(stripped[4:].strip())}</h3>")
+        elif stripped.startswith("## "):
+            flush_para()
+            close_list()
+            heading = REVIEW_HEADINGS.get(stripped[3:].strip(), stripped[3:].strip())
+            out.append(f"<h2>{_markdown_inline(heading)}</h2>")
+        elif stripped.startswith("# "):
+            flush_para()
+            close_list()
+            heading = REVIEW_HEADINGS.get(stripped[2:].strip(), stripped[2:].strip())
+            out.append(f"<h2>{_markdown_inline(heading)}</h2>")
+        elif stripped.startswith("> "):
+            flush_para()
+            close_list()
+            out.append(
+                f"<blockquote>{_markdown_inline(stripped[2:].strip())}</blockquote>"
+            )
+        elif stripped.startswith(("- ", "* ")):
+            flush_para()
+            if in_list != "ul":
+                close_list()
+                out.append("<ul>")
+                in_list = "ul"
+            out.append(f"<li>{_markdown_inline(stripped[2:].strip())}</li>")
+        elif re.match(r"^\d+\.\s+", stripped):
+            flush_para()
+            if in_list != "ol":
+                close_list()
+                out.append("<ol>")
+                in_list = "ol"
+            content = re.sub(r"^\d+\.\s+", "", stripped)
+            out.append(f"<li>{_markdown_inline(content)}</li>")
+        elif stripped in ("---", "***", "___"):
+            flush_para()
+            close_list()
+            out.append("<hr>")
+        else:
+            close_list()
+            para.append(stripped)
+    return "\n".join(out)
+
+
 def _review_result_html(result: dict[str, Any]) -> str:
-    parts = [f"<pre class=\"review-markdown\">{html.escape(result['review_markdown'])}</pre>"]
-    parts.append('<section class="card"><h2>Retro actions</h2>')
+    body = _markdown_to_html(str(result.get("review_markdown", "")))
+    if body:
+        parts = [f'<div class="review-body">{body}</div>']
+    else:
+        parts = ['<p class="muted">No review yet. Choose Run review to make one.</p>']
+    parts.append('<section class="card"><h2>Follow up actions</h2>')
     actions = result.get("retro_actions", [])
     if not actions:
-        parts.append('<p class="muted">No retro actions. Nothing flagged.</p>')
+        parts.append(
+            '<p class="muted">No follow up actions. Nothing needs attention.</p>'
+        )
     for index, action in enumerate(actions):
         title = html.escape(str(action.get("title", "")))
         desc = html.escape(str(action.get("description", "")))
         parts.append(
-            "<article class=\"card\">"
+            '<article class="card">'
             f"<h3>{title}</h3>"
-            f"<p class=\"muted\">{desc}</p>"
-            f"<button hx-post=\"/api/review/retro/create?index={index}\" "
-            f"hx-target=\"#retro-result-{index}\" hx-swap=\"innerHTML\">"
-            "Create in ADO</button>"
-            f"<span id=\"retro-result-{index}\" class=\"result\" aria-live=\"polite\"></span>"
+            f'<p class="muted">{desc}</p>'
+            f'<button hx-post="/api/review/retro/create?index={index}" '
+            f'hx-target="#retro-result-{index}" hx-swap="innerHTML">'
+            "Create task</button>"
+            f'<span id="retro-result-{index}" class="result" aria-live="polite"></span>'
             "</article>"
         )
     parts.append("</section>")
@@ -335,25 +463,26 @@ def _review_result_html(result: dict[str, Any]) -> str:
 def _plan_result_html(photo: dict[str, Any], proposal: list[dict[str, Any]]) -> str:
     parts: list[str] = []
     masks = photo.get("masks", [])
-    path = html.escape(str(photo.get("path", "")))
-    parts.append('<section class="card"><h2>Masks preview</h2>')
+    parts.append('<section class="card"><h2>Notes found</h2>')
     if masks:
-        items = "".join(f"<li>Mask {html.escape(str(m))}</li>" for m in masks)
-        parts.append(f"<p>Vision path: {path}. Masks: {len(masks)}.</p><ul>{items}</ul>")
+        items = "".join(f"<li>Note {index + 1}</li>" for index in range(len(masks)))
+        word = "note" if len(masks) == 1 else "notes"
+        parts.append(f"<p>Found {len(masks)} {word} in the photo.</p><ul>{items}</ul>")
     else:
-        parts.append(
-            f"<p>Vision path: {path}. No masks, full image read used.</p>"
-        )
+        parts.append("<p>No separate notes found. The whole photo was read as one.</p>")
     parts.append("</section>")
-    parts.append('<section class="card"><h2>Readings</h2>')
+    parts.append('<section class="card"><h2>What the notes say</h2>')
     readings = photo.get("readings", [])
     if readings:
         items = "".join(f"<li>{html.escape(str(r))}</li>" for r in readings)
         parts.append(f"<ul>{items}</ul>")
     else:
-        parts.append('<p class="muted">No readings found in the photo.</p>')
+        parts.append(
+            "<p class=\"muted\">No words were found in the photo. "
+            "Try a closer, brighter photo and upload again.</p>"
+        )
     parts.append("</section>")
-    parts.append('<section class="card"><h2>Proposal</h2>')
+    parts.append('<section class="card"><h2>Suggested tasks</h2>')
     if proposal:
         rows = "".join(
             "<tr>"
@@ -365,18 +494,26 @@ def _plan_result_html(photo: dict[str, Any], proposal: list[dict[str, Any]]) -> 
             for d in proposal
         )
         parts.append(
-            "<table class=\"proposal\"><thead><tr>"
+            '<table class="proposal"><thead><tr>'
             "<th>Title</th><th>Type</th><th>Owner</th><th>Estimate</th>"
             "</tr></thead><tbody>"
             f"{rows}</tbody></table>"
         )
+        parts.append(
+            '<button hx-post="/api/plan/approve" hx-target="#approve-result" '
+            'hx-swap="innerHTML">Create these tasks</button>'
+        )
     else:
-        parts.append('<p class="muted">No proposal. Upload a photo with notes.</p>')
+        parts.append(
+            '<p class="muted">No suggested tasks yet. Upload a board photo first. '
+            "The create button stays off until suggestions are ready.</p>"
+        )
+        parts.append(
+            '<button hx-post="/api/plan/approve" hx-target="#approve-result" '
+            'hx-swap="innerHTML" disabled>Create these tasks</button>'
+        )
     parts.append(
-        '<button hx-post="/api/plan/approve" hx-target="#approve-result" '
-        'hx-swap="innerHTML">Approve</button>'
-        '<div id="approve-result" class="result" aria-live="polite"></div>'
-        "</section>"
+        '<div id="approve-result" class="result" aria-live="polite"></div></section>'
     )
     return "\n".join(parts)
 
@@ -456,12 +593,12 @@ def _check_slack() -> tuple[bool, str, str]:
     if not os.environ.get("SLACK_BOT_TOKEN", "").strip():
         return (
             False,
-            "Slack check failed. Pam cannot send DMs.",
+            "Slack check failed. Pam cannot send messages.",
             "Set SLACK_BOT_TOKEN in your secrets file, then test again.",
         )
     return (
         True,
-        "Slack check passed. Pam can send DMs.",
+        "Slack check passed. Pam can send messages.",
         "",
     )
 
@@ -485,7 +622,7 @@ def _check_ado() -> tuple[bool, str, str]:
     )
 
 
-def _check_people(project: str = "default") -> tuple[bool, str, str]:
+def _people_names(project: str = "default") -> list[str]:
     progress = _read_project_progress(project)
     steps = progress.get("steps", {})
     people: list[str] = []
@@ -500,11 +637,16 @@ def _check_people(project: str = "default") -> tuple[bool, str, str]:
     env_people = os.environ.get("PAM_PEOPLE", "").strip()
     if not people and env_people:
         people = [p.strip() for p in env_people.replace(",", "\n").splitlines()]
-    people = [p for p in people if p]
+    return [p for p in people if p]
+
+
+def _check_people(project: str = "default") -> tuple[bool, str, str]:
+    people = _people_names(project)
     if people:
+        word = "teammate" if len(people) == 1 else "teammates"
         return (
             True,
-            f"People check passed. {len(people)} teammate(s) added.",
+            f"People check passed. {len(people)} {word} added.",
             "",
         )
     return (
@@ -517,9 +659,10 @@ def _check_people(project: str = "default") -> tuple[bool, str, str]:
 def _check_rules() -> tuple[bool, str, str]:
     enabled = [name for name, on in RULE_STATES.items() if on]
     if enabled:
+        word = "rule" if len(enabled) == 1 else "rules"
         return (
             True,
-            f"Rules check passed. {len(enabled)} rule(s) turned on.",
+            f"Rules check passed. {len(enabled)} {word} turned on.",
             "",
         )
     return (
@@ -527,6 +670,38 @@ def _check_rules() -> tuple[bool, str, str]:
         "Rules check failed. All rules are turned off.",
         "Turn on at least one rule on the Rules page, then test again.",
     )
+
+
+SAFETY_DRY_RUN_KEY = "settings.dry_run"
+SAFETY_SPEND_CAP_KEY = "settings.spend_cap"
+
+
+def _apply_safety_overrides(dry_run: bool, spend_cap: float) -> tuple[bool, float]:
+    try:
+        override_dry = recovery_mod.kv_get(_db_path(), SAFETY_DRY_RUN_KEY)
+    except Exception:  # noqa: BLE001
+        override_dry = ""
+    if override_dry.strip().lower() in ("on", "off"):
+        dry_run = override_dry.strip().lower() == "on"
+    try:
+        override_cap = recovery_mod.kv_get(_db_path(), SAFETY_SPEND_CAP_KEY)
+    except Exception:  # noqa: BLE001
+        override_cap = ""
+    if override_cap.strip():
+        try:
+            spend_cap = float(override_cap.strip())
+        except ValueError:
+            pass
+    return dry_run, spend_cap
+
+
+def _effective_safety() -> tuple[bool, float]:
+    try:
+        cfg = Config()
+        dry_run, spend_cap = cfg.dry_run, cfg.daily_spend_cap
+    except Exception:  # noqa: BLE001
+        dry_run, spend_cap = True, 0.0
+    return _apply_safety_overrides(dry_run, spend_cap)
 
 
 def _check_safety() -> tuple[bool, str, str]:
@@ -538,18 +713,115 @@ def _check_safety() -> tuple[bool, str, str]:
             "Safety check failed. Settings could not be read.",
             "Check the data directory is writable, then test again.",
         )
-    if cfg.daily_spend_cap <= 0:
+    dry_run, spend_cap = _apply_safety_overrides(cfg.dry_run, cfg.daily_spend_cap)
+    if spend_cap <= 0:
         return (
             False,
             "Safety check failed. Daily spend cap is missing.",
-            "Set DAILY_SPEND_CAP to a value above zero, then test again.",
+            "Set DAILY_SPEND_CAP to a value above zero, or save a cap on the Settings page, then test again.",
         )
-    mode = "Dry run is on" if cfg.dry_run else "Dry run is off"
+    mode = "Dry run is on" if dry_run else "Dry run is off"
     return (
         True,
         f"Safety check passed. {mode} and spend cap is set.",
         "",
     )
+
+
+def _parse_capacity(value: Any) -> float:
+    try:
+        num = float(str(value).strip() or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, num)
+
+
+def _roster_entries(project: str) -> list[dict[str, Any]]:
+    progress = _read_project_progress(project)
+    steps = progress.get("steps", {})
+    entry = steps.get("roster", {}) if isinstance(steps, dict) else {}
+    details: dict[str, dict[str, Any]] = {}
+    if isinstance(entry, dict):
+        raw = entry.get("entries", [])
+        if isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, dict) and str(item.get("name", "")).strip():
+                    label = str(item.get("name")).strip()
+                    details[label] = {
+                        "skills": str(item.get("skills", "") or ""),
+                        "capacity": _parse_capacity(item.get("capacity", 0)),
+                    }
+    names = _people_names(project)
+    out = [
+        {
+            "name": name,
+            "skills": details.get(name, {}).get("skills", ""),
+            "capacity": details.get(name, {}).get("capacity", 0.0),
+        }
+        for name in names
+    ]
+    for label in sorted(details):
+        if label not in names:
+            out.append({"name": label, **details[label]})
+    return out
+
+
+def _merge_roster_entries(
+    people_text: str, rows: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    by_name = {
+        str(row.get("name", "")).strip(): row
+        for row in rows
+        if str(row.get("name", "")).strip()
+    }
+    ordered = [p.strip() for p in people_text.replace(",", "\n").splitlines()]
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for name in ordered:
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        row = by_name.get(name, {})
+        out.append(
+            {
+                "name": name,
+                "skills": str(row.get("skills", "") or "").strip(),
+                "capacity": _parse_capacity(row.get("capacity", 0)),
+            }
+        )
+    return out
+
+
+def _cost_summary() -> dict[str, Any]:
+    calls, dollars_total, prompt_total, cached_total = 0, 0.0, 0, 0
+    try:
+        import sqlite3
+
+        conn = sqlite3.connect(str(_db_path()))
+        try:
+            conn.execute(CALLS_TABLE_DDL)
+            row = conn.execute(
+                "SELECT COUNT(*), COALESCE(SUM(dollars), 0),"
+                " COALESCE(SUM(prompt_tokens), 0),"
+                " COALESCE(SUM(cached_tokens), 0) FROM calls"
+            ).fetchone()
+        finally:
+            conn.close()
+        if row:
+            calls = int(row[0] or 0)
+            dollars_total = float(row[1] or 0.0)
+            prompt_total = int(row[2] or 0)
+            cached_total = int(row[3] or 0)
+    except Exception:  # noqa: BLE001
+        calls, dollars_total, prompt_total, cached_total = 0, 0.0, 0, 0
+    share = (cached_total / prompt_total) if prompt_total > 0 else 0.0
+    return {
+        "calls": calls,
+        "dollars": dollars_total,
+        "prompt_tokens": prompt_total,
+        "cached_tokens": cached_total,
+        "cached_pct": round(share * 100),
+    }
 
 
 def _check_backend(project: str = "default") -> tuple[bool, str, str]:
@@ -755,9 +1027,7 @@ def reset_board_state() -> None:
 
 def _safe_project(value: str) -> str:
     want = (value or "default").strip() or "default"
-    if len(want) <= 64 and all(
-        c.isalnum() or c in ("-", "_", ".") for c in want
-    ):
+    if len(want) <= 64 and all(c.isalnum() or c in ("-", "_", ".") for c in want):
         return want
     return "default"
 
@@ -791,14 +1061,10 @@ def _board_capabilities(project: str, adapter: Any | None) -> dict[str, bool]:
     native = _project_backend(project) == BACKEND_PAM_BOARD
     return {
         "editable": bool(native and adapter is not None),
-        "dependency_links": bool(
-            getattr(adapter, "supports_dependency_links", False)
-        ),
+        "dependency_links": bool(getattr(adapter, "supports_dependency_links", False)),
         "iterations": bool(getattr(adapter, "supports_iterations", False)),
         "comments": bool(getattr(adapter, "supports_comments", False)),
-        "close_iteration": bool(
-            getattr(adapter, "supports_close_iteration", False)
-        ),
+        "close_iteration": bool(getattr(adapter, "supports_close_iteration", False)),
     }
 
 
@@ -833,7 +1099,9 @@ def _tags_list(fields: dict[str, Any]) -> list[str]:
         return [str(tag).strip() for tag in raw if str(tag).strip()]
     if isinstance(raw, str):
         return [
-            part for part in (p.strip() for p in raw.replace(",", ";").split(";")) if part
+            part
+            for part in (p.strip() for p in raw.replace(",", ";").split(";"))
+            if part
         ]
     return []
 
@@ -881,8 +1149,12 @@ def _serialize_item(
         "tags_text": "; ".join(tags),
         "due_date": str(_pick(fields, "due_date", "Microsoft.VSTS.Scheduling.DueDate")),
         "owner": str(_pick(fields, "owner", "assigned_to", "System.AssignedTo")),
-        "estimate": _pick(fields, "estimate", "Microsoft.VSTS.Scheduling.OriginalEstimate"),
-        "remaining": _pick(fields, "remaining", "Microsoft.VSTS.Scheduling.RemainingWork"),
+        "estimate": _pick(
+            fields, "estimate", "Microsoft.VSTS.Scheduling.OriginalEstimate"
+        ),
+        "remaining": _pick(
+            fields, "remaining", "Microsoft.VSTS.Scheduling.RemainingWork"
+        ),
         "priority": str(_pick(fields, "priority", "Microsoft.VSTS.Common.Priority")),
         "iteration_id": iteration_id,
         "sprint": sprint,
@@ -1022,7 +1294,8 @@ def _board_snapshot(project: str) -> dict[str, Any]:
     try:
         raw_items = adapter.list_items(limit=500)
     except Exception as exc:  # noqa: BLE001
-        snapshot["error"] = f"Board read failed: {exc}"
+        logger.warning("board read failed: %s", exc)
+        snapshot["error"] = "The board could not be loaded. Try reloading the page."
         return snapshot
     raw_items = list(raw_items or [])
     try:
@@ -1087,6 +1360,15 @@ def board_page(request: Request) -> HTMLResponse:
 def plan_page(request: Request) -> HTMLResponse:
     ctx = _context(request, "plan")
     ctx["plan"] = LAST_PLAN
+    if LAST_PLAN.get("proposal") or LAST_PLAN.get("readings") or LAST_PLAN.get("masks"):
+        photo = {
+            "masks": LAST_PLAN.get("masks", []),
+            "readings": LAST_PLAN.get("readings", []),
+            "path": LAST_PLAN.get("path", ""),
+        }
+        ctx["plan_html"] = _plan_result_html(photo, LAST_PLAN.get("proposal", []))
+    else:
+        ctx["plan_html"] = ""
     return templates.TemplateResponse(request, "plan.html", ctx)  # type: ignore[return-value]
 
 
@@ -1094,8 +1376,133 @@ def plan_page(request: Request) -> HTMLResponse:
 def review_page(request: Request) -> HTMLResponse:
     ctx = _context(request, "review")
     ctx["review_markdown"] = LAST_REVIEW.get("markdown", "")
+    ctx["review_html"] = _markdown_to_html(LAST_REVIEW.get("markdown", ""))
     ctx["retro_actions"] = LAST_REVIEW.get("retro_actions", [])
     return templates.TemplateResponse(request, "review.html", ctx)  # type: ignore[return-value]
+
+
+@app.get("/settings", response_class=HTMLResponse)
+def settings_page(request: Request) -> HTMLResponse:
+    ctx = _context(request, "settings")
+    project = str(ctx["project"])
+    dry_run, spend_cap = _effective_safety()
+    entries = _roster_entries(project)
+    cost = _cost_summary()
+    ctx.update(
+        {
+            "people_text": "\n".join(entry["name"] for entry in entries),
+            "roster": entries,
+            "dry_run": dry_run,
+            "spend_cap": spend_cap,
+            "cost": cost,
+            "cost_dollars": f"{cost['dollars']:.4f}",
+        }
+    )
+    return templates.TemplateResponse(request, "settings.html", ctx)  # type: ignore[return-value]
+
+
+@app.post("/api/settings/roster")
+async def save_settings_roster(request: Request) -> Any:
+    project = request.query_params.get("project", "default").strip() or "default"
+    people_text = ""
+    rows: list[dict[str, Any]] = []
+    ctype = request.headers.get("content-type", "")
+    if "application/json" in ctype:
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = {}
+        if isinstance(payload, dict):
+            project = str(payload.get("project", project)).strip() or "default"
+            raw_entries = payload.get("entries", [])
+            if isinstance(raw_entries, list):
+                rows = [dict(item) for item in raw_entries if isinstance(item, dict)]
+            if "people" in payload:
+                people_text = str(payload.get("people", ""))
+            elif rows:
+                people_text = "\n".join(str(row.get("name", "")) for row in rows)
+    else:
+        form = await request.form()
+        if "project" in form:
+            project = str(form.get("project", project)).strip() or "default"
+        people_text = str(form.get("people", ""))
+        names = form.getlist("name")
+        skills = form.getlist("skills")
+        capacities = form.getlist("capacity")
+        for index, label in enumerate(names):
+            rows.append(
+                {
+                    "name": str(label),
+                    "skills": str(skills[index]) if index < len(skills) else "",
+                    "capacity": str(capacities[index])
+                    if index < len(capacities)
+                    else 0,
+                }
+            )
+        if not people_text.strip() and names:
+            people_text = "\n".join(str(label) for label in names)
+    entries = _merge_roster_entries(people_text, rows)
+    _write_project_step(project, "roster", {"entries": entries})
+    _write_project_step(
+        project, "people", {"people": "\n".join(e["name"] for e in entries)}
+    )
+    word = "teammate" if len(entries) == 1 else "teammates"
+    message = f"Saved team with {len(entries)} {word}."
+    if "hx-request" in request.headers:
+        return HTMLResponse(_test_result_html(True, message))
+    return {"ok": True, "project": project, "entries": entries}
+
+
+@app.post("/api/settings/safety")
+async def save_settings_safety(request: Request) -> Any:
+    dry_raw: Any = None
+    cap_raw: Any = None
+    ctype = request.headers.get("content-type", "")
+    if "application/json" in ctype:
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = {}
+        if isinstance(payload, dict):
+            dry_raw = payload.get("dry_run")
+            cap_raw = payload.get("spend_cap", payload.get("daily_spend_cap"))
+    else:
+        form = await request.form()
+        dry_raw = form.get("dry_run") if "dry_run" in form else "off"
+        cap_raw = form.get("spend_cap", "")
+    current_dry, _current_cap = _effective_safety()
+    if dry_raw is None:
+        dry_run = current_dry
+    else:
+        dry_run = _autostart_choice(dry_raw, default=True)
+    try:
+        spend_cap = float(str(cap_raw).strip())
+    except (TypeError, ValueError):
+        spend_cap = 0.0
+    if spend_cap <= 0:
+        msg = "Spend cap must be a number above zero."
+        hint = "Type a cap such as 2.0, then save again."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg, hint))
+        return JSONResponse(
+            {"ok": False, "message": msg, "hint": hint}, status_code=400
+        )
+    try:
+        recovery_mod.kv_set(_db_path(), SAFETY_DRY_RUN_KEY, "on" if dry_run else "off")
+        recovery_mod.kv_set(_db_path(), SAFETY_SPEND_CAP_KEY, str(spend_cap))
+    except Exception:  # noqa: BLE001
+        msg = "Safety settings could not be saved."
+        hint = "Check the data directory is writable, then save again."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg, hint))
+        return JSONResponse(
+            {"ok": False, "message": msg, "hint": hint}, status_code=500
+        )
+    mode = "on" if dry_run else "off"
+    message = f"Safety saved. Dry run is {mode} and spend cap is {spend_cap}."
+    if "hx-request" in request.headers:
+        return HTMLResponse(_test_result_html(True, message))
+    return {"ok": True, "dry_run": dry_run, "spend_cap": spend_cap}
 
 
 @app.post("/api/test/{which}")
@@ -1118,7 +1525,11 @@ async def test_connection(which: str, request: Request) -> Any:
         ok, message, hint = _check_backend(project)
     else:
         return JSONResponse(
-            {"ok": False, "message": "Unknown target.", "hint": "Use one of: model, slack, ado, people, rules, safety."},
+            {
+                "ok": False,
+                "message": "Unknown target.",
+                "hint": "Use one of: model, slack, ado, people, rules, safety.",
+            },
             status_code=404,
         )
     if "hx-request" in request.headers:
@@ -1144,7 +1555,9 @@ async def save_setup_progress(request: Request) -> Any:
         except ValueError:
             payload = {}
         if isinstance(payload, dict):
-            project = str(payload.get("project", project or "default")).strip() or "default"
+            project = (
+                str(payload.get("project", project or "default")).strip() or "default"
+            )
             step = str(payload.get("step", step)).strip()
             raw_data = payload.get("data", {})
             if isinstance(raw_data, dict):
@@ -1160,10 +1573,17 @@ async def save_setup_progress(request: Request) -> Any:
             if key in form:
                 data[key] = str(form.get(key, ""))
     if not step:
-        return JSONResponse({"ok": False, "message": "Missing step.", "hint": "Send a step name."}, status_code=400)
+        return JSONResponse(
+            {"ok": False, "message": "Step name is missing.", "hint": "Try again."},
+            status_code=400,
+        )
     entry = _write_project_step(project, step, data)
     if "hx-request" in request.headers:
-        return HTMLResponse(_test_result_html(True, f"Saved step {step}. Progress restored on return."))
+        return HTMLResponse(
+            _test_result_html(
+                True, f"Step {step} saved. Your progress is kept if you leave and come back."
+            )
+        )
     return {"ok": True, "project": project, "progress": entry}
 
 
@@ -1191,7 +1611,16 @@ async def save_setup_backend(request: Request) -> Any:
         stored = store_mod.set_project_backend(_db_path(), project, canonical)
     except Exception:  # noqa: BLE001
         stored = canonical
-    _write_project_step(project, "backend", {"backend": stored})
+    try:
+        _write_project_step(project, "backend", {"backend": stored})
+    except Exception:  # noqa: BLE001
+        msg = "That choice could not be saved."
+        hint = "Check your connection and try again."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg, hint))
+        return JSONResponse(
+            {"ok": False, "message": msg, "hint": hint}, status_code=500
+        )
     label = backend_label(stored)
     if "hx-request" in request.headers:
         return HTMLResponse(_test_result_html(True, f"Tasks will live on {label}."))
@@ -1215,13 +1644,19 @@ async def toggle_rule(request: Request) -> Any:
         form = await request.form()
         name = str(form.get("name", "")).strip()
         enabled = str(form.get("enabled", "")).lower() in ("on", "true", "1", "yes")
-    known = {str(r["name"]) for r in RULE_TEMPLATES}
-    if name not in known:
-        return JSONResponse({"ok": False, "message": "Unknown rule"}, status_code=404)
+    titles = {str(r["name"]): str(r["title"]) for r in RULE_TEMPLATES}
+    if name not in titles:
+        msg = "Sorry, that rule was not found."
+        hint = "Reload the page and try again."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg, hint))
+        return JSONResponse(
+            {"ok": False, "message": msg, "hint": hint}, status_code=404
+        )
     RULE_STATES[name] = enabled
-    state = "On" if enabled else "Off"
+    state = "on" if enabled else "off"
     if "hx-request" in request.headers:
-        return HTMLResponse(f'<span class="toggle-state">Rule {name} is {state}</span>')
+        return HTMLResponse(_test_result_html(True, f"{titles[name]} is now {state}."))
     return {"ok": True, "name": name, "enabled": enabled}
 
 
@@ -1268,12 +1703,25 @@ async def activity_stream(request: Request) -> StreamingResponse:
 
 
 @app.post("/api/undo/{write_id}")
-def undo_event(write_id: int) -> dict[str, Any]:
+def undo_event(write_id: int, request: Request) -> Any:
     try:
         updated = store_mod.undo_write(Config().db_path(), write_id)
     except Exception:  # noqa: BLE001
         updated = False
-    if updated or bus.mark_undone(write_id):
+    undone = bool(updated or bus.mark_undone(write_id))
+    if "hx-request" in request.headers:
+        if undone:
+            return HTMLResponse(
+                _test_result_html(True, "Undone. The change was reversed.")
+            )
+        return HTMLResponse(
+            _test_result_html(
+                False,
+                "Sorry, this change can no longer be undone.",
+                "Reload the page to see the current state.",
+            )
+        )
+    if undone:
         return {"ok": True, "id": write_id}
     return {"ok": False, "message": "Write not found"}
 
@@ -1282,6 +1730,10 @@ def undo_event(write_id: int) -> dict[str, Any]:
 async def setup_complete(request: Request) -> Any:
     global SETUP_DONE
     if SETUP_DONE:
+        if "hx-request" in request.headers:
+            return HTMLResponse(
+                _test_result_html(True, "Setup is already complete. Nothing else to do.")
+            )
         return JSONResponse({"ok": False, "message": "Setup already complete"})
     token = ""
     autostart_on = True
@@ -1308,7 +1760,11 @@ async def setup_complete(request: Request) -> Any:
     if not token:
         token = request.query_params.get("token", "").strip()
     if not is_valid_token(token):
-        return JSONResponse({"ok": False, "message": "Invalid setup token"})
+        msg = "That setup token did not match."
+        hint = "Paste the token printed when you ran pam start and try again."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg, hint))
+        return JSONResponse({"ok": False, "message": msg, "hint": hint})
     try:
         if autostart_on:
             autostart_message = autostart_mod.enable()
@@ -1317,6 +1773,10 @@ async def setup_complete(request: Request) -> Any:
     except Exception as exc:  # noqa: BLE001
         autostart_message = f"autostart: unknown ({exc})"
     SETUP_DONE = True
+    if "hx-request" in request.headers:
+        return HTMLResponse(
+            _test_result_html(True, "Setup is complete. Open the Board page to start.")
+        )
     return {"ok": True, "message": "Setup complete", "autostart": autostart_message}
 
 
@@ -1436,7 +1896,7 @@ async def create_retro_action(request: Request) -> Any:
     logger.info("retro action created: %s -> item %s", action.get("title"), item.id)
     if "hx-request" in request.headers:
         return HTMLResponse(
-            _test_result_html(True, f"Created item {item.id} tagged retro-action")
+            _test_result_html(True, f"Follow up task created as item {item.id}")
         )
     return {"ok": True, "id": item.id, "tags": ["retro-action"]}
 
@@ -1482,7 +1942,7 @@ async def approve_plan(request: Request) -> Any:
     _ = request
     proposal = LAST_PLAN.get("proposal", [])
     if not proposal:
-        msg = "No proposal to approve. Upload a photo first."
+        msg = "No suggested tasks to create. Upload a photo first."
         if "hx-request" in request.headers:
             return HTMLResponse(_test_result_html(False, msg))
         return JSONResponse({"ok": False, "message": msg}, status_code=400)
@@ -1534,8 +1994,13 @@ def _editable_board(project: str) -> tuple[Any | None, dict[str, bool]]:
 def _board_error_response(exc: Exception) -> JSONResponse:
     if isinstance(exc, ValueError):
         return JSONResponse({"ok": False, "message": str(exc)}, status_code=400)
+    logger.warning("board write failed: %s", exc)
     return JSONResponse(
-        {"ok": False, "message": f"Board write failed: {exc}"},
+        {
+            "ok": False,
+            "message": "That change could not be saved.",
+            "hint": "Try again in a moment.",
+        },
         status_code=502,
     )
 
@@ -1629,7 +2094,11 @@ def board_item_detail(request: Request, item_id: str) -> Any:
     adapter = get_board_adapter(project)
     if adapter is None:
         return JSONResponse(
-            {"ok": False, "message": "Board is not available."},
+            {
+                "ok": False,
+                "message": "The board is not available right now.",
+                "hint": "Try again in a moment.",
+            },
             status_code=502,
         )
     try:
@@ -1702,7 +2171,11 @@ async def board_edit_item(request: Request, item_id: str) -> Any:
             fields[key] = payload[key]
     if not fields:
         return JSONResponse(
-            {"ok": False, "message": "Nothing to update."},
+            {
+                "ok": False,
+                "message": "Nothing changed.",
+                "hint": "Edit a field, then save again.",
+            },
             status_code=400,
         )
     try:
@@ -1737,7 +2210,11 @@ async def board_move_item(request: Request, item_id: str) -> Any:
     state = str(payload.get("state", "")).strip()
     if not state:
         return JSONResponse(
-            {"ok": False, "message": "State is required."},
+            {
+                "ok": False,
+                "message": "State is required.",
+                "hint": "Choose a state, then try again.",
+            },
             status_code=400,
         )
     try:
@@ -1790,19 +2267,21 @@ async def board_add_link(request: Request) -> Any:
         return JSONResponse(
             {
                 "ok": False,
-                "message": "This backend does not support dependency links.",
+                "message": "Links are not available on this board.",
             },
             status_code=403,
         )
     payload = await _board_payload(request)
     source_id = str(payload.get("source_id", "")).strip()
     target_id = str(payload.get("target_id", "")).strip()
-    rel = str(payload.get("rel", "")).strip() or (
-        "System.LinkTypes.Dependency-Forward"
-    )
+    rel = str(payload.get("rel", "")).strip() or ("System.LinkTypes.Dependency-Forward")
     if not source_id or not target_id:
         return JSONResponse(
-            {"ok": False, "message": "source_id and target_id are required."},
+            {
+                "ok": False,
+                "message": "A target item number is required.",
+                "hint": "Type the target item number, then try again.",
+            },
             status_code=400,
         )
     try:
@@ -1841,7 +2320,7 @@ async def board_set_sprint(request: Request, item_id: str) -> Any:
         return _read_only_response()
     if not caps["iterations"]:
         return JSONResponse(
-            {"ok": False, "message": "This backend does not support sprints."},
+            {"ok": False, "message": "Sprints are not available on this board."},
             status_code=403,
         )
     payload = await _board_payload(request)
@@ -1871,14 +2350,18 @@ async def board_create_sprint(request: Request) -> Any:
         return _read_only_response()
     if not caps["iterations"]:
         return JSONResponse(
-            {"ok": False, "message": "This backend does not support sprints."},
+            {"ok": False, "message": "Sprints are not available on this board."},
             status_code=403,
         )
     payload = await _board_payload(request)
     name = str(payload.get("name", "")).strip()
     if not name:
         return JSONResponse(
-            {"ok": False, "message": "Sprint name is required."},
+            {
+                "ok": False,
+                "message": "Sprint name is required.",
+                "hint": "Type a name, then try again.",
+            },
             status_code=400,
         )
     try:
@@ -1917,7 +2400,7 @@ async def board_close_sprint(request: Request, sprint_id: str) -> Any:
         return JSONResponse(
             {
                 "ok": False,
-                "message": "This backend cannot close sprints from Pam.",
+                "message": "Sprints cannot be closed here.",
             },
             status_code=403,
         )
@@ -1926,7 +2409,7 @@ async def board_close_sprint(request: Request, sprint_id: str) -> Any:
         return JSONResponse(
             {
                 "ok": False,
-                "message": "This backend cannot close sprints from Pam.",
+                "message": "Sprints cannot be closed here.",
             },
             status_code=403,
         )
@@ -1967,14 +2450,18 @@ async def board_add_comment(request: Request, item_id: str) -> Any:
         return _read_only_response()
     if not caps["comments"]:
         return JSONResponse(
-            {"ok": False, "message": "This backend does not support comments."},
+            {"ok": False, "message": "Comments are not available on this board."},
             status_code=403,
         )
     payload = await _board_payload(request)
     text = str(payload.get("text", "")).strip()
     if not text:
         return JSONResponse(
-            {"ok": False, "message": "Comment text is required."},
+            {
+                "ok": False,
+                "message": "Comment text is required.",
+                "hint": "Type a comment, then try again.",
+            },
             status_code=400,
         )
     try:
@@ -2004,14 +2491,23 @@ def board_export_csv(request: Request) -> Any:
     adapter = get_board_adapter(project)
     if adapter is None:
         return JSONResponse(
-            {"ok": False, "message": "Board is not available."},
+            {
+                "ok": False,
+                "message": "The board is not available right now.",
+                "hint": "Try again in a moment.",
+            },
             status_code=502,
         )
     try:
         raw_items = list(adapter.list_items(limit=2000) or [])
     except Exception as exc:  # noqa: BLE001
+        logger.warning("board export failed: %s", exc)
         return JSONResponse(
-            {"ok": False, "message": f"Board read failed: {exc}"},
+            {
+                "ok": False,
+                "message": "The board could not be loaded.",
+                "hint": "Try reloading the page.",
+            },
             status_code=502,
         )
     names = _iteration_names(adapter)
@@ -2038,9 +2534,7 @@ def board_export_csv(request: Request) -> Any:
     return Response(
         buf.getvalue(),
         media_type="text/csv",
-        headers={
-            "Content-Disposition": f'attachment; filename="board-{project}.csv"'
-        },
+        headers={"Content-Disposition": f'attachment; filename="board-{project}.csv"'},
     )
 
 
@@ -2087,7 +2581,11 @@ async def board_import_csv(request: Request) -> Any:
         rows = list(csv.DictReader(io.StringIO(text)))
     except Exception:  # noqa: BLE001
         return JSONResponse(
-            {"ok": False, "message": "CSV could not be parsed."},
+            {
+                "ok": False,
+                "message": "That file could not be read.",
+                "hint": "Check it is valid CSV and try again.",
+            },
             status_code=400,
         )
     created: list[str] = []

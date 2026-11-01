@@ -2,25 +2,27 @@
 {% block title %}Review - Pam{% endblock %}
 {% block content %}
 <h1>Review</h1>
-<p class="muted">Sprint review for project {{ project }}. Facts come from interviews, low confidence items are flagged.</p>
+<p class="muted">Review for project {{ project }}. Facts come from team interviews. Items Pam is unsure about are marked for follow up.</p>
 <button hx-post="/api/review/run" hx-target="#review-result" hx-swap="innerHTML">Run review</button>
 <div id="review-result" aria-live="polite">
-  {% if review_markdown %}
-  <pre class="review-markdown">{{ review_markdown }}</pre>
+  {% if review_html %}
+  <div class="review-body">{{ review_html | safe }}</div>
+  {% else %}
+  <p class="muted">No review yet. Choose Run review to make one.</p>
   {% endif %}
   <section class="card">
-    <h2>Retro actions</h2>
+    <h2>Follow up actions</h2>
     {% if retro_actions %}
     {% for action in retro_actions %}
     <article class="card">
       <h3>{{ action.title }}</h3>
       <p class="muted">{{ action.description }}</p>
-      <button hx-post="/api/review/retro/create?index={{ loop.index0 }}" hx-target="#retro-result-{{ loop.index0 }}" hx-swap="innerHTML">Create in ADO</button>
+      <button hx-post="/api/review/retro/create?index={{ loop.index0 }}" hx-target="#retro-result-{{ loop.index0 }}" hx-swap="innerHTML">Create task</button>
       <span id="retro-result-{{ loop.index0 }}" class="result" aria-live="polite"></span>
     </article>
     {% endfor %}
     {% else %}
-    <p class="muted">Run a review to see retro actions.</p>
+    <p class="muted">Run a review to see follow up actions.</p>
     {% endif %}
   </section>
 </div>

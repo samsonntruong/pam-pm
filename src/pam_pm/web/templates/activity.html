@@ -2,19 +2,24 @@
 {% block title %}Activity - Pam{% endblock %}
 {% block content %}
 <h1>Activity</h1>
-<p class="muted">Live stream from the event bus. Each write shows its evidence quote.</p>
-<p><span id="stream-status" class="pill">Stream: connecting</span></p>
+<p class="muted">New changes appear here as they happen. Each change shows its evidence note, the exact words it came from.</p>
+<p><span id="stream-status" class="pill" role="status">Updates: connecting</span></p>
 
 <div id="events">
+  {% if events %}
+  {% set verbs = {"create": "Created item", "create_item": "Created item", "update": "Updated item", "update_state": "Changed status on item", "move": "Moved item", "add_link": "Linked item", "set_sprint": "Set sprint on item", "create_sprint": "Created sprint", "close_sprint": "Closed sprint", "comment": "Commented on item"} %}
   {% for ev in events %}
   <article class="card event" id="event-{{ ev.id }}">
-    <h2>{{ ev.operation }} on {{ ev.item_id }}</h2>
+    <h2>{{ verbs.get(ev.operation, "Changed item") }} {{ ev.item_id }}</h2>
     <blockquote class="evidence">{{ ev.evidence_quote }}</blockquote>
     <p class="muted">Status: {{ ev.status }}. {{ ev.detail }}</p>
     <button hx-post="/api/undo/{{ ev.id }}" hx-target="#undo-{{ ev.id }}" hx-swap="innerHTML">Undo</button>
     <span id="undo-{{ ev.id }}" class="result" aria-live="polite"></span>
   </article>
   {% endfor %}
+  {% else %}
+  <p class="muted" id="events-empty">No changes yet. New changes will appear here.</p>
+  {% endif %}
 </div>
 
 <section class="card" id="lifecycle">
@@ -26,7 +31,7 @@
     {% endfor %}
   </ul>
   {% else %}
-  <p class="muted">No start, stop, or crash events recorded yet.</p>
+  <p class="muted">No starts, stops, or crashes recorded yet.</p>
   {% endif %}
 </section>
 {% endblock %}
@@ -35,32 +40,86 @@
   (function () {
     var status = document.getElementById("stream-status");
     var box = document.getElementById("events");
-    var source = new EventSource("/api/activity/stream");
+    var VERBS = {
+      create: "Created item",
+      create_item: "Created item",
+      update: "Updated item",
+      update_state: "Changed status on item",
+      move: "Moved item",
+      add_link: "Linked item",
+      set_sprint: "Set sprint on item",
+      create_sprint: "Created sprint",
+      close_sprint: "Closed sprint",
+      comment: "Commented on item"
+    };
+    function humanVerb(op) {
+      return VERBS[op] || "Changed item";
+    }
+    function showResult(box, ok, text) {
+      box.innerHTML = "";
+      var pill = document.createElement("span");
+      pill.className = ok ? "pill pill-ok" : "pill pill-fail";
+      pill.textContent = text;
+      box.appendChild(pill);
+    }
+    var source = new EventSource("/api/activity/stream?live=1");
     source.onopen = function () {
-      if (status) status.textContent = "Stream: live";
+      if (status) status.textContent = "Updates: live";
     };
     source.onerror = function () {
-      if (status) status.textContent = "Stream: retrying";
+      if (status) status.textContent = "Updates: retrying";
     };
     source.onmessage = function (evt) {
       try {
         var data = JSON.parse(evt.data);
         if (!data || !data.id) return;
         if (document.getElementById("event-" + data.id)) return;
+        var empty = document.getElementById("events-empty");
+        if (empty) empty.remove();
         var card = document.createElement("article");
         card.className = "card event";
         card.id = "event-" + data.id;
         var title = document.createElement("h2");
-        title.textContent = data.operation + " on " + data.item_id;
+        title.textContent = humanVerb(data.operation) + " " + data.item_id;
         var quote = document.createElement("blockquote");
         quote.className = "evidence";
         quote.textContent = data.evidence_quote || "";
         var meta = document.createElement("p");
         meta.className = "muted";
         meta.textContent = "Status: " + data.status + ". " + (data.detail || "");
+        var undoBtn = document.createElement("button");
+        undoBtn.type = "button";
+        undoBtn.textContent = "Undo";
+        var result = document.createElement("span");
+        result.id = "undo-" + data.id;
+        result.className = "result";
+        result.setAttribute("aria-live", "polite");
+        undoBtn.addEventListener("click", function () {
+          undoBtn.disabled = true;
+          undoBtn.textContent = "Working...";
+          fetch("/api/undo/" + encodeURIComponent(data.id), {method: "POST"})
+            .then(function (resp) { return resp.json(); })
+            .then(function (payload) {
+              if (payload && payload.ok) {
+                showResult(result, true, "Undone. The change was reversed.");
+                meta.textContent = "Status: undone. " + (data.detail || "");
+              } else {
+                showResult(result, false, "Sorry, this change can no longer be undone.");
+              }
+            })
+            .catch(function () {
+              showResult(result, false, "Sorry, undo did not work. Check your connection and try again.");
+            })
+            .finally(function () {
+              undoBtn.disabled = false;
+              undoBtn.textContent = "Undo";
+            });
+        });
         card.appendChild(title);
         card.appendChild(quote);
         card.appendChild(meta);
+        card.appendChild(undoBtn);
+        card.appendChild(result);
         box.prepend(card);
       } catch (err) {
         return;

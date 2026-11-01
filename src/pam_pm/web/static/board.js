@@ -56,9 +56,53 @@
 
   function failMessage(resp, data) {
     if (data && (data.message || data.hint)) {
-      return data.message + (data.hint ? " " + data.hint : "");
+      return (data.message || "") + (data.hint ? " " + data.hint : "");
     }
-    return "Request failed with status " + resp.status + ".";
+    return "Sorry, that did not work. Check your connection and try again.";
+  }
+
+  function friendlyError(err) {
+    var msg = err && err.message ? String(err.message) : "";
+    if (
+      !msg ||
+      /status \d+/.test(msg) ||
+      /failed to fetch|networkerror|load failed|json|unexpected token|syntaxerror/i.test(msg)
+    ) {
+      return "Sorry, that did not work. Check your connection and try again.";
+    }
+    return msg;
+  }
+
+  function setPending(el, pending, busyText) {
+    if (!el) return;
+    if (pending) {
+      if (el.dataset.orig === undefined) el.dataset.orig = el.textContent;
+      el.disabled = true;
+      if (busyText) el.textContent = busyText;
+      el.setAttribute("aria-busy", "true");
+    } else {
+      el.disabled = false;
+      if (el.dataset.orig !== undefined) el.textContent = el.dataset.orig;
+      el.removeAttribute("aria-busy");
+    }
+  }
+
+  function showPending(message) {
+    errorEl.innerHTML = "";
+    var pill = document.createElement("span");
+    pill.className = "pill";
+    pill.textContent = message;
+    errorEl.appendChild(pill);
+  }
+
+  function pendingLine(id, message) {
+    var box = document.getElementById(id);
+    if (!box) return;
+    box.innerHTML = "";
+    var pill = document.createElement("span");
+    pill.className = "pill";
+    pill.textContent = message;
+    box.appendChild(pill);
   }
 
   function api(path, options) {
@@ -97,41 +141,7 @@
     return out;
   }
 
-  /* Theme: explicit choice wins, otherwise follow the OS setting. */
-  var themeBtn = document.getElementById("theme-toggle");
-  function storedTheme() {
-    try {
-      return localStorage.getItem("pam-theme") || "";
-    } catch (err) {
-      return "";
-    }
-  }
-  function applyTheme(name) {
-    var root = document.documentElement;
-    if (name === "dark" || name === "light") {
-      root.setAttribute("data-theme", name);
-    } else {
-      root.removeAttribute("data-theme");
-    }
-    var dark =
-      name === "dark" ||
-      (name !== "light" &&
-        window.matchMedia &&
-        window.matchMedia("(prefers-color-scheme: dark)").matches);
-    themeBtn.textContent = dark ? "Light theme" : "Dark theme";
-    themeBtn.setAttribute("aria-pressed", dark ? "true" : "false");
-  }
-  applyTheme(storedTheme());
-  themeBtn.addEventListener("click", function () {
-    var dark = themeBtn.getAttribute("aria-pressed") === "true";
-    var next = dark ? "light" : "dark";
-    try {
-      localStorage.setItem("pam-theme", next);
-    } catch (err) {
-      /* private mode keeps the default theme */
-    }
-    applyTheme(next);
-  });
+  /* Theme lives in base.html so every page shares one toggle. */
 
   /* View tabs: Board, Backlog, Planning. */
   var tabs = Array.prototype.slice.call(document.querySelectorAll("[data-view]"));
@@ -200,17 +210,23 @@
       });
   }
 
-  function moveItem(id, state) {
+  function moveItem(id, state, trigger) {
     clearError();
+    showPending("Saving your move...");
+    setPending(trigger, true);
     api("/api/board/items/" + encodeURIComponent(id) + "/move", {
       method: "POST",
       body: { state: state }
     })
       .then(function () {
+        clearError();
         scheduleRefresh();
       })
       .catch(function (err) {
-        showError(err.message);
+        showError(friendlyError(err));
+      })
+      .finally(function () {
+        setPending(trigger, false);
       });
   }
 
@@ -267,7 +283,7 @@
     if (!zone || !editable || !dragId) return;
     evt.preventDefault();
     zone.classList.remove("drop-hint");
-    moveItem(dragId, zone.getAttribute("data-state") || "");
+    moveItem(dragId, zone.getAttribute("data-state") || "", null);
   });
 
   document.addEventListener("click", function (evt) {
@@ -278,7 +294,8 @@
       evt.preventDefault();
       moveItem(
         mover.getAttribute("data-id") || "",
-        mover.getAttribute("data-move") || ""
+        mover.getAttribute("data-move") || "",
+        mover
       );
       return;
     }
@@ -293,7 +310,7 @@
       ? evt.target.closest("[data-close-sprint]")
       : null;
     if (closer && editable) {
-      closeSprint(closer.getAttribute("data-close-sprint") || "");
+      closeSprint(closer.getAttribute("data-close-sprint") || "", closer);
     }
   });
 
@@ -301,31 +318,43 @@
     var sel = evt.target && evt.target.closest
       ? evt.target.closest("[data-sprint-for]")
       : null;
-    if (!sel || !editable) return;
+    if (!sel || !editable || sel.disabled) return;
     clearError();
+    showPending("Saving your change...");
+    sel.disabled = true;
     api(
       "/api/board/items/" + encodeURIComponent(sel.getAttribute("data-sprint-for")) + "/sprint",
       { method: "POST", body: { iteration_id: sel.value } }
     )
       .then(function () {
+        clearError();
         scheduleRefresh();
       })
       .catch(function (err) {
-        showError(err.message);
+        showError(friendlyError(err));
+      })
+      .finally(function () {
+        sel.disabled = false;
       });
   });
 
-  function closeSprint(id) {
+  function closeSprint(id, trigger) {
     clearError();
+    showPending("Closing the sprint...");
+    setPending(trigger, true, "Working...");
     api("/api/board/sprints/" + encodeURIComponent(id) + "/close", {
       method: "POST",
       body: {}
     })
       .then(function () {
+        clearError();
         scheduleRefresh();
       })
       .catch(function (err) {
-        showError(err.message);
+        showError(friendlyError(err));
+      })
+      .finally(function () {
+        setPending(trigger, false);
       });
   }
 
@@ -513,7 +542,7 @@
     drawer.hidden = false;
     backdrop.hidden = false;
     drawerTitle.textContent = "Item #" + id;
-    drawerBody.innerHTML = '<p class="muted">Loading...</p>';
+    drawerBody.innerHTML = '<p class="muted">Loading item...</p>';
     Promise.all([
       api("/api/board/items/" + encodeURIComponent(id)),
       getBoardData()
@@ -533,7 +562,7 @@
         drawerBody.innerHTML = "";
         var pill = document.createElement("span");
         pill.className = "pill pill-fail";
-        pill.textContent = err.message;
+        pill.textContent = friendlyError(err);
         drawerBody.appendChild(pill);
       });
   }
@@ -592,6 +621,9 @@
     if (!form || !form.id) return;
     if (form.id === "new-item-form") {
       evt.preventDefault();
+      var newSubmit = form.querySelector('button[type="submit"]');
+      setPending(newSubmit, true, "Saving...");
+      pendingLine("new-item-result", "Saving your item...");
       api("/api/board/items", { method: "POST", body: formObject(form) })
         .then(function (data) {
           resultLine("new-item-result", true, "Created item " + data.item.id + ".");
@@ -600,36 +632,48 @@
           scheduleRefresh();
         })
         .catch(function (err) {
-          resultLine("new-item-result", false, err.message);
+          resultLine("new-item-result", false, friendlyError(err));
+        })
+        .finally(function () {
+          setPending(newSubmit, false);
         });
     } else if (form.id === "import-form") {
       evt.preventDefault();
+      var importSubmit = form.querySelector('button[type="submit"]');
+      setPending(importSubmit, true, "Importing...");
+      pendingLine("import-result", "Importing your file...");
       var fileInput = form.querySelector('input[type="file"]');
       var pasted = form.querySelector('textarea[name="csv"]').value || "";
       var done = function (data) {
+        var createdWord = data.created === 1 ? "item" : "items";
         resultLine(
           "import-result",
           true,
-          "Imported " + data.created + " item(s), skipped " + data.skipped + "."
+          "Imported " + data.created + " " + createdWord + ", skipped " + data.skipped + "."
         );
         boardCache = null;
         scheduleRefresh();
       };
       var failed = function (err) {
-        resultLine("import-result", false, err.message);
+        resultLine("import-result", false, friendlyError(err));
       };
+      var task;
       if (fileInput && fileInput.files && fileInput.files.length) {
-        apiForm("/api/board/import", new FormData(form)).then(done).catch(failed);
+        task = apiForm("/api/board/import", new FormData(form));
       } else {
-        api("/api/board/import", {
+        task = api("/api/board/import", {
           method: "POST",
           body: { csv: pasted }
-        })
-          .then(done)
-          .catch(failed);
+        });
       }
+      task.then(done).catch(failed).finally(function () {
+        setPending(importSubmit, false);
+      });
     } else if (form.id === "sprint-form") {
       evt.preventDefault();
+      var sprintSubmit = form.querySelector('button[type="submit"]');
+      setPending(sprintSubmit, true, "Saving...");
+      pendingLine("sprint-result", "Creating your sprint...");
       api("/api/board/sprints", { method: "POST", body: formObject(form) })
         .then(function (data) {
           resultLine("sprint-result", true, "Created sprint " + data.sprint.name + ".");
@@ -638,10 +682,16 @@
           scheduleRefresh();
         })
         .catch(function (err) {
-          resultLine("sprint-result", false, err.message);
+          resultLine("sprint-result", false, friendlyError(err));
+        })
+        .finally(function () {
+          setPending(sprintSubmit, false);
         });
     } else if (form.id === "drawer-edit-form") {
       evt.preventDefault();
+      var editSubmit = form.querySelector('button[type="submit"]');
+      setPending(editSubmit, true, "Saving...");
+      pendingLine("drawer-edit-result", "Saving your changes...");
       api("/api/board/items/" + encodeURIComponent(form.getAttribute("data-id")), {
         method: "PATCH",
         body: formObject(form)
@@ -653,10 +703,16 @@
           openDrawer(data.item.id);
         })
         .catch(function (err) {
-          resultLine("drawer-edit-result", false, err.message);
+          resultLine("drawer-edit-result", false, friendlyError(err));
+        })
+        .finally(function () {
+          setPending(editSubmit, false);
         });
     } else if (form.id === "drawer-link-form") {
       evt.preventDefault();
+      var linkSubmit = form.querySelector('button[type="submit"]');
+      setPending(linkSubmit, true, "Saving...");
+      pendingLine("drawer-link-result", "Adding your link...");
       var fields = formObject(form);
       api("/api/board/links", {
         method: "POST",
@@ -672,10 +728,16 @@
           openDrawer(form.getAttribute("data-id"));
         })
         .catch(function (err) {
-          resultLine("drawer-link-result", false, err.message);
+          resultLine("drawer-link-result", false, friendlyError(err));
+        })
+        .finally(function () {
+          setPending(linkSubmit, false);
         });
     } else if (form.id === "drawer-comment-form") {
       evt.preventDefault();
+      var commentSubmit = form.querySelector('button[type="submit"]');
+      setPending(commentSubmit, true, "Saving...");
+      pendingLine("drawer-comment-result", "Adding your comment...");
       api(
         "/api/board/items/" + encodeURIComponent(form.getAttribute("data-id")) + "/comments",
         { method: "POST", body: formObject(form) }
@@ -686,7 +748,10 @@
           openDrawer(form.getAttribute("data-id"));
         })
         .catch(function (err) {
-          resultLine("drawer-comment-result", false, err.message);
+          resultLine("drawer-comment-result", false, friendlyError(err));
+        })
+        .finally(function () {
+          setPending(commentSubmit, false);
         });
     }
   });

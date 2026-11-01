@@ -19,7 +19,7 @@
 
 :root[data-theme="dark"] {
   --accent: #0f766e;
-  --accent-dark: #14a192;
+  --accent-dark: #0b5e56;
   --bg: #0e141a;
   --surface: #161e26;
   --text: #e8eef3;
@@ -39,7 +39,7 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --accent: #0f766e;
-    --accent-dark: #14a192;
+    --accent-dark: #0b5e56;
     --bg: #0e141a;
     --surface: #161e26;
     --text: #e8eef3;
@@ -91,7 +91,7 @@ h3 { font-size: 1rem; margin: 0.4rem 0 0.2rem; }
 
 .project-switcher { display: flex; align-items: center; gap: 0.5rem; }
 
-select, input[type="text"] {
+select, input[type="text"], input[type="number"] {
   padding: 0.45rem 0.6rem;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -509,4 +509,148 @@ textarea { resize: vertical; }
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
+}
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.6rem;
+}
+
+button:disabled {
+  background: var(--bg);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  cursor: not-allowed;
+}
+
+button:hover:disabled { background: var(--bg); }
+
+input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 1rem;
+  height: 1rem;
+}
+
+table.roster, table.proposal {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.8rem 0;
+  font-size: 0.95rem;
+}
+
+table.roster th, table.proposal th,
+table.roster td, table.proposal td {
+  text-align: left;
+  padding: 0.45rem 0.6rem;
+  border-top: 1px solid var(--border);
+}
+
+table.roster thead th, table.proposal thead th {
+  border-top: none;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+table.roster input {
+  width: 100%;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+/* WP4c harden: long names and titles wrap instead of breaking layout. */
+.card, .kanban-card, .event, .review-body, .drawer, blockquote.evidence {
+  overflow-wrap: break-word;
+  word-wrap: break-word;
+  min-width: 0;
+}
+
+h1, h2, h3, .item-id, .tag, .pill, .lifecycle-list li {
+  overflow-wrap: break-word;
+  word-wrap: break-word;
+}
+
+.kanban-card h3, .event h2, .review-body h2, .review-body h3 {
+  word-break: break-word;
+}
+
+.card-fields dd, .drawer-fields dd, .roster td, .proposal td {
+  overflow-wrap: break-word;
+  word-break: break-word;
+  min-width: 0;
+}
+
+.kanban, .kanban-col, .kanban-drop, .board-toolbar, .board-actions,
+.form-grid, .backlog-list li, .sprint-items li {
+  min-width: 0;
+}
+
+input, select, textarea {
+  max-width: 100%;
+}
+
+/* Review body: rendered headings, lists, and code stay readable. */
+.review-body {
+  margin: 1rem 0;
+}
+
+.review-body h2 {
+  margin-top: 1.1rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--border);
+}
+
+.review-body ul, .review-body ol {
+  padding-left: 1.3rem;
+}
+
+.review-body li {
+  margin: 0.3rem 0;
+}
+
+.review-body code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.05rem 0.3rem;
+  font-size: 0.9em;
+  overflow-wrap: break-word;
+}
+
+.review-body pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.7rem 0.9rem;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.review-body blockquote {
+  margin: 0.6rem 0;
+  padding: 0.6rem 0.8rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-wrap: break-word;
+}
+
+/* Wide tables scroll on small screens instead of overflowing. */
+@media (max-width: 800px) {
+  table.roster, table.proposal {
+    display: block;
+    overflow-x: auto;
+  }
+}
+
+/* Busy buttons keep their size while working. */
+button[aria-busy="true"] {
+  opacity: 0.75;
 }
