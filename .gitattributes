@@ -1,0 +1,4 @@
+# Keep the shell installer LF so Windows checkouts do not break sh.
+install.sh text eol=lf
+*.sh text eol=lf
+install.ps1 text eol=crlf

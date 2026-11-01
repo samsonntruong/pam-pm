@@ -109,6 +109,8 @@ def pid_alive(pid: int) -> bool:
     """Return True when a process with this pid exists."""
     try:
         os.kill(pid, 0)
+    except PermissionError:
+        return True
     except OSError:
         return False
     return True
@@ -154,7 +156,13 @@ def start_server_subprocess(
         "stderr": subprocess.STDOUT,
         "stdin": subprocess.DEVNULL,
     }
-    if os.name == "posix":
+    if sys.platform == "win32":
+        flags = 0
+        for name in ("CREATE_NEW_PROCESS_GROUP", "DETACHED_PROCESS", "CREATE_NO_WINDOW"):
+            flags |= int(getattr(subprocess, name, 0) or 0)
+        if flags:
+            kwargs["creationflags"] = flags
+    elif os.name == "posix":
         kwargs["start_new_session"] = True
     try:
         return subprocess.Popen(
@@ -300,19 +308,19 @@ def menu_items(*, paused: bool, autostart_on: bool) -> list[dict[str, Any]]:
 
 
 def load_webview() -> Any | None:
-    """Return the pywebview module, or None when it is not installed."""
+    """Return the pywebview module, or None when unavailable."""
     try:
         import webview
-    except ImportError:
+    except Exception:  # noqa: BLE001
         return None
     return webview
 
 
 def load_pystray() -> Any | None:
-    """Return the pystray module, or None when it is not installed."""
+    """Return the pystray module, or None when unavailable."""
     try:
         import pystray
-    except ImportError:
+    except Exception:  # noqa: BLE001
         return None
     return pystray
 
@@ -382,7 +390,12 @@ def create_window(url: str, view: Any | None = None) -> Any | None:
     icon = ensure_icon_file()
     if icon and _window_supports_icon(webview_mod):
         kwargs["icon"] = icon
-    window = webview_mod.create_window(WINDOW_TITLE, url, **kwargs)
+    try:
+        window = webview_mod.create_window(WINDOW_TITLE, url, **kwargs)
+    except Exception:  # noqa: BLE001
+        webbrowser.open(url)
+        print(BROWSER_FALLBACK_MESSAGE)
+        return None
     try:
         window.events.closing += lambda *args, **kws: _on_window_closing(window)
     except Exception:  # noqa: BLE001, S110
@@ -554,21 +567,28 @@ class DesktopApp:
             view = load_webview()
             self.window = create_window(self.url, view=view)
             self.tray = start_tray(self)
-            if self.window is not None and view is not None:
-                if self.tray is not None:
-                    thread = threading.Thread(target=self.tray.run, daemon=True)
-                    thread.start()
-                view.start()
-            elif self.tray is not None:
-                self.tray.run()
-            else:
-                print("Press Ctrl+C to stop Pam.")
-                try:
-                    while True:
-                        time.sleep(3600)
-                except KeyboardInterrupt:
-                    pass
-                self.request_quit()
+            try:
+                if self.window is not None and view is not None:
+                    if self.tray is not None:
+                        thread = threading.Thread(target=self.tray.run, daemon=True)
+                        thread.start()
+                    view.start()
+                elif self.tray is not None:
+                    self.tray.run()
+                else:
+                    print("Press Ctrl+C to stop Pam.")
+                    try:
+                        while True:
+                            time.sleep(3600)
+                    except KeyboardInterrupt:
+                        pass
+                    self.request_quit()
+            except Exception as exc:  # noqa: BLE001
+                print(f"Pam desktop could not start ({exc}). The Pam window still works after a retry.")
+                if self.started_server and self.proc is not None:
+                    stop_process(self.proc)
+                    self.proc = None
+                return 1
         finally:
             release_lock()
         return 0

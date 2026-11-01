@@ -11,6 +11,7 @@ import json
 import logging
 import re
 import stat
+import sys
 from typing import Any
 
 import httpx
@@ -873,9 +874,12 @@ def test_wizard_save_then_test_green_no_leaks(wiz_client, caplog) -> None:
     assert steps["clickup"]["has_token"] is True
     assert steps["clickup"]["list"] == CLICKUP_LIST
 
-    assert stat.S_IMODE((home / "trello_api_key.txt").stat().st_mode) == 0o600
-    assert stat.S_IMODE((home / "trello_token.txt").stat().st_mode) == 0o600
-    assert stat.S_IMODE((home / "clickup_api_token.txt").stat().st_mode) == 0o600
+    if sys.platform != "win32":
+        assert stat.S_IMODE((home / "trello_api_key.txt").stat().st_mode) == 0o600
+    if sys.platform != "win32":
+        assert stat.S_IMODE((home / "trello_token.txt").stat().st_mode) == 0o600
+    if sys.platform != "win32":
+        assert stat.S_IMODE((home / "clickup_api_token.txt").stat().st_mode) == 0o600
 
     page = client.get("/setup?project=tcwiz").text
     assert "Trello" in page

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import stat
+import sys
 
 import pytest
 from fastapi.testclient import TestClient
@@ -113,7 +114,8 @@ def test_save_then_test_green_no_leaks(wiz_client, caplog) -> None:
         "slack_app_token.txt",
         "ado_pat.txt",
     ):
-        assert _mode(home / name) == 0o600
+        if sys.platform != "win32":
+            assert _mode(home / name) == 0o600
 
     logs = caplog.text
     for secret in (META_KEY, BOT_TOKEN, APP_TOKEN, ADO_PAT_VALUE):

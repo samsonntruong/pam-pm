@@ -74,6 +74,7 @@ jobs:
           docker compose down
           [ "$ok" -eq 1 ] || (echo "container did not respond" && exit 1)
 
+  # macOS stays on workflow_dispatch only: macOS runners burn 10x minutes on private repos.
   macos:
     if: github.event_name == 'workflow_dispatch'
     runs-on: macos-latest

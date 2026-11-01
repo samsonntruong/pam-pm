@@ -72,7 +72,12 @@ function Get-DataDir() {
     if ($null -ne $env:PAM_HOME -and $env:PAM_HOME.Trim() -ne "") {
         return $env:PAM_HOME
     }
-    return Join-Path $env:LOCALAPPDATA "pam-pm"
+    if (-not [string]::IsNullOrEmpty($env:LOCALAPPDATA)) {
+        return Join-Path $env:LOCALAPPDATA "pam-pm"
+    }
+    $base = $env:USERPROFILE
+    if ([string]::IsNullOrEmpty($base)) { $base = $HOME }
+    return Join-Path $base "AppData\Local\pam-pm"
 }
 
 function Invoke-Step([string]$Label, [scriptblock]$Action, [string]$DryText) {

@@ -126,10 +126,11 @@ def save_provider(
         if key:
             key_file = directory / PROVIDER_KEY_FILENAME
             key_file.write_text(key, encoding="utf-8")
-            try:
-                os.chmod(key_file, 0o600)
-            except OSError:
-                pass
+            if os.name != "nt":
+                try:
+                    os.chmod(key_file, 0o600)
+                except OSError:
+                    pass
             has_key = True
             key_ref = PROVIDER_KEY_FILENAME
         else:

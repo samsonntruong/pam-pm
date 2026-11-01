@@ -82,7 +82,10 @@ def start_command_line() -> str:
 
 
 def _home() -> Path:
-    return Path(os.environ.get("HOME", str(Path.home()))).expanduser()
+    # Path.home() honors USERPROFILE on Windows and HOME elsewhere.
+    # Do not read HOME directly: tools like Git Bash can set a POSIX
+    # style HOME that points outside the real Windows profile.
+    return Path.home()
 
 
 def _base_dir() -> Path | None:
@@ -131,6 +134,15 @@ def plist_content() -> str:
     )
 
 
+def _quoted_command_line() -> str:
+    """Return exe plus args with the exe quoted when it has spaces."""
+    exe = pam_command()
+    rest = " ".join(start_args())
+    if " " in exe and not exe.startswith('"'):
+        exe = f'"{exe}"'
+    return f"{exe} {rest}" if rest else exe
+
+
 def systemd_unit_content() -> str:
     """Return the systemd user unit text with Restart=on-failure."""
     return (
@@ -139,7 +151,7 @@ def systemd_unit_content() -> str:
         "After=network-online.target\n"
         "\n"
         "[Service]\n"
-        f"ExecStart={start_command_line()}\n"
+        f"ExecStart={_quoted_command_line()}\n"
         "Restart=on-failure\n"
         "RestartSec=60\n"
         "\n"
@@ -150,13 +162,8 @@ def systemd_unit_content() -> str:
 
 def windows_task_xml() -> str:
     """Return the Scheduled Task XML with restart on failure."""
-    cmd = start_command_line()
-    if " " in cmd and not cmd.startswith('"'):
-        exe, _, rest = cmd.partition(" ")
-        cmd = f'"{exe}" {rest}' if rest else exe
-    parts = cmd.split(" ", 1)
-    exe_xml = escape(parts[0].strip('"'))
-    args_xml = escape(parts[1]) if len(parts) > 1 else ""
+    exe_xml = escape(pam_command())
+    args_xml = escape(" ".join(start_args()))
     return (
         '<?xml version="1.0" encoding="UTF-16"?>\n'
         '<Task version="1.2"'
@@ -244,7 +251,7 @@ def _windows_enable() -> str:
             "/TN",
             TASK_NAME,
             "/TR",
-            start_command_line(),
+            _quoted_command_line(),
             "/SC",
             "ONLOGON",
             "/F",
@@ -263,6 +270,13 @@ def _windows_disable() -> str:
     return "autostart: could not remove the Scheduled Task"
 
 
+def _macos_uid() -> int | None:
+    try:
+        return os.getuid()  # type: ignore[attr-defined]
+    except (AttributeError, OSError):
+        return None
+
+
 def _macos_enable() -> str:
     path = launch_agent_path()
     try:
@@ -270,12 +284,18 @@ def _macos_enable() -> str:
         path.write_text(plist_content(), encoding="utf-8")
     except OSError as exc:
         return f"autostart: could not write {path}: {exc}"
+    uid = _macos_uid()
+    if uid is not None and _run_quiet(["launchctl", "bootstrap", f"gui/{uid}", str(path)]):
+            return f"autostart: on ({path})"
     _run_quiet(["launchctl", "load", "-w", str(path)])
     return f"autostart: on ({path})"
 
 
 def _macos_disable() -> str:
     path = launch_agent_path()
+    uid = _macos_uid()
+    if uid is not None:
+        _run_quiet(["launchctl", "bootout", f"gui/{uid}", str(path)])
     _run_quiet(["launchctl", "unload", "-w", str(path)])
     try:
         path.unlink(missing_ok=True)

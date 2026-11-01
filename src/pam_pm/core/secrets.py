@@ -82,10 +82,11 @@ def save_secret(
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
-        try:
-            os.chmod(path, 0o600)
-        except OSError:
-            pass
+        if os.name != "nt":
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
         logger.info("secret saved: name=%s has_value=True", key)
         return True
     existing = directory / str(SECRET_FILES[key])

@@ -45,6 +45,15 @@ wrapper (beta) unless `-NoDesktop` / `--no-desktop` is passed. After install,
 `pam desktop` opens Pam in its own window with a tray icon instead of a
 browser tab. See [desktop.md](desktop.md).
 
+
+## Per-OS notes
+
+Windows: run the PowerShell one-liner with `install.ps1`; it installs with `uv tool install pam-pm[desktop]` so `pam desktop` opens the Pam window with a tray icon. Autostart uses a per-user Scheduled Task at sign-in with restart on failure, no admin needed. Known limits: file mode bits are not POSIX, so secret files rely on the user profile ACL instead of 0600; SmartScreen may prompt on the downloaded script.
+
+macOS: run the shell one-liner with `install.sh`; it installs `pam-pm[desktop]` on Darwin so `pam desktop` works. Autostart uses a LaunchAgent with KeepAlive (bootstrap with load fallback). Known limits: install CI runs on workflow_dispatch only to save minutes; first launch may need a right-click Open approval for the unsigned window backend.
+
+Linux: run the shell one-liner with `install.sh`; install is browser-only because desktop tray support varies by Wayland and X11 setup. Autostart uses a systemd user service with Restart=on-failure. Known limits: `pam desktop` falls back to the browser when pywebview or pystray backends are missing; headless servers should use `pam start --no-browser` instead.
+
 ## Upgrade
 
 Re-run the same one-liner. It reinstalls Pam in place over the old version.

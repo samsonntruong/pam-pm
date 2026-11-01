@@ -204,15 +204,15 @@ def test_create_window_uses_title_and_hides_on_close(monkeypatch):
     assert window.hidden == 1
 
 
-def test_create_window_passes_icon_when_supported(monkeypatch):
+def test_create_window_passes_icon_when_supported(monkeypatch, tmp_path):
     class _IconWebview(_FakeWebview):
         def create_window(self, title, url, icon=None):  # type: ignore[no-untyped-def]
             return super().create_window(title, url, icon=icon)
 
-    monkeypatch.setattr(desktop, "ensure_icon_file", lambda *a, **k: "/tmp/pam.png")
+    monkeypatch.setattr(desktop, "ensure_icon_file", lambda *a, **k: str(tmp_path / "pam.png"))
     view = _IconWebview()
     desktop.create_window("http://127.0.0.1:8765/board", view=view)
-    assert view.calls[0]["kwargs"] == {"icon": "/tmp/pam.png"}
+    assert view.calls[0]["kwargs"] == {"icon": str(tmp_path / "pam.png")}
 
 
 def test_menu_items_labels_and_states():

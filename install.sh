@@ -19,6 +19,9 @@
 
 set -u
 
+# HOME is required below; fall back to the passwd entry when unset.
+HOME="${HOME:-$(eval echo ~)}"
+
 # Default release tag. Update this constant when tagging a release.
 # Mirrors the version in pyproject.toml and src/pam_pm/__init__.py (__version__).
 DEFAULT_VERSION="v0.2.0"

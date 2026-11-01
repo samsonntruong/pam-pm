@@ -11,6 +11,7 @@ import json
 import logging
 import re
 import stat
+import sys
 from typing import Any
 
 import httpx
@@ -990,8 +991,10 @@ def test_wizard_save_then_test_green_no_leaks(wiz_client, caplog) -> None:
     assert steps["linear"]["has_key"] is True
     assert steps["linear"]["team"] == LINEAR_TEAM
 
-    assert stat.S_IMODE((home / "jira_api_token.txt").stat().st_mode) == 0o600
-    assert stat.S_IMODE((home / "linear_api_key.txt").stat().st_mode) == 0o600
+    if sys.platform != "win32":
+        assert stat.S_IMODE((home / "jira_api_token.txt").stat().st_mode) == 0o600
+    if sys.platform != "win32":
+        assert stat.S_IMODE((home / "linear_api_key.txt").stat().st_mode) == 0o600
 
     page = client.get("/setup?project=jlwiz").text
     assert "Jira" in page

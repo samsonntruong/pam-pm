@@ -104,10 +104,11 @@ def set_password(
     path = auth_path(explicit)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(record, indent=2), encoding="utf-8")
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
+    if os.name != "nt":
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
     logger.info("console password saved: path=%s", path)
     return path
 
