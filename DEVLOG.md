@@ -40,6 +40,7 @@ Build log for Pam. Three lines per entry.
 | Muse Code | WP5 item 6 mid sprint | Off track detect, goal effect proposals, Approve only, 257 pass |
 | Muse Code | WP5 item 7 provider | Meta default plus custom endpoint test, SAM fallback, 263 pass |
 | Muse Code | WP6 cloud readiness | Deploy docs, console password auth, loopback refusal, 272 pass |
+| Muse Code | WP7 release ready | README docs scrub, SUBMISSION CONFIRM, VIDEO_SCRIPT, v0.2.0 tag plus release |
 
 ## Entries
 
