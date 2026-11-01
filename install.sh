@@ -12,7 +12,7 @@
 #   --source P      Local path or URL to install from (for testing)
 #   --no-start      Install but do not start Pam
 #   --no-autostart  Do not enable start on login
-#   --no-desktop    Do not create a desktop shortcut (accepted now, wired next)
+#   --no-desktop    Skip the desktop window and tray icon (browser only; Linux is always browser only)
 #   --uninstall     Remove Pam, keeping the data directory
 #   --remove-data   With --uninstall only: also delete the data directory (asks first)
 #   --dry-run       Print the commands without running them
@@ -154,11 +154,20 @@ else
     echo "  Done."
 fi
 
+DESKTOP_WANTED=0
+if [ "$NO_DESKTOP" -eq 0 ] && [ "$(uname -s)" = "Darwin" ]; then
+    DESKTOP_WANTED=1
+fi
+INSTALL_SPEC="$INSTALL_SOURCE"
+if [ "$DESKTOP_WANTED" -eq 1 ]; then
+    INSTALL_SPEC="pam-pm[desktop] @ $INSTALL_SOURCE"
+fi
+
 step "Step 3 of 4: Installing Pam from $INSTALL_SOURCE."
 echo "  Re-running later upgrades Pam in place. Your data is never touched."
-run "Running: uv tool install --python 3.12 --force $INSTALL_SOURCE" \
-    "uv tool install --python 3.12 --force $INSTALL_SOURCE" \
-    uv tool install --python 3.12 --force "$INSTALL_SOURCE"
+run "Running: uv tool install --python 3.12 --force $INSTALL_SPEC" \
+    "uv tool install --python 3.12 --force $INSTALL_SPEC" \
+    uv tool install --python 3.12 --force "$INSTALL_SPEC"
 
 run "Running: uv tool update-shell" "uv tool update-shell" \
     uv tool update-shell
@@ -174,24 +183,39 @@ if [ "$NO_AUTOSTART" -eq 0 ]; then
         echo "  pam not found yet, skipping autostart. Run 'pam autostart on' later."
     fi
 fi
-if [ "$NO_DESKTOP" -eq 0 ]; then
-    echo "  Note: a desktop shortcut arrives in a later release."
+if [ "$DESKTOP_WANTED" -eq 1 ]; then
+    echo "  Desktop window and tray icon installed. The console opens in the Pam window."
+else
+    echo "  Browser-only install. The console opens in your browser."
+fi
+
+START_COMMAND="start"
+if [ "$DESKTOP_WANTED" -eq 1 ]; then
+    START_COMMAND="desktop"
 fi
 
 if [ "$NO_START" -eq 1 ]; then
-    printf '\nPam is installed. Start it any time with: pam start\n'
+    printf '\nPam is installed. Start it any time with: pam %s\n' "$START_COMMAND"
     exit 0
 fi
 
-step "Step 4 of 4: Starting Pam and opening the setup console in your browser."
+if [ "$DESKTOP_WANTED" -eq 1 ]; then
+    step "Step 4 of 4: Starting Pam and opening the setup console in the Pam window."
+else
+    step "Step 4 of 4: Starting Pam and opening the setup console in your browser."
+fi
 PAM_EXE="$(uv_bin_dir)/pam"
 if [ "$DRY_RUN" -eq 1 ]; then
-    echo "  [dry run] $PAM_EXE start"
+    echo "  [dry run] $PAM_EXE $START_COMMAND"
 else
     if [ ! -x "$PAM_EXE" ]; then
-        fail "Pam installed but $PAM_EXE was not found. Open a new terminal and run: pam start"
+        fail "Pam installed but $PAM_EXE was not found. Open a new terminal and run: pam $START_COMMAND"
     fi
-    "$PAM_EXE" start
+    "$PAM_EXE" "$START_COMMAND"
 fi
 
-printf '\nYour browser opens the Pam setup console. Follow the wizard.\n'
+if [ "$DESKTOP_WANTED" -eq 1 ]; then
+    printf '\nThe Pam window opens the setup console. Follow the wizard.\n'
+else
+    printf '\nYour browser opens the Pam setup console. Follow the wizard.\n'
+fi

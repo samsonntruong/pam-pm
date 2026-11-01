@@ -23,8 +23,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Empty home for the desktop extra; WP3c adds the GUI deps here.
-desktop = []
+desktop = [
+  "pywebview",
+  "pystray",
+  "Pillow",
+]
 dev = [
   "pytest",
   "pytest-asyncio",

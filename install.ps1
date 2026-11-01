@@ -12,7 +12,7 @@
 #   -Source      Local path or URL to install from (for testing)
 #   -NoStart     Install but do not start Pam
 #   -NoAutostart Do not enable start on login
-#   -NoDesktop   Do not create a desktop shortcut (WP3c; accepted now, wired next)
+#   -NoDesktop   Skip the desktop window and tray icon (browser only)
 #   -Uninstall   Remove Pam, keeping the data directory
 #   -RemoveData  With -Uninstall only: also delete the data directory (asks first)
 #   -DryRun      Print the commands without running them
@@ -166,11 +166,17 @@ if ($DryRun) {
     Write-Output "  Done."
 }
 
+$DesktopWanted = -not $NoDesktop
+$PamSpec = $InstallSource
+if ($DesktopWanted) {
+    $PamSpec = "pam-pm[desktop] @ $InstallSource"
+}
+
 Show-Step "Step 3 of 4: Installing Pam from $InstallSource."
 Write-Output "  Re-running later upgrades Pam in place. Your data is never touched."
-Invoke-Step -Label "Running: uv tool install --python 3.12 --force $InstallSource" -Action {
-    & uv tool install --python 3.12 --force $InstallSource
-} -DryText "uv tool install --python 3.12 --force $InstallSource"
+Invoke-Step -Label "Running: uv tool install --python 3.12 --force $PamSpec" -Action {
+    & uv tool install --python 3.12 --force $PamSpec
+} -DryText "uv tool install --python 3.12 --force $PamSpec"
 
 Invoke-Step -Label "Running: uv tool update-shell" -Action {
     & uv tool update-shell
@@ -186,24 +192,39 @@ if (-not $NoAutostart) {
         }
     } -DryText "$pamAutostartExe autostart on"
 }
-if (-not $NoDesktop) {
-    Write-Output "  Note: a desktop shortcut arrives in a later release."
+if ($DesktopWanted) {
+    Write-Output "  Desktop window and tray icon installed. The console opens in the Pam window."
+} else {
+    Write-Output "  Browser-only install. The console opens in your browser."
+}
+
+$StartCommand = "start"
+if ($DesktopWanted) {
+    $StartCommand = "desktop"
 }
 
 if ($NoStart) {
     Write-Output ""
-    Write-Output "Pam is installed. Start it any time with: pam start"
+    Write-Output "Pam is installed. Start it any time with: pam $StartCommand"
     exit 0
 }
 
-Show-Step "Step 4 of 4: Starting Pam and opening the setup console in your browser."
+if ($DesktopWanted) {
+    Show-Step "Step 4 of 4: Starting Pam and opening the setup console in the Pam window."
+} else {
+    Show-Step "Step 4 of 4: Starting Pam and opening the setup console in your browser."
+}
 $pamExe = Get-PamExe
-Invoke-Step -Label "Running: $pamExe start" -Action {
+Invoke-Step -Label "Running: $pamExe $StartCommand" -Action {
     if (-not (Test-Path $pamExe)) {
-        Stop-Fail "Pam installed but $pamExe was not found. Open a new terminal and run: pam start"
+        Stop-Fail "Pam installed but $pamExe was not found. Open a new terminal and run: pam $StartCommand"
     }
-    & $pamExe start
-} -DryText "$pamExe start"
+    & $pamExe $StartCommand
+} -DryText "$pamExe $StartCommand"
 
 Write-Output ""
-Write-Output "Your browser opens the Pam setup console. Follow the wizard."
+if ($DesktopWanted) {
+    Write-Output "The Pam window opens the setup console. Follow the wizard."
+} else {
+    Write-Output "Your browser opens the Pam setup console. Follow the wizard."
+}

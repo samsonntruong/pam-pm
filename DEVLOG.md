@@ -29,6 +29,7 @@ Build log for Pam. Three lines per entry.
 | Muse Code | WP2 native board | Editable kanban with drawer and CSV, rules on native, full story test, 101 pass |
 | Muse Code | WP3 installer | install.ps1 and install.sh verified end to end, analyzer clean, uv 0.11.1 |
 | Muse Code | WP3b recovery | Autostart on all OS, WAL outbox exactly-once, misfire catch-up, banner, SIGKILL tests, 111 pass |
+| Muse Code | WP3c desktop | pam desktop window plus tray, [desktop] extra, installer flags, 139 pass |
 
 ## Entries
 

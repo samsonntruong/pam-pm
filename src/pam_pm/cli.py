@@ -21,6 +21,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_start.add_argument(
         "--no-browser", action="store_true", help="Do not open a browser"
     )
+    p_desktop = sub.add_parser(
+        "desktop", help="Open Pam in a desktop window with a tray icon"
+    )
+    p_desktop.add_argument("--host", default=HOST, help="Bind host (default 127.0.0.1)")
+    p_desktop.add_argument("--port", type=int, default=PORT, help="Bind port (default 8765)")
     sub.add_parser("doctor", help="Check meta, slack, ado, cache, autostart, uptime")
     p_auto = sub.add_parser("autostart", help="Start Pam at sign-in and restart it if it stops")
     p_auto.add_argument("action", choices=["on", "off", "status"])
@@ -47,6 +52,16 @@ def cmd_start(args: argparse.Namespace) -> None:
         print("uvicorn is not installed.")
         return
     uvicorn.run("pam_pm.web.app:app", host=host, port=port)
+
+
+def cmd_desktop(args: argparse.Namespace) -> None:
+    from pam_pm import desktop
+
+    host = str(getattr(args, "host", HOST) or HOST)
+    port = int(getattr(args, "port", PORT) or PORT)
+    result = desktop.main(host=host, port=port)
+    if result:
+        raise SystemExit(result)
 
 
 def _presence(keys: list[str]) -> list[str]:
@@ -210,6 +225,8 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "start":
         cmd_start(args)
+    elif args.command == "desktop":
+        cmd_desktop(args)
     elif args.command == "doctor":
         cmd_doctor(args)
     elif args.command == "autostart":

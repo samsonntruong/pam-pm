@@ -1,9 +1,10 @@
 """Per-user autostart: start Pam at sign-in and restart it if it stops.
 
-Windows: a per-user Scheduled Task at sign-in running
-``pam start --no-browser`` with restart on failure (every 1 minute,
-up to 10 tries). No admin rights needed. macOS: a LaunchAgent with
-KeepAlive. Linux: a systemd user service with Restart=on-failure.
+Windows: a per-user Scheduled Task at sign-in running ``pam desktop``
+when the desktop extra is installed, else ``pam start --no-browser``,
+with restart on failure (every 1 minute, up to 10 tries). No admin
+rights needed. macOS: a LaunchAgent with KeepAlive. Linux: a systemd
+user service with Restart=on-failure.
 
 Set PAM_AUTOSTART_FAKE to a file path to sandbox enable/disable/
 status to a marker file (used by tests so they never touch the real
@@ -56,9 +57,28 @@ def pam_command() -> str:
     return sys.executable + " -m pam_pm.cli"
 
 
+def desktop_available() -> bool:
+    """Return True when the desktop extra (pywebview plus pystray) is installed."""
+    try:
+        from importlib.util import find_spec
+    except ImportError:
+        return False
+    try:
+        return find_spec("webview") is not None and find_spec("pystray") is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def start_args() -> list[str]:
+    """Return the sign-in subcommand: desktop when available, else start."""
+    if desktop_available():
+        return ["desktop"]
+    return ["start", "--no-browser"]
+
+
 def start_command_line() -> str:
     """Return the sign-in command line run by every backend."""
-    return pam_command() + " start --no-browser"
+    return pam_command() + " " + " ".join(start_args())
 
 
 def _home() -> Path:
@@ -91,6 +111,7 @@ def systemd_unit_path() -> Path:
 def plist_content() -> str:
     """Return the LaunchAgent plist text with KeepAlive."""
     exe = pam_command()
+    args = "".join(f"    <string>{escape(bit)}</string>\n" for bit in start_args())
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"'
@@ -101,8 +122,7 @@ def plist_content() -> str:
         "  <key>ProgramArguments</key>\n"
         "  <array>\n"
         f"    <string>{escape(exe)}</string>\n"
-        "    <string>start</string>\n"
-        "    <string>--no-browser</string>\n"
+        f"{args}"
         "  </array>\n"
         "  <key>RunAtLoad</key><true/>\n"
         "  <key>KeepAlive</key><true/>\n"
