@@ -1,0 +1,4 @@
+title = "pam-pm gitleaks config"
+
+[extend]
+useDefault = true

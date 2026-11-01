@@ -1,0 +1,7 @@
+services:
+  pam:
+    build: .
+    ports:
+      - "8765:8765"
+    env_file:
+      - .env

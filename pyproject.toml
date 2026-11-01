@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pam-pm"
+version = "0.1.0"
+description = "PAM PM placeholder package"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = [
+  "fastapi",
+  "uvicorn",
+  "jinja2",
+  "httpx",
+  "apscheduler",
+  "pydantic",
+  "python-dotenv",
+  "platformdirs",
+  "slack-bolt",
+  "slack-sdk",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "pytest-asyncio",
+  "ruff",
+  "mypy",
+]
+
+[project.scripts]
+pam = "pam_pm.cli:main"
+pam-pm = "pam_pm.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+pam_pm = ["web/templates/*", "web/static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
