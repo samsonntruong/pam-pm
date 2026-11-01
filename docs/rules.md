@@ -27,6 +27,12 @@ A rule is a trigger plus an action, with per-project settings. Toggle templates 
 
 Each rule card holds a toggle plus a few settings: time, days, and the review channel where summaries post. Settings apply per project, chosen with the project switcher at the top of the console.
 
+## Board triage
+
+- Trigger: schedule (daily by default) plus board change.
+- Action: scans for stale, unassigned, missing estimate, overloaded, blocked by closed or missing predecessor, and unclear titles, plus RAID entries with no owner or past due. Posts one Slack message and one console card: "N items need attention", each with a proposed fix and an Approve button.
+- The scan is plain code. The model runs only when the board changed since the last scan and a title needs judgment.
+
 ## Safety
 
 Every rule action that touches the board goes through the write layer: dry run by default, an evidence quote logged with each write, and Undo for reversible writes on the Activity screen.

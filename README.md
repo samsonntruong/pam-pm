@@ -78,14 +78,16 @@ Listen meetings (beta): capture audio in Chrome or Edge at `/listen`, review fin
 - Sticky-note photo to sprint: segments a planning photo, reads each note, proposes a sprint, and creates the items after you press Approve.
 - RAID log: risks, assumptions, issues, and dependencies with propose plus accept, manual add and edit, and CSV plus Markdown export.
 - Kickoff from a document: paste a brief or upload a file, review owner suggestions with reasons on one approval card, and create the items after you press Approve.
+- Board triage: daily scan for stale, unassigned, and blocked items with proposed fixes on one approval card.
 
 ## Rules summary
 
-A rule is a trigger plus an action, toggled per project on the Rules screen. Three templates ship built in:
+A rule is a trigger plus an action, toggled per project on the Rules screen. Four templates ship built in:
 
 1. Morning check-in (schedule trigger): DMs each person with active items at the set time. Skips people with nothing active.
 2. Follow-up on close (ADO change trigger): when an item closes, DMs the next owner in the chain and asks for status.
 3. Blocker intake (Slack message trigger): runs the blocker loop described below.
+4. Board triage (schedule plus board change trigger): scans daily for stale, unassigned, and blocked items and proposes one fix per finding.
 
 Details: [docs/rules.md](docs/rules.md).
 

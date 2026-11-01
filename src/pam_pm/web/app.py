@@ -166,12 +166,19 @@ RULE_TEMPLATES: list[dict[str, Any]] = [
         "description": "Ask what is blocked, link the related items, and ask for a finish date.",
         "trigger": "Runs when someone reports blocked work.",
     },
+    {
+        "name": "triage",
+        "title": "Board triage",
+        "description": "Scan the board for stale, unassigned, and blocked items and propose a fix for each.",
+        "trigger": "Runs each day and when the board changes.",
+    },
 ]
 
 RULE_STATES: dict[str, bool] = {
     "morning": True,
     "follow_up": True,
     "blocker": False,
+    "triage": True,
 }
 
 SAMPLE_EVENTS: list[dict[str, Any]] = [
@@ -2966,6 +2973,163 @@ async def kickoff_owner_response(request: Request) -> Any:
             flagged.append(item_id)
         LAST_KICKOFF["flagged"] = flagged
     return {"ok": True, **result}
+
+
+LAST_TRIAGE: dict[str, Any] = {
+    "findings": [],
+    "message": "",
+    "project": "default",
+}
+
+
+def _triage_project(request: Request) -> str:
+    return _safe_project(request.query_params.get("project", "default"))
+
+
+def _triage_result_html(findings: list[dict[str, Any]], dry_run: bool) -> str:
+    parts: list[str] = []
+    count = len(findings)
+    parts.append('<section class="card" id="triage-card">')
+    if count == 0:
+        parts.append("<h2>Nothing needs attention</h2>")
+        parts.append(
+            '<p class="muted">The board scan found no stale, unassigned, '
+            "or blocked items. Run triage again after the board changes.</p>"
+        )
+    else:
+        word = "item" if count == 1 else "items"
+        parts.append(f"<h2>{count} {word} need attention</h2>")
+        if dry_run:
+            parts.append(
+                '<p class="pill">Dry run is on. Approve proposes a change first.</p>'
+            )
+        else:
+            parts.append(
+                '<p class="pill">Dry run is off. Approve applies the change.</p>'
+            )
+    for index, finding in enumerate(findings):
+        title = html.escape(str(finding.get("title", "")))
+        kind = html.escape(str(finding.get("kind", "")))
+        detail = html.escape(str(finding.get("detail", "")))
+        fix = html.escape(str(finding.get("fix_label", "")))
+        item_id = html.escape(str(finding.get("item_id", "")))
+        parts.append(
+            '<article class="card">'
+            f"<h3>{title}</h3>"
+            f'<p class="muted">{kind} &middot; item {item_id} &middot; {detail}</p>'
+            f"<p>Proposed fix: {fix}</p>"
+            f'<button hx-post="/api/triage/approve?index={index}" '
+            f'hx-target="#triage-result-{index}" hx-swap="innerHTML">'
+            "Approve</button>"
+            f'<span id="triage-result-{index}" class="result" aria-live="polite">'
+            "</span></article>"
+        )
+    parts.append("</section>")
+    return "\n".join(parts)
+
+
+@app.get("/triage", response_class=HTMLResponse)
+def triage_page(request: Request) -> HTMLResponse:
+    ctx = _context(request, "triage")
+    project = str(ctx["project"])
+    dry_run, _ = _effective_safety()
+    if LAST_TRIAGE.get("project") == project:
+        stored = [dict(entry) for entry in LAST_TRIAGE.get("findings", [])]
+    else:
+        stored = []
+    ctx["triage_html"] = _triage_result_html(stored, dry_run)
+    return templates.TemplateResponse(request, "triage.html", ctx)  # type: ignore[return-value]
+
+
+@app.post("/api/triage/run")
+def triage_run_route(request: Request) -> Any:
+    from pam_pm.rules.templates import triage as triage_mod
+
+    project = _triage_project(request)
+    adapter = get_board_adapter(project)
+    if adapter is None:
+        msg = "The board is not configured yet."
+        hint = "Set ADO_ORG_URL, ADO_PROJECT, and ADO_PAT, then try again."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg, hint))
+        return JSONResponse(
+            {"ok": False, "message": msg, "hint": hint}, status_code=502
+        )
+    roster = [entry["name"] for entry in _roster_entries(project)]
+    backend = _project_backend(project)
+    try:
+        findings = triage_mod.scan_board(adapter, roster=roster)
+        findings.extend(triage_mod.scan_raid(_db_path(), backend, project))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("triage scan failed: %s", exc)
+        msg = "The triage scan could not be read."
+        if "hx-request" in request.headers:
+            return HTMLResponse(
+                _test_result_html(False, msg, "Try again in a moment.")
+            )
+        return JSONResponse({"ok": False, "message": msg}, status_code=502)
+    LAST_TRIAGE["findings"] = findings
+    LAST_TRIAGE["message"] = triage_mod.format_board_triage_message(findings)
+    LAST_TRIAGE["project"] = project
+    dry_run, _ = _effective_safety()
+    if "hx-request" in request.headers:
+        return HTMLResponse(_triage_result_html(findings, dry_run))
+    return {
+        "ok": True,
+        "project": project,
+        "count": len(findings),
+        "findings": findings,
+    }
+
+
+@app.post("/api/triage/approve")
+async def triage_approve_route(request: Request) -> Any:
+    from pam_pm.rules.templates import triage as triage_mod
+
+    project = request.query_params.get("project", "").strip()
+    if not project:
+        project = str(LAST_TRIAGE.get("project", "default"))
+    findings = [dict(entry) for entry in LAST_TRIAGE.get("findings", [])]
+    index = await _retro_index(request)
+    if index is None or index < 0 or index >= len(findings):
+        msg = "Unknown triage item. Run triage first."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg))
+        return JSONResponse({"ok": False, "message": msg}, status_code=404)
+    adapter = get_board_adapter(project)
+    if adapter is None:
+        msg = "The board is not configured yet."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg))
+        return JSONResponse({"ok": False, "message": msg}, status_code=502)
+    dry_run, _ = _effective_safety()
+    writes = WriteService(_db_path(), dry_run=dry_run)
+    result = triage_mod.apply_finding(
+        adapter,
+        findings[index],
+        db=_db_path(),
+        backend=_project_backend(project),
+        project=project,
+        writes=writes,
+        dry_run=dry_run,
+    )
+    if "hx-request" in request.headers:
+        if result.get("applied"):
+            return HTMLResponse(_test_result_html(True, "Applied."))
+        if dry_run and result.get("write_id"):
+            return HTMLResponse(
+                _test_result_html(True, "Proposed. Dry run is on, so nothing changed.")
+            )
+        detail = str(result.get("detail", ""))
+        if detail:
+            return HTMLResponse(_test_result_html(False, detail))
+        return HTMLResponse(
+            _test_result_html(False, "Approve did not work. Try again.")
+        )
+    return {
+        "ok": bool(result.get("applied") or result.get("write_id")),
+        **result,
+    }
 
 
 RAID_KINDS: tuple[tuple[str, str], ...] = (

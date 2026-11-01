@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Triage - Pam{% endblock %}
+{% block content %}
+<h1>Board triage</h1>
+<p class="muted">Pam scans the board for project {{ project }} ({{ project_backend_label }}) once a day and when the board changes. Each finding carries a proposed fix. Approve applies it.</p>
+
+<section class="card">
+  <h2>Run triage</h2>
+  <p class="muted">The scan is plain code and costs nothing. The model runs only when the board changed and a title needs judgment.</p>
+  <form hx-post="/api/triage/run?project={{ project }}" hx-target="#triage-card-wrap" hx-swap="innerHTML">
+    <button type="submit">Run triage now</button>
+  </form>
+</section>
+
+<div id="triage-card-wrap" aria-live="polite">
+{{ triage_html | safe }}
+</div>
+{% endblock %}
