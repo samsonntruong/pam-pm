@@ -43,6 +43,9 @@ Build log for Pam. Three lines per entry.
 | Muse Code | WP7 release ready | README docs scrub, SUBMISSION CONFIRM, VIDEO_SCRIPT, v0.2.0 tag plus release |
 | Muse Code | WP8 wizard secrets | Wizard saves all secrets to data dir, no terminal steps, tests green |
 | Muse Code | WP8 setup token P0 | Late token resolution plus uniform setup guards, 278 pass |
+| Muse Code | Extra UI theme | Dark default with blue accent family, detector clean |
+| Muse Code | Extra adapters batch 1 | Jira plus Linear with wizard cards and icons, 295 pass |
+| Muse Code | Extra adapters batch 2 | Trello plus ClickUp with URL secret redaction, 312 pass |
 
 ## Entries
 
