@@ -185,9 +185,9 @@ if ($DesktopWanted) {
 
 Show-Step "Step 3 of 4: Installing Pam from $InstallSource."
 Write-Output "  Re-running later upgrades Pam in place. Your data is never touched."
-Invoke-Step -Label "Running: uv tool install --python 3.12 --force ""$PamSpec""" -Action {
+Invoke-Step -Label "Running: uv tool install --python 3.12 --force `"$PamSpec`"" -Action {
     & uv tool install --python 3.12 --force $PamSpec
-} -DryText "uv tool install --python 3.12 --force ""$PamSpec"""
+} -DryText "uv tool install --python 3.12 --force `"$PamSpec`""
 
 Invoke-Step -Label "Running: uv tool update-shell" -Action {
     & uv tool update-shell
@@ -225,7 +225,7 @@ function Copy-PamIcon([string]$Dest) {
                 $zip.Dispose()
             }
         } catch {
-            Write-Output "  Logo read from the local archive failed, trying the download."
+            Write-Warning "Logo read from the local archive failed, trying the download."
         }
     }
     $rawRef = $Version
@@ -235,7 +235,7 @@ function Copy-PamIcon([string]$Dest) {
         Invoke-RestMethod -Uri $rawUrl -OutFile $Dest
         return $true
     } catch {
-        Write-Output "  Logo download failed, the shortcut will use the default icon."
+        Write-Warning "Logo download failed, the shortcut will use the default icon."
         return $false
     }
 }
@@ -270,10 +270,17 @@ if ($DesktopWanted) {
 if (-not $NoAutostart) {
     $pamAutostartExe = Get-PamExe
     Invoke-Step -Label "Running: $pamAutostartExe autostart on" -Action {
-        if (Test-Path $pamAutostartExe) {
-            & $pamAutostartExe autostart on
-        } else {
-            Write-Output "  pam not found yet, skipping autostart. Run 'pam autostart on' later."
+        try {
+            if (Test-Path $pamAutostartExe) {
+                & $pamAutostartExe autostart on
+                if (($null -ne $LASTEXITCODE) -and ($LASTEXITCODE -ne 0)) {
+                    Write-Warning "autostart registration failed, continuing install. Run 'pam autostart on' later."
+                }
+            } else {
+                Write-Output "  pam not found yet, skipping autostart. Run 'pam autostart on' later."
+            }
+        } catch {
+            Write-Warning "autostart registration failed, continuing install. Run 'pam autostart on' later."
         }
     } -DryText "$pamAutostartExe autostart on"
 }

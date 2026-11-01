@@ -352,7 +352,9 @@ if [ "$NO_AUTOSTART" -eq 0 ]; then
         echo "  [dry run] $PAM_AUTOSTART_EXE autostart on"
     elif [ -x "$PAM_AUTOSTART_EXE" ]; then
         echo "  Running: $PAM_AUTOSTART_EXE autostart on"
-        "$PAM_AUTOSTART_EXE" autostart on
+        if ! "$PAM_AUTOSTART_EXE" autostart on; then
+            echo "  WARNING: autostart registration failed, continuing install. Run 'pam autostart on' later."
+        fi
     else
         echo "  pam not found yet, skipping autostart. Run 'pam autostart on' later."
     fi
