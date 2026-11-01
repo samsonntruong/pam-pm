@@ -25,9 +25,29 @@ def test_setup_has_seven_steps_and_tests() -> None:
     text = client.get("/setup").text
     for n in range(1, 8):
         assert f"Step {n}" in text
-    assert "/api/test/meta" in text
+    assert "Step 8" not in text
+    headings = [
+        "Step 1: Model provider",
+        "Step 2: Slack",
+        "Step 3: Azure DevOps",
+        "Step 4: People",
+        "Step 5: Rules",
+        "Step 6: Safety",
+        "Step 7: Done",
+    ]
+    positions = []
+    for heading in headings:
+        assert heading in text, heading
+        positions.append(text.index(heading))
+    assert positions == sorted(positions), "wizard order changed"
+    assert "/api/test/provider" in text
     assert "/api/test/slack" in text
     assert "/api/test/ado" in text
+    assert "/api/test/people" in text
+    assert "/api/test/rules" in text
+    assert "/api/test/safety" in text
+    assert "Tell your team" in text
+    assert "ONE internal Slack app once" in text
 
 
 def test_test_endpoints_return_ok_or_plain_error() -> None:

@@ -46,13 +46,17 @@ Open that URL in your browser. The token is required to complete setup.
 
 Each step has a Test button. When all are green, the console lands on the live Board.
 
-1. Meta Model API: paste your key, base URL, and model ID. Test makes a call and shows the model and tier. Keep the Standard tier for real team text; Contributor is for development with fake data only.
+1. Model provider: pick Meta (default, recommended) or Custom OpenAI-compatible. Meta uses META_MODEL, META_BASE_URL, and META_API_KEY from your secrets file. Custom needs a base URL, model name, and API key stored only on this machine. Test checks tool calling, structured output, and image input in plain words. Keep the Standard tier for real team text; Contributor is for development with fake data only.
 2. Slack: the team lead or a workspace admin creates the one internal app once from `slack-app-manifest.yaml` (Socket Mode); everyone else installs nothing. Paste the bot token and app token. Test checks scopes and sends you a DM. Full steps: [slack-setup.md](slack-setup.md).
 3. Azure DevOps: paste the org URL and PAT, then pick project, team, and current iteration from the dropdowns. Test verifies Work Items read and write and detects the Agile or Scrum template. Full steps: [azure-devops-setup.md](azure-devops-setup.md).
 4. Roster: teammates are pulled from ADO and auto-matched to Slack users by email. Fix mismatches, then set time zones and working hours.
 5. Rules: toggle the morning check-in, follow-up on close, and blocker intake templates. Set times, days, and the review channel.
 6. Safety: dry run stays on by default. Set the daily spend cap.
 7. Finish: press "send me a test check-in" and answer it in Slack.
+
+## Provider limits
+
+Meta is the default transport and uses the Responses API. A custom OpenAI-compatible endpoint works for chat, tools, structured output, and image input when the endpoint supports them. SAM 3.1 planning is Meta only: with a custom provider the planner skips segmentation and reads the whole photo as one image. Custom keys are stored only in the local data directory and never appear in logs or wizard progress. This choice is independent of the board backend and works with both the Pam board and Azure DevOps.
 
 ## 4. Verify from the terminal
 

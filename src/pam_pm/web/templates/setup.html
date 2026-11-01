@@ -37,10 +37,36 @@
 </section>
 
 <section class="card" id="step-1">
-  <h2>Step 1: Model</h2>
-  <p>Add META_MODEL, META_BASE_URL, and META_API_KEY to your secrets file, then check the connection.</p>
-  <button hx-post="/api/test/meta?project={{ project }}" hx-target="#meta-result" hx-swap="innerHTML" onclick="saveStep('model')">Check model</button>
+  <h2>Step 1: Model provider</h2>
+  <p>Pick Meta or a custom OpenAI compatible endpoint. This choice works with both the Pam board and Azure DevOps.</p>
+  <div class="backend-cards">
+    <label class="card backend-card">
+      <input type="radio" name="provider" value="meta" {% if provider != "custom" %}checked{% endif %} onchange="toggleProvider(this.value)">
+      <strong>Meta</strong> <span class="pill pill-ok">Recommended</span>
+      <span class="muted">Uses the Meta Responses API. Add META_MODEL, META_BASE_URL, and META_API_KEY to your secrets file.</span>
+    </label>
+    <label class="card backend-card">
+      <input type="radio" name="provider" value="custom" {% if provider == "custom" %}checked{% endif %} onchange="toggleProvider(this.value)">
+      <strong>Custom OpenAI compatible</strong>
+      <span class="muted">Use your own endpoint. The key is stored only on this machine.</span>
+    </label>
+  </div>
+  <div id="custom-fields" {% if provider != "custom" %}hidden{% endif %}>
+    <label for="provider-base-url">Base URL</label>
+    <input id="provider-base-url" name="base_url" type="url" value="{{ provider_base_url }}" placeholder="https://host:8000" autocomplete="off">
+    <label for="provider-model">Model name</label>
+    <input id="provider-model" name="model" type="text" value="{{ provider_model }}" placeholder="model-id" autocomplete="off">
+    <label for="provider-key">API key</label>
+    <input id="provider-key" name="api_key" type="password" value="" placeholder="{% if provider_has_key %}Saved on this machine{% else %}Paste key here{% endif %}" autocomplete="off">
+    {% if provider_has_key %}<p class="muted">A key is saved on this machine. Paste a new one only to replace it.</p>{% endif %}
+  </div>
+  <div>
+    <button type="button" onclick="saveProvider()">Save provider</button>
+    <button hx-post="/api/test/provider?project={{ project }}" hx-target="#meta-result" hx-swap="innerHTML" onclick="saveStep('model')">Test provider</button>
+  </div>
+  <div id="provider-result" class="result" aria-live="polite"></div>
   <div id="meta-result" class="result" aria-live="polite"></div>
+  <p class="muted">The test checks tool calling, structured output, and image input. SAM 3.1 planning is Meta only; a custom provider reads the whole photo instead.</p>
 </section>
 
 <section class="card" id="step-2">
@@ -125,6 +151,52 @@
     const box = document.getElementById("people");
     const value = box ? box.value : "";
     await saveStep("people", {data: {people: value}});
+  }
+  function toggleProvider(value) {
+    const fields = document.getElementById("custom-fields");
+    if (fields) {
+      if (value === "custom") { fields.removeAttribute("hidden"); }
+      else { fields.setAttribute("hidden", ""); }
+    }
+  }
+  async function saveProvider() {
+    const project = projectName();
+    const picked = document.querySelector('input[name="provider"]:checked');
+    const provider = picked ? picked.value : "meta";
+    const baseEl = document.getElementById("provider-base-url");
+    const modelEl = document.getElementById("provider-model");
+    const keyEl = document.getElementById("provider-key");
+    const box = document.getElementById("provider-result");
+    try {
+      const resp = await fetch("/api/setup/provider", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          project: project,
+          provider: provider,
+          base_url: baseEl ? baseEl.value : "",
+          model: modelEl ? modelEl.value : "",
+          api_key: keyEl ? keyEl.value : ""
+        })
+      });
+      const data = await resp.json().catch(function () { return {}; });
+      if (box) {
+        box.innerHTML = "";
+        const pill = document.createElement("span");
+        if (resp.ok && data && data.ok !== false) {
+          pill.className = "pill pill-ok";
+          pill.textContent = "Saved provider choice.";
+        } else {
+          pill.className = "pill pill-fail";
+          pill.textContent = (data && data.message) ? data.message : "Save failed. Check the fields and try again.";
+        }
+        box.appendChild(pill);
+      }
+      if (keyEl) { keyEl.value = ""; }
+      await saveStep("model", {data: {provider: provider}});
+    } catch (err) {
+      if (box) { box.textContent = "Save failed. Check your connection and try again."; }
+    }
   }
   function backendPill(box, cls, text) {
     box.innerHTML = "";

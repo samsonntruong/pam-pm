@@ -24,6 +24,7 @@ from pam_pm.adapters.pm.base import WorkItem, is_closed
 from pam_pm.adapters.pm.sqlite_board import SQLiteBoard
 from pam_pm.agents.lead import synthesize_review
 from pam_pm.agents.planner import approve_proposal, propose_sprint
+from pam_pm.core import provider as provider_mod
 from pam_pm.core import raid as raid_mod
 from pam_pm.core import recovery as recovery_mod
 from pam_pm.core import store as store_mod
@@ -620,6 +621,49 @@ def _check_meta() -> tuple[bool, str, str]:
     )
 
 
+PROVIDER_CLIENT_FACTORY: Any = None
+
+
+def _check_provider() -> tuple[bool, str, str]:
+    try:
+        saved = provider_mod.load_provider(Config().ensure_data_dir())
+    except Exception:  # noqa: BLE001
+        saved = {"provider": "meta"}
+    if provider_mod.normalize_provider(saved.get("provider")) == "meta":
+        return _check_meta()
+    base = str(saved.get("base_url", "") or "").strip()
+    model = str(saved.get("model", "") or "").strip()
+    try:
+        key = provider_mod.load_provider_key(Config().ensure_data_dir())
+    except Exception:  # noqa: BLE001
+        key = ""
+    ok, message, hint = provider_mod.validate_custom_config(base, model, key)
+    if not ok:
+        return ok, message, hint
+    try:
+        if PROVIDER_CLIENT_FACTORY is not None:
+            client = PROVIDER_CLIENT_FACTORY(base, model, key)
+        else:
+            from pam_pm.models.client import ModelClient
+
+            client = ModelClient(model=model, base_url=base, api_key=key)
+        try:
+            return provider_mod.test_with_client(client)
+        finally:
+            close = getattr(client, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:  # noqa: BLE001, S110
+                    pass
+    except Exception as exc:  # noqa: BLE001
+        return (
+            False,
+            "Custom provider check failed. Pam could not reach the endpoint.",
+            f"Check the base URL and key, then test again. Detail: {exc}",
+        )
+
+
 def _check_slack() -> tuple[bool, str, str]:
     if not os.environ.get("SLACK_BOT_TOKEN", "").strip():
         return (
@@ -932,6 +976,10 @@ def setup_page(request: Request, token: str = "") -> HTMLResponse:
     steps = progress.get("steps", {})
     if isinstance(steps, dict) and isinstance(steps.get("people"), dict):
         people_entry = dict(steps["people"])
+    try:
+        saved_provider = provider_mod.load_provider(Config().ensure_data_dir())
+    except Exception:  # noqa: BLE001
+        saved_provider = {"provider": "meta", "base_url": "", "model": "", "has_key": False}
     ctx.update(
         {
             "token": token,
@@ -950,6 +998,10 @@ def setup_page(request: Request, token: str = "") -> HTMLResponse:
             "ado_value": BACKEND_AZURE_DEVOPS,
             "autostart_label": autostart_mod.CHECKBOX_LABEL,
             "autostart_enabled": _autostart_enabled(),
+            "provider": str(saved_provider.get("provider", "meta")),
+            "provider_base_url": str(saved_provider.get("base_url", "") or ""),
+            "provider_model": str(saved_provider.get("model", "") or ""),
+            "provider_has_key": bool(saved_provider.get("has_key", False)),
         }
     )
     return templates.TemplateResponse(request, "setup.html", ctx)  # type: ignore[return-value]
@@ -1542,6 +1594,8 @@ async def test_connection(which: str, request: Request) -> Any:
     project = request.query_params.get("project", "default").strip() or "default"
     if name in ("meta", "model"):
         ok, message, hint = _check_meta()
+    elif name in ("provider", "custom"):
+        ok, message, hint = _check_provider()
     elif name == "slack":
         ok, message, hint = _check_slack()
     elif name == "ado":
@@ -1656,6 +1710,81 @@ async def save_setup_backend(request: Request) -> Any:
     if "hx-request" in request.headers:
         return HTMLResponse(_test_result_html(True, f"Tasks will live on {label}."))
     return {"ok": True, "project": project, "backend": stored, "label": label}
+
+
+@app.post("/api/setup/provider")
+async def save_setup_provider(request: Request) -> Any:
+    project = request.query_params.get("project", "default").strip() or "default"
+    provider = "meta"
+    base_url = ""
+    model = ""
+    api_key = ""
+    ctype = request.headers.get("content-type", "")
+    if "application/json" in ctype:
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = {}
+        if isinstance(payload, dict):
+            project = str(payload.get("project", project)).strip() or "default"
+            provider = str(payload.get("provider", "meta"))
+            base_url = str(payload.get("base_url", "") or "")
+            model = str(payload.get("model", "") or "")
+            api_key = str(payload.get("api_key", "") or "")
+    else:
+        form = await request.form()
+        if "project" in form:
+            project = str(form.get("project", project)).strip() or "default"
+        provider = str(form.get("provider", "meta"))
+        base_url = str(form.get("base_url", "") or "")
+        model = str(form.get("model", "") or "")
+        api_key = str(form.get("api_key", "") or "")
+    canonical = provider_mod.normalize_provider(provider)
+    if canonical == "custom":
+        try:
+            existing_key = provider_mod.load_provider_key(Config().ensure_data_dir())
+        except Exception:  # noqa: BLE001
+            existing_key = ""
+        check_key = api_key.strip() or existing_key
+        ok, message, hint = provider_mod.validate_custom_config(
+            base_url, model, check_key
+        )
+        if not ok:
+            if "hx-request" in request.headers:
+                return HTMLResponse(_test_result_html(False, message, hint))
+            return JSONResponse(
+                {"ok": False, "message": message, "hint": hint}, status_code=400
+            )
+    try:
+        saved = provider_mod.save_provider(
+            Config().ensure_data_dir(), canonical, base_url, model, api_key
+        )
+    except Exception:  # noqa: BLE001
+        msg = "Provider choice could not be saved."
+        hint = "Check the data directory is writable, then save again."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg, hint))
+        return JSONResponse(
+            {"ok": False, "message": msg, "hint": hint}, status_code=500
+        )
+    try:
+        _write_project_step(
+            project,
+            "model",
+            {
+                "provider": saved.get("provider"),
+                "base_url": saved.get("base_url", ""),
+                "model": saved.get("model", ""),
+                "has_key": saved.get("has_key", False),
+            },
+        )
+    except Exception:  # noqa: BLE001, S110
+        pass
+    label = provider_mod.provider_label(canonical)
+    message = f"Provider saved. Pam will use {label}."
+    if "hx-request" in request.headers:
+        return HTMLResponse(_test_result_html(True, message))
+    return {"ok": True, "project": project, "provider": saved}
 
 
 @app.post("/api/rules/toggle")
@@ -1948,7 +2077,17 @@ async def upload_plan_photo(request: Request) -> Any:
             raw = b""
         if isinstance(raw, (bytes, bytearray)):
             data = bytes(raw)
-    photo = plan_from_photo(data if data else b"")
+    try:
+        current_provider = str(
+            provider_mod.load_provider(Config().ensure_data_dir()).get(
+                "provider", "meta"
+            )
+        )
+    except Exception:  # noqa: BLE001
+        current_provider = "meta"
+    photo = plan_from_photo(
+        data if data else b"", provider=current_provider
+    )
     proposal = propose_sprint(photo.get("readings") or photo.get("notes_text", ""))
     LAST_PLAN["readings"] = photo.get("readings", [])
     LAST_PLAN["masks"] = photo.get("masks", [])

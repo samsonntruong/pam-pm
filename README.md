@@ -82,6 +82,7 @@ Listen meetings (beta): capture audio in Chrome or Edge at `/listen`, review fin
 - Board triage: daily scan for stale, unassigned, and blocked items with proposed fixes on one approval card.
 - Mid-sprint adjustment: proposes move out, swap, reassign, or pull from backlog when the sprint is off track, with the effect on the goal. See [docs/mid-sprint.md](docs/mid-sprint.md).
 - Chat add-task: mention Pam with `add a task: ...` to draft one task with owner and estimate; Approve creates it. See [docs/add-task.md](docs/add-task.md).
+- Provider picker: Meta by default plus a custom OpenAI-compatible endpoint, with SAM 3.1 planning Meta only and whole-image fallback otherwise.
 
 ## Rules summary
 

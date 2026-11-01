@@ -39,17 +39,28 @@ class VisionClient:
     and perform no network calls.
     """
 
-    def __init__(self, model_client: Any = None, segmenter: Any = None) -> None:
+    def __init__(
+        self,
+        model_client: Any = None,
+        segmenter: Any = None,
+        provider: str = "meta",
+    ) -> None:
         self.model_client = model_client
         self.segmenter = segmenter
+        self.provider = str(provider or "meta").strip().lower() or "meta"
 
     def segment(self, image: Any) -> list[Any]:
         """Split an image into note crops with SAM 3.1 when possible.
 
         Returns an empty list when SAM is missing or segmentation fails.
+        SAM 3.1 is Meta only, so a non Meta provider always returns an
+        empty list and the caller reads the whole image instead.
         Never raises for a missing or broken SAM install.
         """
         if image is None:
+            return []
+        if self.provider != "meta":
+            logger.info("vision path used: fallback (custom provider, SAM is Meta only)")
             return []
         segmenter = self.segmenter
         if segmenter is None:
@@ -122,15 +133,30 @@ def plan_from_photo(
     image_bytes: bytes | bytearray | None,
     vision: VisionClient | None = None,
     segmenter: Any = None,
+    provider: str = "meta",
 ) -> dict[str, Any]:
     """Read sticky notes from a photo, trying SAM first, then fallback.
 
     Uses SAM 3.1 crops when a segmenter yields crops, else reads the full
-    image with Muse Spark vision. Never crashes on a missing SAM install:
-    any SAM problem logs and falls back. Logs which path was used.
-    Returns readings, masks, path, and notes_text for the planner.
+    image with vision. SAM 3.1 is Meta only: a non Meta provider skips
+    segmentation and reads the whole image. Never crashes on a missing
+    SAM install: any SAM problem logs and falls back. Logs which path
+    was used. Returns readings, masks, path, and notes_text.
     """
-    client = vision or VisionClient()
+    want = str(provider or "meta").strip().lower() or "meta"
+    client = vision or VisionClient(provider=want)
+    if getattr(client, "provider", "meta") != "meta":
+        want = str(getattr(client, "provider", want))
+    if want != "meta":
+        text = client.read_full(image_bytes) if image_bytes else ""
+        readings = [ln.strip() for ln in str(text).splitlines() if ln.strip()]
+        logger.info("vision path used: fallback (custom provider, whole image)")
+        return {
+            "readings": readings,
+            "masks": [],
+            "path": PATH_FALLBACK,
+            "notes_text": "\n".join(readings),
+        }
     if segmenter is not None:
         crops: Sequence[Any] | None = None
         try:
