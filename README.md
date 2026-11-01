@@ -74,6 +74,7 @@ Desktop wrapper (beta): on Windows and macOS, `pam desktop` opens Pam in its own
 - Blocker intake: asks what is blocked, finds or creates the blocking item, links it, asks the owner for an ETA, and notifies the waiting person when it clears.
 - Sprint review and retro: synthesizes per-item status into a review and creates retro actions in ADO tagged `retro-action`.
 - Sticky-note photo to sprint: segments a planning photo, reads each note, proposes a sprint, and creates the items after you press Approve.
+- RAID log: risks, assumptions, issues, and dependencies with propose plus accept, manual add and edit, and CSV plus Markdown export.
 - Kickoff from a document: paste a brief or upload a file, review owner suggestions with reasons on one approval card, and create the items after you press Approve.
 
 ## Rules summary

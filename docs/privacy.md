@@ -25,3 +25,7 @@ Private by default. The team talks to Pam in Slack; the lead sees outcomes, not 
 - Per-day spend cap with a hard stop.
 
 To report a vulnerability, see [SECURITY.md](../SECURITY.md).
+
+## RAID logs
+
+RAID entries carry the same evidence quote rules as board writes. Lead views show full quotes. Shared exports replace quotes with Lead only. Kickoff assumption proposals are logged with their source line as evidence.

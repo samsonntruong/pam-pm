@@ -24,6 +24,7 @@ from pam_pm.adapters.pm.base import WorkItem, is_closed
 from pam_pm.adapters.pm.sqlite_board import SQLiteBoard
 from pam_pm.agents.lead import synthesize_review
 from pam_pm.agents.planner import approve_proposal, propose_sprint
+from pam_pm.core import raid as raid_mod
 from pam_pm.core import recovery as recovery_mod
 from pam_pm.core import store as store_mod
 from pam_pm.core.config import (
@@ -34,6 +35,7 @@ from pam_pm.core.config import (
     normalize_backend,
 )
 from pam_pm.core.cost import CALLS_TABLE_DDL
+from pam_pm.core.writes import WriteService
 from pam_pm.models.vision import plan_from_photo
 
 logger = logging.getLogger(__name__)
@@ -299,8 +301,21 @@ def _sample_interviews() -> dict[str, dict[str, Any]]:
     }
 
 
-def _run_review_now() -> dict[str, Any]:
-    result = synthesize_review(SAMPLE_ITEMS, _sample_interviews(), bus.history())
+def _run_review_now(project: str = "default") -> dict[str, Any]:
+    try:
+        raid_backend = _project_backend(project)
+        raid_db: Any = _db_path()
+    except Exception:  # noqa: BLE001
+        raid_backend = BACKEND_AZURE_DEVOPS
+        raid_db = None
+    result = synthesize_review(
+        SAMPLE_ITEMS,
+        _sample_interviews(),
+        bus.history(),
+        raid_db=raid_db,
+        raid_backend=raid_backend,
+        raid_project=project,
+    )
     LAST_REVIEW["markdown"] = result["review_markdown"]
     LAST_REVIEW["retro_actions"] = result["retro_actions"]
     LAST_REVIEW["low_confidence"] = result["low_confidence"]
@@ -1708,6 +1723,10 @@ def undo_event(write_id: int, request: Request) -> Any:
         updated = store_mod.undo_write(Config().db_path(), write_id)
     except Exception:  # noqa: BLE001
         updated = False
+    try:
+        raid_mod.on_write_undone(_db_path(), write_id)
+    except Exception:  # noqa: BLE001, S110
+        pass
     undone = bool(updated or bus.mark_undone(write_id))
     if "hx-request" in request.headers:
         if undone:
@@ -2193,10 +2212,19 @@ async def board_edit_item(request: Request, item_id: str) -> Any:
     event = _record_board_write(
         project, "update", item_id, evidence, {"fields": sorted(fields)}
     )
+    raid_closed: list[dict[str, Any]] = []
+    try:
+        if is_closed(str(item.state)):
+            raid_closed = raid_mod.close_issues_for_board_item(
+                _db_path(), _project_backend(project), project, item_id
+            )
+    except Exception:  # noqa: BLE001
+        raid_closed = []
     return {
         "ok": True,
         "item": _serialize_item(item, _iteration_names(adapter)),
         "write_id": event["id"],
+        "raid_closed": len(raid_closed),
     }
 
 
@@ -2250,10 +2278,19 @@ async def board_move_item(request: Request, item_id: str) -> Any:
         evidence,
         {"from": str(before.state), "to": state},
     )
+    raid_closed: list[dict[str, Any]] = []
+    try:
+        if is_closed(str(item.state)):
+            raid_closed = raid_mod.close_issues_for_board_item(
+                _db_path(), _project_backend(project), project, item_id
+            )
+    except Exception:  # noqa: BLE001
+        raid_closed = []
     return {
         "ok": True,
         "item": _serialize_item(item, _iteration_names(adapter)),
         "write_id": event["id"],
+        "raid_closed": len(raid_closed),
     }
 
 
@@ -2298,6 +2335,32 @@ async def board_add_link(request: Request) -> Any:
         evidence,
         {"source_id": source_id, "target_id": target_id, "rel": rel},
     )
+    raid_external_id = ""
+    try:
+        writes = WriteService(_db_path())
+        dep = raid_mod.propose_dependency_from_link(
+            _db_path(),
+            _project_backend(project),
+            project,
+            source_id,
+            target_id,
+            evidence_quote=evidence,
+            writes=writes,
+        )
+        raid_external_id = str(dep.get("external_id", ""))
+        if dep.get("write_id"):
+            bus.publish(
+                {
+                    "id": int(dep["write_id"]),
+                    "operation": "raid_propose_dependency",
+                    "item_id": raid_external_id,
+                    "evidence_quote": evidence[:500],
+                    "status": "proposed",
+                    "detail": f"Dependency proposed: {source_id} blocks {target_id}.",
+                }
+            )
+    except Exception:  # noqa: BLE001
+        raid_external_id = ""
     return {
         "ok": True,
         "link": {
@@ -2309,6 +2372,7 @@ async def board_add_link(request: Request) -> Any:
             ),
         },
         "write_id": event["id"],
+        "raid_external_id": raid_external_id,
     }
 
 
@@ -2627,17 +2691,31 @@ LAST_KICKOFF: dict[str, Any] = {
     "approved": [],
     "flagged": [],
     "external_id": "",
+    "assumptions_count": 0,
 }
 
 
 def _kickoff_result_html(
-    items: list[dict[str, Any]], has_history: bool, roster: list[dict[str, Any]]
+    items: list[dict[str, Any]],
+    has_history: bool,
+    roster: list[dict[str, Any]],
+    assumptions_count: int = 0,
 ) -> str:
     parts: list[str] = []
     if not has_history:
         parts.append(
             '<p class="pill">No board history yet. '
             "Owners use names in the brief plus load balancing.</p>"
+        )
+    try:
+        assumed = int(assumptions_count or 0)
+    except (TypeError, ValueError):
+        assumed = 0
+    if assumed > 0:
+        word = "assumption" if assumed == 1 else "assumptions"
+        parts.append(
+            f'<p class="pill">{assumed} {word} proposed to the RAID log. '
+            'Review them on the <a href="/raid">RAID page</a>.</p>'
         )
     parts.append('<section class="card"><h2>Approval card</h2>')
     if not items:
@@ -2716,6 +2794,7 @@ def kickoff_page(request: Request) -> HTMLResponse:
         ctx["kickoff_html"] = _kickoff_result_html(
             proposal, LAST_KICKOFF.get("has_history", False),
             _roster_entries(project),
+            LAST_KICKOFF.get("assumptions_count", 0),
         )
     else:
         ctx["kickoff_html"] = ""
@@ -2749,11 +2828,35 @@ async def propose_kickoff_route(request: Request) -> Any:
     else:
         result = propose_kickoff(text, roster, adapter)
     items = result.get("items", [])
+    proposed_assumptions: list[dict[str, Any]] = []
+    try:
+        writes = WriteService(_db_path())
+        proposed_assumptions = raid_mod.propose_assumptions_from_text(
+            _db_path(), backend, project, text, writes=writes,
+        )
+    except Exception:  # noqa: BLE001
+        proposed_assumptions = []
+    for entry in proposed_assumptions:
+        try:
+            if entry.get("write_id"):
+                bus.publish(
+                    {
+                        "id": int(entry["write_id"]),
+                        "operation": "raid_propose_assumption",
+                        "item_id": str(entry.get("external_id", "")),
+                        "evidence_quote": str(entry.get("evidence_quote", ""))[:500],
+                        "status": "proposed",
+                        "detail": f"Assumption proposed: {str(entry.get('title', ''))[:200]}",
+                    }
+                )
+        except Exception:  # noqa: BLE001, S110
+            pass
     external_id = f"console-{len(text)}-{len(items)}"
     LAST_KICKOFF["proposal"] = items
     LAST_KICKOFF["has_history"] = result.get("has_history", False)
     LAST_KICKOFF["approved"] = []
     LAST_KICKOFF["external_id"] = external_id
+    LAST_KICKOFF["assumptions_count"] = len(proposed_assumptions)
     try:
         store_mod.save_kickoff_proposal(
             _db_path(), backend, external_id, project,
@@ -2763,9 +2866,18 @@ async def propose_kickoff_route(request: Request) -> Any:
         pass
     if "hx-request" in request.headers:
         return HTMLResponse(_kickoff_result_html(
-            items, result.get("has_history", False), roster
+            items, result.get("has_history", False), roster,
+            len(proposed_assumptions),
         ))
-    return {"ok": True, "items": items, "has_history": result.get("has_history", False)}
+    return {
+        "ok": True,
+        "items": items,
+        "has_history": result.get("has_history", False),
+        "assumptions_count": len(proposed_assumptions),
+        "assumptions": [
+            str(entry.get("external_id", "")) for entry in proposed_assumptions
+        ],
+    }
 
 
 @app.post("/api/kickoff/approve")
@@ -2852,3 +2964,290 @@ async def kickoff_owner_response(request: Request) -> Any:
             flagged.append(item_id)
         LAST_KICKOFF["flagged"] = flagged
     return {"ok": True, **result}
+
+
+RAID_KINDS: tuple[tuple[str, str], ...] = (
+    ("risk", "Risks"),
+    ("assumption", "Assumptions"),
+    ("issue", "Issues"),
+    ("dependency", "Dependencies"),
+)
+
+
+def _raid_project(request: Request) -> str:
+    return _safe_project(request.query_params.get("project", "default"))
+
+
+def _record_raid_write(
+    project: str,
+    operation: str,
+    item_id: str,
+    evidence: str,
+    detail_text: str = "",
+) -> dict[str, Any]:
+    detail = {"actor": "human", "project": project}
+    if detail_text:
+        detail["detail"] = detail_text
+    try:
+        write_id = store_mod.insert_write(
+            _db_path(),
+            {
+                "operation": operation,
+                "item_id": str(item_id),
+                "evidence_quote": evidence,
+                "status": "applied",
+                "detail": json.dumps(detail),
+            },
+        )
+    except Exception:  # noqa: BLE001
+        past = bus.history()
+        write_id = int(past[-1].get("id", 0)) + 1 if past else 1
+    event = {
+        "id": write_id,
+        "operation": operation,
+        "item_id": str(item_id),
+        "evidence_quote": evidence,
+        "status": "applied",
+        "detail": json.dumps(detail),
+    }
+    bus.publish(event)
+    logger.info("raid write: %s %s on %s", operation, item_id, project)
+    return event
+
+
+def _raid_linked_ids(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    text = str(value or "").replace(",", " ").replace(";", " ")
+    return [part for part in (p.strip() for p in text.split()) if part]
+
+
+@app.get("/raid", response_class=HTMLResponse)
+def raid_page(request: Request) -> HTMLResponse:
+    ctx = _context(request, "raid")
+    project = str(ctx["project"])
+    backend = _project_backend(project)
+    try:
+        items = raid_mod.list_items(_db_path(), backend, project=project)
+    except Exception:  # noqa: BLE001
+        items = []
+    grouped = [
+        {
+            "key": key,
+            "title": title,
+            "cards": [entry for entry in items if entry["kind"] == key],
+        }
+        for key, title in RAID_KINDS
+    ]
+    ctx["groups"] = grouped
+    ctx["raid_error"] = ""
+    ctx["kinds"] = [key for key, _ in RAID_KINDS]
+    ctx["statuses"] = list(raid_mod.STATUSES)
+    ctx["severities"] = list(raid_mod.SEVERITIES)
+    return templates.TemplateResponse(request, "raid.html", ctx)  # type: ignore[return-value]
+
+
+@app.get("/api/raid")
+def raid_list(request: Request) -> Any:
+    project = _raid_project(request)
+    backend = _project_backend(project)
+    kind = request.query_params.get("kind", "").strip() or None
+    status = request.query_params.get("status", "").strip() or None
+    try:
+        items = raid_mod.list_items(
+            _db_path(), backend, project=project, kind=kind, status=status
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("raid list failed: %s", exc)
+        return JSONResponse(
+            {"ok": False, "message": "The RAID log could not be loaded."},
+            status_code=502,
+        )
+    return {"ok": True, "project": project, "items": items}
+
+
+@app.post("/api/raid")
+async def raid_create(request: Request) -> Any:
+    project = _raid_project(request)
+    backend = _project_backend(project)
+    payload = await _board_payload(request)
+    title = str(payload.get("title", "")).strip()
+    if not title:
+        return JSONResponse(
+            {"ok": False, "message": "Title is required."}, status_code=400
+        )
+    kind = raid_mod.normalize_kind(payload.get("kind", "risk"))
+    try:
+        item = raid_mod.save_item(
+            _db_path(),
+            backend,
+            raid_mod.new_external_id(kind),
+            project=project,
+            kind=kind,
+            title=title,
+            owner=str(payload.get("owner", "")).strip(),
+            severity=str(payload.get("severity", "medium")),
+            status="open",
+            due_date=str(payload.get("due_date", "")).strip(),
+            linked_ids=_raid_linked_ids(payload.get("linked_ids", "")),
+            evidence_quote=str(payload.get("evidence_quote", "")).strip(),
+            evidence_date=str(payload.get("evidence_date", "")).strip(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _board_error_response(exc)
+    event = _record_raid_write(
+        project, "raid_create", str(item["external_id"]),
+        str(item["evidence_quote"] or title)[:500],
+        f"RAID {kind} added: {title[:200]}",
+    )
+    return {"ok": True, "item": item, "write_id": event["id"]}
+
+
+@app.patch("/api/raid/{external_id}")
+async def raid_edit(request: Request, external_id: str) -> Any:
+    project = _raid_project(request)
+    backend = _project_backend(project)
+    payload = await _board_payload(request)
+    fields: dict[str, Any] = {}
+    for key in (
+        "title", "owner", "severity", "status", "due_date",
+        "evidence_quote", "evidence_date", "kind", "project",
+    ):
+        if key in payload and payload[key] is not None:
+            fields[key] = payload[key]
+    if "linked_ids" in payload and payload["linked_ids"] is not None:
+        fields["linked_ids"] = _raid_linked_ids(payload["linked_ids"])
+    if not fields:
+        return JSONResponse(
+            {"ok": False, "message": "Nothing changed."}, status_code=400
+        )
+    updated = raid_mod.update_item(db=_db_path(), backend=backend,
+                                   external_id=external_id, fields=fields)
+    if updated is None:
+        return JSONResponse(
+            {"ok": False, "message": f"Entry {external_id} was not found."},
+            status_code=404,
+        )
+    event = _record_raid_write(
+        project, "raid_update", external_id,
+        str(updated["evidence_quote"] or updated["title"])[:500],
+        f"RAID {updated['kind']} updated: {str(updated['title'])[:200]}",
+    )
+    return {"ok": True, "item": updated, "write_id": event["id"]}
+
+
+@app.post("/api/raid/{external_id}/accept")
+def raid_accept(request: Request, external_id: str) -> Any:
+    project = _raid_project(request)
+    backend = _project_backend(project)
+    current = raid_mod.get_item(_db_path(), backend, external_id)
+    if current is None:
+        return JSONResponse(
+            {"ok": False, "message": f"Entry {external_id} was not found."},
+            status_code=404,
+        )
+    if current["status"] != "proposed":
+        return JSONResponse(
+            {"ok": False, "message": "Only proposed entries can be accepted."},
+            status_code=400,
+        )
+    updated = raid_mod.update_item(
+        _db_path(), backend, external_id, {"status": "open"}
+    )
+    if updated is None:
+        return JSONResponse(
+            {"ok": False, "message": f"Entry {external_id} was not found."},
+            status_code=404,
+        )
+    if current.get("write_id"):
+        try:
+            store_mod.set_write_status(_db_path(), int(current["write_id"]), "applied")
+        except Exception:  # noqa: BLE001, S110
+            pass
+    event = _record_raid_write(
+        project, "raid_accept", external_id,
+        str(updated["evidence_quote"] or updated["title"])[:500],
+        f"RAID {updated['kind']} accepted: {str(updated['title'])[:200]}",
+    )
+    return {"ok": True, "item": updated, "write_id": event["id"]}
+
+
+@app.post("/api/raid/{external_id}/close")
+def raid_close(request: Request, external_id: str) -> Any:
+    project = _raid_project(request)
+    backend = _project_backend(project)
+    current = raid_mod.get_item(_db_path(), backend, external_id)
+    if current is None:
+        return JSONResponse(
+            {"ok": False, "message": f"Entry {external_id} was not found."},
+            status_code=404,
+        )
+    if current["status"] == "closed":
+        return JSONResponse(
+            {"ok": False, "message": "That entry is already closed."},
+            status_code=400,
+        )
+    updated = raid_mod.update_item(
+        _db_path(), backend, external_id, {"status": "closed"}
+    )
+    if updated is None:
+        return JSONResponse(
+            {"ok": False, "message": f"Entry {external_id} was not found."},
+            status_code=404,
+        )
+    event = _record_raid_write(
+        project, "raid_close", external_id,
+        str(updated["evidence_quote"] or updated["title"])[:500],
+        f"RAID {updated['kind']} closed: {str(updated['title'])[:200]}",
+    )
+    return {"ok": True, "item": updated, "write_id": event["id"]}
+
+
+@app.delete("/api/raid/{external_id}")
+def raid_delete(request: Request, external_id: str) -> Any:
+    project = _raid_project(request)
+    backend = _project_backend(project)
+    current = raid_mod.get_item(_db_path(), backend, external_id)
+    if current is None:
+        return JSONResponse(
+            {"ok": False, "message": f"Entry {external_id} was not found."},
+            status_code=404,
+        )
+    ok = raid_mod.delete_item(_db_path(), backend, external_id)
+    if not ok:
+        return JSONResponse(
+            {"ok": False, "message": f"Entry {external_id} was not found."},
+            status_code=404,
+        )
+    event = _record_raid_write(
+        project, "raid_delete", external_id,
+        str(current["evidence_quote"] or current["title"])[:500],
+        f"RAID {current['kind']} deleted: {str(current['title'])[:200]}",
+    )
+    return {"ok": True, "write_id": event["id"]}
+
+
+@app.get("/api/raid/export")
+def raid_export(request: Request) -> Any:
+    project = _raid_project(request)
+    backend = _project_backend(project)
+    fmt = request.query_params.get("format", "csv").strip().lower()
+    try:
+        items = raid_mod.list_items(_db_path(), backend, project=project)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("raid export failed: %s", exc)
+        return JSONResponse(
+            {"ok": False, "message": "The RAID log could not be loaded."},
+            status_code=502,
+        )
+    if fmt in ("md", "markdown"):
+        body = raid_mod.export_markdown(items, for_lead=True)
+        return Response(
+            body, media_type="text/markdown",
+            headers={"Content-Disposition": f'attachment; filename="raid-{project}.md"'},
+        )
+    body = raid_mod.export_csv(items, for_lead=True)
+    return Response(
+        body, media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="raid-{project}.csv"'},
+    )

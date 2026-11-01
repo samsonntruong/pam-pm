@@ -1,0 +1,240 @@
+{% extends "base.html" %}
+{% block title %}RAID - Pam{% endblock %}
+{% block content %}
+<h1>RAID log</h1>
+<p class="muted">Risks, assumptions, issues, and dependencies for project {{ project }} ({{ project_backend_label }}). Pam proposes entries and you accept them. Manual add and edit always work.</p>
+
+<div class="board-toolbar" role="toolbar" aria-label="RAID tools">
+  <div class="view-tabs" role="tablist" aria-label="RAID kinds">
+    {% for group in groups %}
+    <button type="button" role="tab" id="tab-{{ group.key }}" aria-selected="{% if loop.first %}true{% else %}false{% endif %}" aria-controls="view-{{ group.key }}" data-view="view-{{ group.key }}" class="{% if loop.first %}tab-active{% endif %}">{{ group.title }} ({{ group.cards|length }})</button>
+    {% endfor %}
+  </div>
+  <div class="board-actions">
+    <button type="button" id="new-raid-btn">New entry</button>
+    <a class="btn" href="/api/raid/export?project={{ project }}&format=csv">Export CSV</a>
+    <a class="btn" href="/api/raid/export?project={{ project }}&format=md">Export Markdown</a>
+    <span id="raid-status" class="pill" role="status">Ready</span>
+  </div>
+</div>
+
+<div id="raid-error" class="result" aria-live="polite">{% if raid_error %}<span class="pill pill-fail">{{ raid_error }}</span>{% endif %}</div>
+
+<section class="card" id="new-raid-panel" hidden>
+  <h2>New entry</h2>
+  <form id="new-raid-form">
+    <div class="form-grid">
+      <label>Kind
+        <select name="kind">
+          {% for key in kinds %}<option value="{{ key }}">{{ key }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Title <input type="text" name="title" required maxlength="200" autocomplete="off"></label>
+      <label>Owner <input type="text" name="owner" autocomplete="off"></label>
+      <label>Severity
+        <select name="severity">
+          {% for sev in severities %}<option value="{{ sev }}">{{ sev }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Due date <input type="date" name="due_date"></label>
+      <label>Linked item ids <input type="text" name="linked_ids" autocomplete="off" placeholder="101 102"></label>
+    </div>
+    <label>Evidence note <textarea name="evidence_quote" rows="2" placeholder="The exact words behind this entry"></textarea></label>
+    <div class="form-actions">
+      <button type="submit">Save entry</button>
+      <button type="button" id="new-raid-cancel">Cancel</button>
+    </div>
+    <div class="result" id="new-raid-result" aria-live="polite"></div>
+  </form>
+</section>
+
+{% for group in groups %}
+<div id="view-{{ group.key }}" role="tabpanel" aria-labelledby="tab-{{ group.key }}" {% if not loop.first %}hidden{% endif %} data-project="{{ project }}">
+  {% for entry in group.cards %}
+  <article class="card event" data-id="{{ entry.external_id }}">
+    <h2>{{ entry.title }}</h2>
+    <p class="muted">{{ entry.kind }} &middot; {{ entry.status }} &middot; {{ entry.severity }}{% if entry.owner %} &middot; {{ entry.owner }}{% endif %}{% if entry.due_date %} &middot; due {{ entry.due_date }}{% endif %}</p>
+    {% if entry.evidence_quote %}<blockquote class="evidence">{{ entry.evidence_quote }}</blockquote>{% endif %}
+    {% if entry.linked_ids %}<p class="muted">Linked: {{ entry.linked_ids | join(", ") }}</p>{% endif %}
+    <div class="card-actions">
+      {% if entry.status == "proposed" %}
+      <button type="button" data-accept="{{ entry.external_id }}">Accept</button>
+      {% endif %}
+      {% if entry.status != "closed" %}
+      <button type="button" data-close="{{ entry.external_id }}">Close</button>
+      {% endif %}
+      <button type="button" data-delete="{{ entry.external_id }}">Delete</button>
+    </div>
+    <details class="move-menu">
+      <summary>Edit</summary>
+      <form data-edit-form="{{ entry.external_id }}" class="inline-form">
+        <label>Title <input type="text" name="title" value="{{ entry.title }}" maxlength="200"></label>
+        <label>Owner <input type="text" name="owner" value="{{ entry.owner }}"></label>
+        <label>Severity
+          <select name="severity">
+            {% for sev in severities %}<option value="{{ sev }}"{% if sev == entry.severity %} selected{% endif %}>{{ sev }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Status
+          <select name="status">
+            {% for st in statuses %}<option value="{{ st }}"{% if st == entry.status %} selected{% endif %}>{{ st }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Due date <input type="date" name="due_date" value="{{ entry.due_date }}"></label>
+        <label>Linked <input type="text" name="linked_ids" value="{{ entry.linked_ids | join(' ') }}"></label>
+        <label>Evidence <input type="text" name="evidence_quote" value="{{ entry.evidence_quote }}"></label>
+        <button type="submit">Save</button>
+      </form>
+    </details>
+    <div class="result" id="raid-result-{{ entry.external_id }}" aria-live="polite"></div>
+  </article>
+  {% else %}
+  <section class="card">
+    <p class="muted">No {{ group.key }}s yet. Choose New entry to add one.</p>
+  </section>
+  {% endfor %}
+</div>
+{% endfor %}
+{% endblock %}
+{% block scripts %}
+<script>
+(function () {
+  var project = "{{ project }}";
+  var status = document.getElementById("raid-status");
+  function setStatus(text) {
+    if (status) status.textContent = text;
+  }
+  function showResult(id, ok, text) {
+    var box = document.getElementById(id);
+    if (!box) return;
+    box.innerHTML = "";
+    var pill = document.createElement("span");
+    pill.className = ok ? "pill pill-ok" : "pill pill-fail";
+    pill.textContent = text;
+    box.appendChild(pill);
+  }
+  function setBusy(btn, busy) {
+    if (!btn) return;
+    if (busy) {
+      if (btn.dataset.orig === undefined) btn.dataset.orig = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "Working...";
+    } else {
+      btn.disabled = false;
+      if (btn.dataset.orig !== undefined) btn.textContent = btn.dataset.orig;
+    }
+  }
+  var tabs = document.querySelectorAll('[role="tab"]');
+  tabs.forEach(function (tab) {
+    tab.addEventListener("click", function () {
+      tabs.forEach(function (other) {
+        other.classList.remove("tab-active");
+        other.setAttribute("aria-selected", "false");
+        var panel = document.getElementById(other.dataset.view);
+        if (panel) panel.hidden = true;
+      });
+      tab.classList.add("tab-active");
+      tab.setAttribute("aria-selected", "true");
+      var active = document.getElementById(tab.dataset.view);
+      if (active) active.hidden = false;
+    });
+  });
+  var panel = document.getElementById("new-raid-panel");
+  var openBtn = document.getElementById("new-raid-btn");
+  var cancelBtn = document.getElementById("new-raid-cancel");
+  if (openBtn && panel) openBtn.addEventListener("click", function () { panel.hidden = false; });
+  if (cancelBtn && panel) cancelBtn.addEventListener("click", function () { panel.hidden = true; });
+  var form = document.getElementById("new-raid-form");
+  if (form) {
+    form.addEventListener("submit", function (evt) {
+      evt.preventDefault();
+      var btn = form.querySelector('button[type="submit"]');
+      setBusy(btn, true);
+      setStatus("Saving");
+      var data = {};
+      new FormData(form).forEach(function (value, key) { data[key] = value; });
+      fetch("/api/raid?project=" + encodeURIComponent(project), {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(data)
+      }).then(function (resp) { return resp.json(); }).then(function (payload) {
+        if (payload && payload.ok) {
+          showResult("new-raid-result", true, "Saved. Reloading the list.");
+          window.location.reload();
+        } else {
+          showResult("new-raid-result", false, (payload && payload.message) || "Save did not work. Try again.");
+        }
+      }).catch(function () {
+        showResult("new-raid-result", false, "Save did not work. Check your connection and try again.");
+      }).finally(function () {
+        setBusy(btn, false);
+        setStatus("Ready");
+      });
+    });
+  }
+  document.querySelectorAll("[data-edit-form]").forEach(function (editForm) {
+    editForm.addEventListener("submit", function (evt) {
+      evt.preventDefault();
+      var id = editForm.getAttribute("data-edit-form");
+      var btn = editForm.querySelector('button[type="submit"]');
+      setBusy(btn, true);
+      var data = {};
+      new FormData(editForm).forEach(function (value, key) { data[key] = value; });
+      fetch("/api/raid/" + encodeURIComponent(id) + "?project=" + encodeURIComponent(project), {
+        method: "PATCH",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(data)
+      }).then(function (resp) { return resp.json(); }).then(function (payload) {
+        if (payload && payload.ok) {
+          showResult("raid-result-" + id, true, "Saved. Reloading the list.");
+          window.location.reload();
+        } else {
+          showResult("raid-result-" + id, false, (payload && payload.message) || "Save did not work. Try again.");
+        }
+      }).catch(function () {
+        showResult("raid-result-" + id, false, "Save did not work. Check your connection and try again.");
+      }).finally(function () { setBusy(btn, false); });
+    });
+  });
+  function postAction(id, action, label) {
+    var btn = document.querySelector('[data-' + action + '="' + id + '"]');
+    setBusy(btn, true);
+    fetch("/api/raid/" + encodeURIComponent(id) + "/" + action + "?project=" + encodeURIComponent(project), {method: "POST"})
+      .then(function (resp) { return resp.json(); }).then(function (payload) {
+        if (payload && payload.ok) {
+          showResult("raid-result-" + id, true, label + ". Reloading the list.");
+          window.location.reload();
+        } else {
+          showResult("raid-result-" + id, false, (payload && payload.message) || label + " did not work. Try again.");
+        }
+      }).catch(function () {
+        showResult("raid-result-" + id, false, label + " did not work. Check your connection and try again.");
+      }).finally(function () { setBusy(btn, false); });
+  }
+  document.querySelectorAll("[data-accept]").forEach(function (btn) {
+    btn.addEventListener("click", function () { postAction(btn.getAttribute("data-accept"), "accept", "Accepted"); });
+  });
+  document.querySelectorAll("[data-close]").forEach(function (btn) {
+    btn.addEventListener("click", function () { postAction(btn.getAttribute("data-close"), "close", "Closed"); });
+  });
+  document.querySelectorAll("[data-delete]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var id = btn.getAttribute("data-delete");
+      if (!window.confirm("Delete this RAID entry? This cannot be undone.")) return;
+      setBusy(btn, true);
+      fetch("/api/raid/" + encodeURIComponent(id) + "?project=" + encodeURIComponent(project), {method: "DELETE"})
+        .then(function (resp) { return resp.json(); }).then(function (payload) {
+          if (payload && payload.ok) {
+            showResult("raid-result-" + id, true, "Deleted. Reloading the list.");
+            window.location.reload();
+          } else {
+            showResult("raid-result-" + id, false, (payload && payload.message) || "Delete did not work. Try again.");
+          }
+        }).catch(function () {
+          showResult("raid-result-" + id, false, "Delete did not work. Check your connection and try again.");
+        }).finally(function () { setBusy(btn, false); });
+    });
+  });
+})();
+</script>
+{% endblock %}

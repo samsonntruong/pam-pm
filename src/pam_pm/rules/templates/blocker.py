@@ -188,6 +188,8 @@ def blocker_intake(
     blocking_owner: str | None = None,
     blocking_title: str | None = None,
     model: Any = None,
+    project: str = "default",
+    backend: str = "azure_devops",
 ) -> dict[str, Any]:
     """Run blocker intake and return the linked items and evidence."""
     _ = model
@@ -299,6 +301,20 @@ def blocker_intake(
         impact=impact or None,
         evidence_quote=evidence[:500],
     )
+    raid_issue: dict[str, Any] | None = None
+    if db is not None:
+        try:
+            from pam_pm.core import raid as raid_mod
+
+            raid_issue = raid_mod.propose_issue_from_blocker(
+                db,
+                str(backend or "azure_devops"),
+                str(project or "default"),
+                info,
+                writes=service,
+            )
+        except Exception:  # noqa: BLE001
+            raid_issue = None
     return {
         "info": info,
         "blocked_item": blocked,
@@ -306,6 +322,7 @@ def blocker_intake(
         "link": link,
         "evidence_quote": evidence,
         "eta_dm": eta_dm,
+        "raid_issue": raid_issue,
     }
 
 
@@ -314,6 +331,10 @@ def on_blocker_closed(
     waiter: str,
     chat: Any,
     board: Any | None = None,
+    *,
+    db: Any = None,
+    backend: str = "azure_devops",
+    project: str = "default",
 ) -> str | None:
     """Notify the waiter when the blocking item is closed. Else None."""
     resolved = blocking_item
@@ -324,6 +345,18 @@ def on_blocker_closed(
             return None
     if not is_closed(_item_state(resolved)):
         return None
+    if db is not None:
+        try:
+            from pam_pm.core import raid as raid_mod
+
+            raid_mod.close_issues_for_board_item(
+                db,
+                str(backend or "azure_devops"),
+                str(project or "default"),
+                _item_id(resolved),
+            )
+        except Exception:  # noqa: BLE001, S110
+            pass
     title = _item_title(resolved)
     try:
         return str(
@@ -336,10 +369,14 @@ def on_blocker_closed(
 
 
 def notify_waiter(
-    blocking_item: Any, waiter: str, chat: Any, board: Any | None = None
+    blocking_item: Any,
+    waiter: str,
+    chat: Any,
+    board: Any | None = None,
+    **kwargs: Any,
 ) -> str | None:
     """Alias for on_blocker_closed."""
-    return on_blocker_closed(blocking_item, waiter, chat, board)
+    return on_blocker_closed(blocking_item, waiter, chat, board, **kwargs)
 
 
 def run_blocker_intake(*args: Any, **kwargs: Any) -> dict[str, Any]:

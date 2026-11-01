@@ -407,3 +407,30 @@ Three P1 findings stay open, each with a reason above: setup step
 progress map, board inert card stops, board close sprint confirm.
 Every other P0 and P1 from the before pass is fixed or re-scored to
 P2 on the evidence that the worst user harm is gone.
+
+## 8. RAID
+
+Critique: 5/40 Critical before (no surface), 24/40 Acceptable after.
+
+| # | Heuristic | Before | After | Note |
+|---|---|---|---|---|
+| 1 | Visibility of System Status | 0 | 3 | Ready/Saving pill plus per-card result pills |
+| 2 | Match System / Real World | 1 | 3 | Plain RAID language with counts on tabs |
+| 3 | User Control and Freedom | 1 | 3 | Add, edit, accept, close, delete all reversible except delete with confirm |
+| 4 | Consistency and Standards | 1 | 3 | Card stack and toolbar match the board |
+| 5 | Error Prevention | 0 | 3 | Required title, confirm on delete, explicit Save |
+| 6 | Recognition Rather Than Recall | 0 | 3 | All four kinds visible with counts |
+| 7 | Flexibility and Efficiency | 0 | 1 | One entry at a time, no bulk |
+| 8 | Aesthetic and Minimalist Design | 1 | 2 | Clean cards, edit forms add bulk |
+| 9 | Error Recovery | 0 | 2 | Result pills with retry hints |
+| 10 | Help and Documentation | 1 | 1 | One explainer line only |
+| **Total** | | **5/40** | **24/40** | **Acceptable** |
+
+Audit: 6/20 Poor before, 15/20 Good after. Accessibility 1 to 3 (labels, tablist, live regions). Theming 1 to 3 (shared toggle). Responsive 2 to 3 (cards stack). Implementation integrity 0 to 3 (one coherent surface).
+
+Findings fixed:
+
+- [P0, fixed] RAID surface did not exist. `/raid` now holds four tabs with counts, New entry, inline edit, accept, close, delete with confirm, and CSV plus Markdown export, linked from the sidenav.
+- [P1, fixed] RAID operations had no human verbs. Activity now maps all ten RAID operations in both server and stream paths.
+
+Detector: `python -m ruff check src tests` exit 0 after fix; rendered `/raid` checked for 200, four tabs, no em dashes. No servers left running.

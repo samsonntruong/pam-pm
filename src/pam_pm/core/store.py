@@ -100,6 +100,25 @@ KICKOFF_TABLE_DDL = """CREATE TABLE IF NOT EXISTS kickoff_proposals (
   PRIMARY KEY (backend, external_id)
 )"""
 
+RAID_TABLE_DDL = """CREATE TABLE IF NOT EXISTS raid_items (
+  backend TEXT NOT NULL,
+  external_id TEXT NOT NULL,
+  project TEXT NOT NULL DEFAULT 'default',
+  kind TEXT NOT NULL DEFAULT 'risk',
+  title TEXT NOT NULL DEFAULT '',
+  owner TEXT NOT NULL DEFAULT '',
+  severity TEXT NOT NULL DEFAULT 'medium',
+  status TEXT NOT NULL DEFAULT 'proposed',
+  due_date TEXT NOT NULL DEFAULT '',
+  linked_ids TEXT NOT NULL DEFAULT '[]',
+  evidence_quote TEXT NOT NULL DEFAULT '',
+  evidence_date TEXT NOT NULL DEFAULT '',
+  write_id INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (backend, external_id)
+)"""
+
 CATCHUP_KEY = "catchup_last"
 STARTED_AT_KEY = "run_started_at"
 
@@ -148,6 +167,7 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
     conn.execute(LIFECYCLE_TABLE_DDL)
     conn.execute(KV_TABLE_DDL)
     conn.execute(KICKOFF_TABLE_DDL)
+    conn.execute(RAID_TABLE_DDL)
     _migrate_projects(conn)
     conn.commit()
 

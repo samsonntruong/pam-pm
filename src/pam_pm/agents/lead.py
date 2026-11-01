@@ -268,6 +268,9 @@ def synthesize_review(
     events: Any = None,
     model_client: Any = None,
     max_tokens: int = REVIEW_MAX_TOKENS,
+    raid_db: Any = None,
+    raid_backend: str = "azure_devops",
+    raid_project: str = "default",
 ) -> dict[str, Any]:
     """Build a sprint review: markdown plus tagged retro actions.
 
@@ -310,6 +313,19 @@ def synthesize_review(
     if not markdown:
         markdown = _render_review_markdown(summary, events, actions)
         model_path = "local"
+    if raid_db is not None:
+        try:
+            from pam_pm.core import raid as raid_mod
+
+            section = raid_mod.review_section(
+                raid_db,
+                str(raid_backend or "azure_devops"),
+                str(raid_project or "default"),
+            )
+            if section["new"] or section["closed"]:
+                markdown = markdown.rstrip() + "\n\n" + section["markdown"]
+        except Exception:  # noqa: BLE001, S110
+            pass
     return {
         "review_markdown": markdown,
         "markdown": markdown,
@@ -440,9 +456,21 @@ class LeadAgent:
         events: Any = None,
         model_client: Any = None,
         max_tokens: int = REVIEW_MAX_TOKENS,
+        raid_db: Any = None,
+        raid_backend: str = "azure_devops",
+        raid_project: str = "default",
     ) -> dict[str, Any]:
         """Build a sprint review with markdown plus retro actions."""
-        return synthesize_review(items, interviews, events, model_client, max_tokens)
+        return synthesize_review(
+            items,
+            interviews,
+            events,
+            model_client,
+            max_tokens,
+            raid_db=raid_db,
+            raid_backend=raid_backend,
+            raid_project=raid_project,
+        )
 
     def create_retro_items(
         self, board: Any, actions: Any, **kwargs: Any

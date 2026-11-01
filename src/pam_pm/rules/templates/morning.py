@@ -109,6 +109,74 @@ def _resolve_roster(project: Any) -> list[str] | None:
     return None
 
 
+def _raid_context(
+    project: Any, db: Any, backend: str
+) -> tuple[Any, str, str]:
+    """Resolve the RAID store, backend label, and project name."""
+    name = "default"
+    store = db
+    label = str(backend or "azure_devops")
+    if isinstance(project, dict):
+        name = str(
+            project.get("project", project.get("name", "default")) or "default"
+        )
+        if store is None:
+            store = project.get("db")
+        label = str(project.get("backend", label) or label)
+    elif isinstance(project, str) and project.strip():
+        name = project.strip()
+    return store, label, name
+
+
+def _apply_raid_hooks(
+    project: Any,
+    chat: Any,
+    service: WriteService | None,
+    db: Any,
+    backend: str,
+    by_person: dict[str, list[Any]],
+    out: dict[str, Any],
+) -> None:
+    """Propose Risks from check-in text and nudge owners about RAID."""
+    store, label, name = _raid_context(project, db, backend)
+    if store is None:
+        return
+    try:
+        from pam_pm.core import raid as raid_mod
+    except Exception:  # noqa: BLE001
+        return
+    for person, results in out.items():
+        if not isinstance(results, dict):
+            continue
+        for result in results.values():
+            if isinstance(result, dict):
+                text = str(result.get("evidence_quote", "") or "") + " " + str(
+                    result.get("status", "") or ""
+                )
+            else:
+                text = str(getattr(result, "evidence_quote", "") or "") + " " + str(
+                    getattr(result, "status", "") or ""
+                )
+            try:
+                raid_mod.propose_risk_from_checkin(
+                    store, label, name, text, person, writes=service
+                )
+            except Exception:  # noqa: BLE001, S110
+                pass
+    for person in by_person:
+        try:
+            lines = raid_mod.nudge_lines(store, label, name, person)
+        except Exception:  # noqa: BLE001
+            lines = []
+        if not lines:
+            continue
+        body = "RAID for today:\n" + "\n".join(f"- {line}" for line in lines)
+        try:
+            chat.send_dm(person, body)
+        except Exception:  # noqa: BLE001, S110
+            pass
+
+
 def morning_checkin(
     project: Any,
     chat: Any,
@@ -120,6 +188,7 @@ def morning_checkin(
     dry_run: bool = True,
     interviewer: Interviewer | None = None,
     limit: int = 200,
+    backend: str = "azure_devops",
 ) -> dict[str, Any]:
     """DM each person with active items and log results as writes.
 
@@ -171,6 +240,7 @@ def morning_checkin(
                         "detail": status[:500],
                     }
                 )
+    _apply_raid_hooks(project, chat, service, db, backend, by_person, out)
     return out
 
 

@@ -7,7 +7,7 @@
 
 <div id="events">
   {% if events %}
-  {% set verbs = {"create": "Created item", "create_item": "Created item", "update": "Updated item", "update_state": "Changed status on item", "move": "Moved item", "add_link": "Linked item", "set_sprint": "Set sprint on item", "create_sprint": "Created sprint", "close_sprint": "Closed sprint", "comment": "Commented on item"} %}
+  {% set verbs = {"create": "Created item", "create_item": "Created item", "update": "Updated item", "update_state": "Changed status on item", "move": "Moved item", "add_link": "Linked item", "set_sprint": "Set sprint on item", "create_sprint": "Created sprint", "close_sprint": "Closed sprint", "comment": "Commented on item", "raid_create": "Added RAID entry", "raid_add": "Added RAID entry", "raid_update": "Updated RAID entry", "raid_accept": "Accepted RAID entry", "raid_close": "Closed RAID entry", "raid_delete": "Deleted RAID entry", "raid_propose_risk": "Proposed risk", "raid_propose_assumption": "Proposed assumption", "raid_propose_issue": "Proposed issue", "raid_propose_dependency": "Proposed dependency"} %}
   {% for ev in events %}
   <article class="card event" id="event-{{ ev.id }}">
     <h2>{{ verbs.get(ev.operation, "Changed item") }} {{ ev.item_id }}</h2>
@@ -50,7 +50,17 @@
       set_sprint: "Set sprint on item",
       create_sprint: "Created sprint",
       close_sprint: "Closed sprint",
-      comment: "Commented on item"
+      comment: "Commented on item",
+      raid_create: "Added RAID entry",
+      raid_add: "Added RAID entry",
+      raid_update: "Updated RAID entry",
+      raid_accept: "Accepted RAID entry",
+      raid_close: "Closed RAID entry",
+      raid_delete: "Deleted RAID entry",
+      raid_propose_risk: "Proposed risk",
+      raid_propose_assumption: "Proposed assumption",
+      raid_propose_issue: "Proposed issue",
+      raid_propose_dependency: "Proposed dependency"
     };
     function humanVerb(op) {
       return VERBS[op] || "Changed item";

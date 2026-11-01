@@ -125,6 +125,9 @@ def on_item_done(
     board: Any,
     *,
     message: str | None = None,
+    db: Any = None,
+    backend: str = "azure_devops",
+    project: str = "default",
 ) -> list[str]:
     """DM each successor owner when an item closes. Else no-op."""
     resolved = item
@@ -138,6 +141,18 @@ def on_item_done(
     done_id = _item_id(resolved)
     if not done_id:
         return []
+    if db is not None:
+        try:
+            from pam_pm.core import raid as raid_mod
+
+            raid_mod.close_issues_for_board_item(
+                db,
+                str(backend or "azure_devops"),
+                str(project or "default"),
+                done_id,
+            )
+        except Exception:  # noqa: BLE001, S110
+            pass
     try:
         links = list(board.list_links(done_id))
     except Exception:  # noqa: BLE001
