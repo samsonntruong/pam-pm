@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -88,6 +89,17 @@ KV_TABLE_DDL = """CREATE TABLE IF NOT EXISTS kv (
   value TEXT NOT NULL DEFAULT ''
 )"""
 
+KICKOFF_TABLE_DDL = """CREATE TABLE IF NOT EXISTS kickoff_proposals (
+  backend TEXT NOT NULL,
+  external_id TEXT NOT NULL,
+  project TEXT NOT NULL DEFAULT 'default',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (backend, external_id)
+)"""
+
 CATCHUP_KEY = "catchup_last"
 STARTED_AT_KEY = "run_started_at"
 
@@ -135,6 +147,7 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
     conn.execute(SCHEDULED_RUNS_TABLE_DDL)
     conn.execute(LIFECYCLE_TABLE_DDL)
     conn.execute(KV_TABLE_DDL)
+    conn.execute(KICKOFF_TABLE_DDL)
     _migrate_projects(conn)
     conn.commit()
 
@@ -276,3 +289,57 @@ def set_project_backend(db: DbLike, name: str, backend: str) -> str:
         )
         conn.commit()
     return canonical
+
+
+def save_kickoff_proposal(
+    db: DbLike,
+    backend: str,
+    external_id: str,
+    project: str,
+    payload: dict,
+    status: str = "pending",
+) -> None:
+    """Store a kickoff proposal keyed by (backend, external_id)."""
+    from pam_pm.core.config import normalize_backend
+
+    with _connect(db) as conn:
+        _ensure_tables(conn)
+        conn.execute(
+            "INSERT INTO kickoff_proposals"
+            " (backend, external_id, project, payload_json, status,"
+            " created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))"
+            " ON CONFLICT(backend, external_id) DO UPDATE SET"
+            " project = excluded.project, payload_json = excluded.payload_json,"
+            " status = excluded.status, updated_at = datetime('now')",
+            (
+                normalize_backend(backend),
+                str(external_id),
+                str(project or "default"),
+                json.dumps(payload),
+                str(status or "pending"),
+            ),
+        )
+        conn.commit()
+
+
+def get_kickoff_proposal(
+    db: DbLike, backend: str, external_id: str
+) -> dict | None:
+    """Fetch one kickoff proposal by (backend, external_id)."""
+    from pam_pm.core.config import normalize_backend
+
+    with _connect(db) as conn:
+        _ensure_tables(conn)
+        row = conn.execute(
+            "SELECT project, payload_json, status FROM kickoff_proposals"
+            " WHERE backend = ? AND external_id = ?",
+            (normalize_backend(backend), str(external_id)),
+        ).fetchone()
+    if row is None:
+        return None
+    try:
+        payload = json.loads(row[1])
+    except ValueError:
+        payload = {}
+    return {"project": row[0], "payload": payload, "status": row[2]}

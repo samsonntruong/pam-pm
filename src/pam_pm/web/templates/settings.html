@@ -6,21 +6,21 @@
 
 <section class="card" id="settings-roster">
   <h2>Team</h2>
-  <p class="muted">Teammates get the morning message. Skills can be any words, such as design or testing. Capacity is hours per week.</p>
+  <p class="muted">Teammates get the morning message. Skills can be any words, such as design or testing. Capacity is hours per sprint.</p>
   <form hx-post="/api/settings/roster?project={{ project }}" hx-target="#roster-result" hx-swap="innerHTML">
     <label for="roster-people">Teammates, one name per line</label>
     <textarea id="roster-people" name="people" rows="3" placeholder="Ana&#10;Sam">{{ people_text }}</textarea>
     {% if roster %}
     <table class="roster">
       <thead>
-        <tr><th scope="col">Name</th><th scope="col">Skills</th><th scope="col">Capacity (hours per week)</th></tr>
+        <tr><th scope="col">Name</th><th scope="col">Skills</th><th scope="col">Capacity (hours per sprint)</th></tr>
       </thead>
       <tbody>
         {% for entry in roster %}
         <tr>
           <td>{{ entry.name }}<input type="hidden" name="name" value="{{ entry.name }}"></td>
           <td><input type="text" name="skills" value="{{ entry.skills }}" aria-label="Skills for {{ entry.name }}" autocomplete="off"></td>
-          <td><input type="number" name="capacity" value="{{ entry.capacity }}" min="0" step="1" aria-label="Capacity in hours per week for {{ entry.name }}"></td>
+          <td><input type="number" name="capacity" value="{{ entry.capacity }}" min="0" step="1" aria-label="Capacity in hours per sprint for {{ entry.name }}"></td>
         </tr>
         {% endfor %}
       </tbody>

@@ -2619,3 +2619,236 @@ async def board_import_csv(request: Request) -> Any:
             {"title": title, "source": "csv_import"},
         )
     return {"ok": True, "created": len(created), "skipped": skipped, "ids": created}
+
+
+LAST_KICKOFF: dict[str, Any] = {
+    "proposal": [],
+    "has_history": False,
+    "approved": [],
+    "flagged": [],
+    "external_id": "",
+}
+
+
+def _kickoff_result_html(
+    items: list[dict[str, Any]], has_history: bool, roster: list[dict[str, Any]]
+) -> str:
+    parts: list[str] = []
+    if not has_history:
+        parts.append(
+            '<p class="pill">No board history yet. '
+            "Owners use names in the brief plus load balancing.</p>"
+        )
+    parts.append('<section class="card"><h2>Approval card</h2>')
+    if not items:
+        parts.append(
+            '<p class="muted">No tasks found. Paste a brief with one '
+            "task per line, then choose Suggest owners.</p>"
+        )
+        parts.append("</section>")
+        return "\n".join(parts)
+    names = [entry["name"] for entry in roster]
+    rows = []
+    for index, draft in enumerate(items):
+        title = html.escape(str(draft.get("title", "")))
+        reason = html.escape(str(draft.get("reason", "")))
+        conf = html.escape(str(draft.get("confidence", "low")))
+        current = str(draft.get("owner") or "")
+        options = ['<option value="">Unassigned</option>']
+        for label in names:
+            sel = " selected" if label == current else ""
+            options.append(
+                f'<option value="{html.escape(label)}"{sel}>'
+                f"{html.escape(label)}</option>"
+            )
+        if current and current not in names:
+            options.append(
+                f'<option value="{html.escape(current)}" selected>'
+                f"{html.escape(current)}</option>"
+            )
+        warn = ""
+        if draft.get("warning"):
+            warn = ' <span class="pill pill-fail">Over capacity</span>'
+        if draft.get("needs_owner"):
+            warn += ' <span class="pill pill-fail">Needs an owner</span>'
+        est = draft.get("estimate")
+        rows.append(
+            "<tr>"
+            f"<td>{title}</td>"
+            f"<td>{html.escape(str(draft.get('type', '')))}</td>"
+            f"<td><select name=\"owner-{index}\" "
+            f'aria-label="Owner for {title}">{"".join(options)}</select></td>'
+            f"<td>{html.escape(str(est) if est is not None else '-')}</td>"
+            f"<td>{reason}<br><span class=\"muted\">Confidence: {conf}</span>"
+            f"{warn}</td>"
+            "</tr>"
+        )
+    parts.append(
+        '<table class="proposal"><thead><tr>'
+        '<th scope="col">Title</th><th scope="col">Type</th>'
+        '<th scope="col">Owner</th><th scope="col">Est (h)</th>'
+        '<th scope="col">Reason</th>'
+        "</tr></thead><tbody>"
+        + "".join(rows)
+        + "</tbody></table>"
+    )
+    parts.append(
+        '<form hx-post="/api/kickoff/approve" hx-target="#kickoff-approve-result" '
+        'hx-swap="innerHTML">'
+        '<label class="toggle"><input type="checkbox" name="notify" '
+        'value="on" checked>Notify new owners</label>'
+        "<div class=\"form-actions\">"
+        "<button type=\"submit\">Approve and create these tasks</button>"
+        "</div>"
+        '<div id="kickoff-approve-result" class="result" aria-live="polite">'
+        "</div></form>"
+    )
+    parts.append("</section>")
+    return "\n".join(parts)
+
+
+@app.get("/kickoff", response_class=HTMLResponse)
+def kickoff_page(request: Request) -> HTMLResponse:
+    ctx = _context(request, "kickoff")
+    project = str(ctx["project"])
+    proposal = LAST_KICKOFF.get("proposal", [])
+    if proposal:
+        ctx["kickoff_html"] = _kickoff_result_html(
+            proposal, LAST_KICKOFF.get("has_history", False),
+            _roster_entries(project),
+        )
+    else:
+        ctx["kickoff_html"] = ""
+    return templates.TemplateResponse(request, "kickoff.html", ctx)  # type: ignore[return-value]
+
+
+@app.post("/api/kickoff/propose")
+async def propose_kickoff_route(request: Request) -> Any:
+    from pam_pm.agents.kickoff import intake_document_bytes, propose_kickoff
+
+    project = _board_project(request)
+    backend = _project_backend(project)
+    form = await request.form()
+    text = str(form.get("brief", "") or "")
+    upload = form.get("brief_file")
+    filename = ""
+    data = b""
+    if upload is not None and hasattr(upload, "read"):
+        try:
+            raw = await upload.read()  # type: ignore[no-untyped-call]
+        except Exception:  # noqa: BLE001
+            raw = b""
+        if isinstance(raw, (bytes, bytearray)) and bytes(raw):
+            data = bytes(raw)
+            filename = str(getattr(upload, "filename", "") or "")
+    roster = _roster_entries(project)
+    adapter = get_board_adapter(project)
+    if data:
+        result = intake_document_bytes(data, roster, adapter, filename)
+        text = result.get("source_text", text)
+    else:
+        result = propose_kickoff(text, roster, adapter)
+    items = result.get("items", [])
+    external_id = f"console-{len(text)}-{len(items)}"
+    LAST_KICKOFF["proposal"] = items
+    LAST_KICKOFF["has_history"] = result.get("has_history", False)
+    LAST_KICKOFF["approved"] = []
+    LAST_KICKOFF["external_id"] = external_id
+    try:
+        store_mod.save_kickoff_proposal(
+            _db_path(), backend, external_id, project,
+            {"items": items, "has_history": result.get("has_history", False)},
+        )
+    except Exception:  # noqa: BLE001, S110
+        pass
+    if "hx-request" in request.headers:
+        return HTMLResponse(_kickoff_result_html(
+            items, result.get("has_history", False), roster
+        ))
+    return {"ok": True, "items": items, "has_history": result.get("has_history", False)}
+
+
+@app.post("/api/kickoff/approve")
+async def approve_kickoff_route(request: Request) -> Any:
+    from pam_pm.agents.kickoff import approve_kickoff, notify_owners
+
+    project = _board_project(request)
+    proposal = [dict(d) for d in LAST_KICKOFF.get("proposal", [])]
+    if not proposal:
+        msg = "No kickoff suggestions to create. Paste a brief first."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg))
+        return JSONResponse({"ok": False, "message": msg}, status_code=400)
+    payload = await _board_payload(request)
+    for index, draft in enumerate(proposal):
+        key = f"owner-{index}"
+        if key in payload:
+            pick = str(payload[key]).strip()
+            draft["owner"] = pick or None
+            if pick:
+                draft["needs_owner"] = False
+    adapter = get_board_adapter(project)
+    if adapter is None:
+        msg = "Board is not configured for this project."
+        hint = "Finish the Setup wizard, then approve again."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg, hint))
+        return JSONResponse(
+            {"ok": False, "message": msg, "hint": hint}, status_code=500
+        )
+    dry_run, _cap = _effective_safety()
+    created = approve_kickoff(
+        proposal, adapter, db=_db_path(), dry_run=dry_run,
+        evidence_quote="Approved from the kickoff card.",
+    )
+    done = [
+        {"id": str(item.id), "title": str(item.title)} for item in created
+    ]
+    LAST_KICKOFF["approved"] = done
+    try:
+        store_mod.save_kickoff_proposal(
+            _db_path(), _project_backend(project),
+            LAST_KICKOFF.get("external_id", "console"),
+            project, {"items": proposal}, status="approved",
+        )
+    except Exception:  # noqa: BLE001, S110
+        pass
+    notified = 0
+    if str(payload.get("notify", "on")).lower() in ("on", "true", "1", "yes"):
+        try:
+            from pam_pm.adapters.chat.slack import SlackAdapter
+
+            if os.environ.get("SLACK_BOT_TOKEN", "").strip():
+                notified = len(notify_owners(
+                    SlackAdapter(), created, proposal
+                ))
+        except Exception:  # noqa: BLE001
+            notified = 0
+    message = f"Created {len(done)} tasks."
+    if notified:
+        message += f" Notified {notified} owners."
+    elif str(payload.get("notify", "on")).lower() in ("on", "true", "1", "yes"):
+        message += " Owner DMs were skipped (Slack is not configured)."
+    if "hx-request" in request.headers:
+        return HTMLResponse(_test_result_html(True, message))
+    return {"ok": True, "created": done, "notified": notified}
+
+
+@app.post("/api/kickoff/owner-response")
+async def kickoff_owner_response(request: Request) -> Any:
+    from pam_pm.agents.kickoff import handle_owner_response
+
+    payload = await _board_payload(request)
+    item_id = str(payload.get("item_id", "")).strip()
+    text = str(payload.get("text", ""))
+    if not item_id:
+        return JSONResponse(
+            {"ok": False, "message": "item_id is required."}, status_code=400
+        )
+    result = handle_owner_response(item_id, text)
+    if result["status"] == "flagged":
+        flagged = LAST_KICKOFF.get("flagged", [])
+        if item_id not in flagged:
+            flagged.append(item_id)
+        LAST_KICKOFF["flagged"] = flagged
+    return {"ok": True, **result}

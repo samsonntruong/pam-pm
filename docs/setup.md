@@ -66,12 +66,13 @@ pam --version
 
 ## 5. Console screens
 
-Left navigation: Setup, Rules, Board, Activity, Plan, Review, with a project switcher at the top.
+Left navigation: Setup, Rules, Board, Activity, Plan, Kickoff, Review, Settings, with a project switcher at the top.
 
 - Rules: toggle templates per project.
 - Board: read-only ADO board with dependency links, updating live.
 - Activity: live feed of agent actions with evidence quotes and an Undo button for board writes.
 - Plan: upload a sticky-note photo, inspect masks and readings, Approve to create items.
+- Kickoff: paste a brief or upload a file, review owner suggestions with reasons on one approval card, Approve to create items.
 - Review: run the sprint review and create retro actions in ADO.
 
 No hand-edited config files and no hunting for IDs. If a step fails, start with `pam doctor`, then see [troubleshooting.md](troubleshooting.md).

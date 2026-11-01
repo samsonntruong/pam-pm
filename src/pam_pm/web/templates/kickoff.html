@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Kickoff - Pam{% endblock %}
+{% block content %}
+<h1>Kickoff</h1>
+<p class="muted">Turn a brief into owned tasks for project {{ project }} ({{ project_backend_label }}). Paste text or upload a file, review the suggestions, then approve. Nothing is created until you approve.</p>
+
+<section class="card" id="kickoff-input">
+  <h2>Brief</h2>
+  <form hx-post="/api/kickoff/propose?project={{ project }}" hx-target="#kickoff-result" hx-swap="innerHTML" hx-encoding="multipart/form-data">
+    <label for="brief">Pasted brief</label>
+    <textarea id="brief" name="brief" rows="6" aria-describedby="brief-hint" placeholder="Epic: Launch site&#10;## Signup flow&#10;- Maya: build signup form, 4h&#10;- API keys, 3h"></textarea>
+    <p class="muted" id="brief-hint">One task per line. A name at the start of a line sets the owner. If a file is attached below, the file is used and pasted text is ignored. Suggest owners replaces any previous suggestions.</p>
+    <label for="brief-file">Or upload a file (text, Markdown, PDF)</label>
+    <input id="brief-file" name="brief_file" type="file" accept=".txt,.md,.markdown,.pdf,text/plain,text/markdown,application/pdf">
+    <div class="form-actions">
+      <button type="submit">Suggest owners</button>
+    </div>
+  </form>
+</section>
+
+<div id="kickoff-result" aria-live="polite">
+  {% if kickoff_html %}
+  {{ kickoff_html | safe }}
+  {% else %}
+  <section class="card">
+    <h2>Approval card</h2>
+    <p class="muted">No suggestions yet. Paste a brief above and choose Suggest owners.</p>
+  </section>
+  {% endif %}
+</div>
+{% endblock %}
