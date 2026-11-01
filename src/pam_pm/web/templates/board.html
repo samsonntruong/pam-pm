@@ -89,40 +89,53 @@
   <div class="kanban" id="kanban">
     {% for col in columns %}
     <section class="kanban-col" aria-label="{{ col.title }}">
-      <h2><span class="status-dot status-{{ col.key }}" aria-hidden="true"></span> {{ col.title }} <span class="count">({{ col.cards|length }})</span></h2>
+      <h2 class="col-head"><span class="status-dot status-{{ col.key }}" aria-hidden="true"></span><span class="col-title">{{ col.title }}</span><span class="count">{{ col.cards|length }}</span></h2>
       <div class="kanban-drop" data-state="{{ col.title }}">
         {% for item in col.cards %}
         <article class="kanban-card" data-id="{{ item.id }}" data-state="{{ item.state }}" data-sprint="{{ item.iteration_id }}" tabindex="0" aria-label="#{{ item.id }} {{ item.title }}"{% if editable %} draggable="true"{% endif %}>
-          <div class="kanban-head">
-            <span class="item-id">#{{ item.id }}</span>
-            <span class="status-dot status-{{ item.column }}" aria-hidden="true"></span>
+          <h3 class="card-title">{{ item.title }}</h3>
+          {% if item.priority or item.estimate != "" or item.remaining != "" or item.due_date or item.sprint %}
+          <div class="card-badges">
+            {% if item.priority %}
+            {% set _p = item.priority|string|lower %}
+            <span class="badge badge-prio{% if _p in ['1', 'p1', 'high', 'highest', 'critical', 'urgent', 'blocker'] %} badge-prio-hot{% endif %}" title="Priority {{ item.priority }}">{{ item.priority }}</span>
+            {% endif %}
+            {% if item.estimate != "" or item.remaining != "" %}
+            <span class="badge badge-est" title="Estimate {{ item.estimate }}{% if item.remaining != "" %}, {{ item.remaining }} left{% endif %}">{% if item.estimate != "" %}{{ item.estimate }} est{% endif %}{% if item.estimate != "" and item.remaining != "" %} · {% endif %}{% if item.remaining != "" %}{{ item.remaining }} left{% endif %}</span>
+            {% endif %}
+            {% if item.due_date %}<span class="badge badge-due" data-due="{{ item.due_date }}" title="Due {{ item.due_date }}">Due {{ item.due_date }}</span>{% endif %}
+            {% if item.sprint %}<span class="badge badge-sprint" title="Sprint {{ item.sprint }}">{{ item.sprint }}</span>{% endif %}
           </div>
-          <h3>{{ item.title }}</h3>
-          <p class="muted card-state">{{ item.state }}{% if item.owner %} &middot; {{ item.owner }}{% endif %}</p>
-          <dl class="card-fields">
-            {% if item.estimate != "" %}<div><dt>Estimate</dt><dd>{{ item.estimate }}</dd></div>{% endif %}
-            {% if item.remaining != "" %}<div><dt>Remaining</dt><dd>{{ item.remaining }}</dd></div>{% endif %}
-            {% if item.priority %}<div><dt>Priority</dt><dd>{{ item.priority }}</dd></div>{% endif %}
-            {% if item.due_date %}<div><dt>Due date</dt><dd>{{ item.due_date }}</dd></div>{% endif %}
-            {% if item.sprint %}<div><dt>Sprint</dt><dd>{{ item.sprint }}</dd></div>{% endif %}
-            {% if item.link_count %}<div><dt>Links</dt><dd>{{ item.link_count }}</dd></div>{% endif %}
-          </dl>
+          {% endif %}
           {% if item.tags %}
           <p class="card-tags">{% for tag in item.tags %}<span class="tag">{{ tag }}</span>{% endfor %}</p>
           {% endif %}
-          <div class="card-actions">
-            <button type="button" class="open-drawer" data-open="{{ item.id }}">Open</button>
-            {% if editable %}
-            <details class="move-menu">
-              <summary>Move to</summary>
-              <ul>
-                {% for st in states %}
-                <li><button type="button" data-move="{{ st }}" data-id="{{ item.id }}"{% if st == item.state %} disabled{% endif %}>{{ st }}</button></li>
-                {% endfor %}
-              </ul>
-            </details>
-            {% elif item.external_url %}
-            <a class="btn btn-small" href="{{ item.external_url }}">Open in {{ backend_label }}</a>
+          <div class="card-foot">
+            <span class="item-id">#{{ item.id }}</span>
+            {% if item.link_count %}<span class="link-count">{{ item.link_count }} links</span>{% endif %}
+            <div class="card-actions">
+              <button type="button" class="open-drawer" data-open="{{ item.id }}">Open</button>
+              {% if editable %}
+              <details class="move-menu">
+                <summary>Move to</summary>
+                <ul>
+                  {% for st in states %}
+                  <li><button type="button" data-move="{{ st }}" data-id="{{ item.id }}"{% if st == item.state %} disabled{% endif %}>{{ st }}</button></li>
+                  {% endfor %}
+                </ul>
+              </details>
+              {% elif item.external_url %}
+              <a class="btn btn-small" href="{{ item.external_url }}">Open in {{ backend_label }}</a>
+              {% endif %}
+            </div>
+            {% if item.owner %}
+            {% set _parts = item.owner.split(' ') %}
+            {% if _parts|length > 1 %}
+            {% set _initials = (_parts[0][:1] + _parts[1][:1])|upper %}
+            {% else %}
+            {% set _initials = _parts[0][:2]|upper %}
+            {% endif %}
+            <span class="avatar" role="img" aria-label="{{ item.owner }}" title="{{ item.owner }}">{{ _initials }}</span>
             {% endif %}
           </div>
         </article>
@@ -243,4 +256,29 @@
 {% endblock %}
 {% block scripts %}
 <script src="/static/board.js"></script>
+<script>
+(function () {
+  "use strict";
+  function markOverdue() {
+    var today = new Date();
+    today.setHours(0, 0, 0, 0);
+    Array.prototype.forEach.call(
+      document.querySelectorAll(".badge-due[data-due]"),
+      function (el) {
+        var raw = String(el.getAttribute("data-due") || "").slice(0, 10);
+        var due = new Date(raw + "T00:00:00");
+        if (!isNaN(due.getTime()) && due < today) el.classList.add("is-overdue");
+      }
+    );
+  }
+  markOverdue();
+  var kanban = document.getElementById("kanban");
+  if (kanban && "MutationObserver" in window) {
+    new MutationObserver(function () { markOverdue(); }).observe(kanban, {
+      childList: true,
+      subtree: true
+    });
+  }
+})();
+</script>
 {% endblock %}
