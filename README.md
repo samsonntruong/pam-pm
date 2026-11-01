@@ -1,3 +1,5 @@
+<img src="docs/images/logo-b.svg" alt="Pam logo" width="128">
+
 # Pam: Projects Autonomously Managed
 
 Pam is an async project manager that replaces status meetings. It checks in with each teammate in Slack, challenges vague answers, keeps the board accurate, and chases blockers until they clear.

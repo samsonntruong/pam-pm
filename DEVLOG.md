@@ -51,6 +51,8 @@ Build log for Pam. Three lines per entry.
 | Muse Code | Extra UI dark plus font | Dark default hardened, Inter enterprise stack, screenshots retaken dark, 329 pass |
 | Muse Code | Full security review | No hardcoded secrets, outbox race plus key match plus 0600 secrets fixed, 329 pass |
 | Muse Code | Full UI audit | Spacing pass on 16 screens, README dark screenshot, detector clean, 329 pass |
+| Muse Code | Logo B deoverlap plus wire-in | Graph lifted clear of wordmark, header plus favicon plus README, 340 pass |
+| Muse Code | Cross-platform parity | Autostart quoting, launchd bootstrap, Windows paths, 340 pass |
 
 ## Entries
 

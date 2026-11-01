@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Pam{% endblock %}</title>
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" type="image/svg+xml" href="/static/logo.svg">
   <!-- impeccable-disable overused-font: enterprise SaaS stack requested -->
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
   <script>
@@ -19,7 +20,7 @@
 </head>
 <body class="{% block bodyclass %}{% endblock %}">
   <header class="topbar">
-    <div class="brand">Pam</div>
+    <div class="brand" style="display:flex;align-items:center;gap:8px"><img src="/static/logo.svg" alt="Pam logo" style="height:28px;width:auto;border-radius:6px">Pam</div>
     <div class="topbar-right">
       <div class="project-switcher">
         <label for="project-switcher">Project</label>

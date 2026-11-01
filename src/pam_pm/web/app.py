@@ -8,6 +8,7 @@ import html
 import io
 import json
 import logging
+import mimetypes
 import os
 import re
 import secrets
@@ -58,6 +59,8 @@ logger = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
+
+mimetypes.add_type("image/svg+xml", ".svg")
 
 app = FastAPI(title="Pam")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
