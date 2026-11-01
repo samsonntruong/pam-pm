@@ -346,8 +346,15 @@ class Interviewer:
         chat: Any,
         board: Any,
         model_client: Any,
+        *,
+        db: Any = None,
     ) -> InterviewResult | dict[str, InterviewResult]:
-        """Interview one person about items, returning structured results."""
+        """Interview one person about items, returning structured results.
+
+        When a database is given, role, skillsets, and capacity found
+        in the person's answers are saved to agent memory with the
+        interview source noted.
+        """
         person_id = _person_id(person)
         norm_items = _normalize_items(items)
         if not norm_items:
@@ -505,6 +512,24 @@ class Interviewer:
                     continue
         self.last_turns = turns
         self.last_model_calls = model_calls
+        if db is not None:
+            try:
+                from pam_pm.core import memory as memory_mod
+
+                said = [
+                    str(turn.get("content", ""))
+                    for turn in conversation
+                    if turn.get("role") == "user"
+                    and str(turn.get("content", "")).strip()
+                    and not str(turn.get("content", "")).startswith(
+                        ("Reminder:", "Extract ")
+                    )
+                ]
+                memory_mod.capture_interview(
+                    db, person_id, said, source="interview"
+                )
+            except Exception:  # noqa: BLE001, S110
+                pass
         if len(norm_items) == 1:
             single_id = norm_items[0]["id"]
             if single_id in results:

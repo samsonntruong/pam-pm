@@ -437,14 +437,25 @@ def propose_kickoff(
     document_text: str,
     roster: Any,
     board: Any = None,
+    *,
+    db: Any = None,
 ) -> dict[str, Any]:
     """Propose owned drafts from a brief, reusing propose_sprint.
 
     Parses the brief, builds base drafts with propose_sprint, then
     overlays owner suggestions. Returns items plus a has_history flag
-    so the card can say when it fell back to names plus load.
+    so the card can say when it fell back to names plus load. When a
+    database is given, the roster is also saved to agent memory with
+    the kickoff source noted.
     """
     text = str(document_text or "")
+    if db is not None:
+        try:
+            from pam_pm.core import memory as memory_mod
+
+            memory_mod.capture_roster(db, roster, source="kickoff")
+        except Exception:  # noqa: BLE001, S110
+            pass
     parsed = parse_brief(text)
     base = propose_sprint(
         [
@@ -470,10 +481,12 @@ def intake_document_bytes(
     roster: Any,
     board: Any = None,
     filename: str = "",
+    *,
+    db: Any = None,
 ) -> dict[str, Any]:
     """Propose a kickoff from uploaded or DM file bytes."""
     text = decode_document_bytes(data, filename)
-    result = propose_kickoff(text, roster, board)
+    result = propose_kickoff(text, roster, board, db=db)
     result["source_text"] = text
     return result
 
@@ -483,10 +496,14 @@ def intake_slack_file(
     file_id: str,
     roster: Any,
     board: Any = None,
+    *,
+    db: Any = None,
 ) -> dict[str, Any]:
     """Download a Slack DM file and propose a kickoff from it."""
     data = chat.download_file(file_id)
-    return intake_document_bytes(bytes(data or b""), roster, board, filename=str(file_id))
+    return intake_document_bytes(
+        bytes(data or b""), roster, board, filename=str(file_id), db=db
+    )
 
 
 def approve_kickoff(

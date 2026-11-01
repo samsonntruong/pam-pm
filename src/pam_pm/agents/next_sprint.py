@@ -10,6 +10,7 @@ and estimates and says so.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from pam_pm.adapters.pm.base import is_closed
@@ -207,10 +208,7 @@ def carryover_items(
         if is_closed(_item_state(item)):
             continue
         sprint = iteration_of(item)
-        if wanted:
-            if sprint in aliases:
-                out.append(item)
-        elif sprint:
+        if wanted and sprint in aliases or sprint:
             out.append(item)
     return out
 
@@ -302,6 +300,8 @@ def propose_next_sprint(
     current_iteration_id: str | None = None,
     slip_reasons: dict[str, str] | None = None,
     limit: int = BOARD_LIMIT,
+    memory: dict[str, Any] | None = None,
+    db: Any = None,
 ) -> dict[str, Any]:
     """Propose the next sprint: retro first, carryover next, backlog last.
 
@@ -311,6 +311,12 @@ def propose_next_sprint(
     closed nor already selected. Owners balance against throughput plus
     capacity; with no history the proposal falls back to capacity and
     estimates and says so in has_history.
+
+    When a memory snapshot with people or a bias factor is given, the
+    planner fills missing capacity from memory, prefers skill matches
+    for backlog items, corrects estimates by the bias factor, and holds
+    backlog that fits nowhere instead of over planning. Empty memory
+    plans exactly as without memory.
     """
     people = _normalize_roster(roster)
     names = [entry["name"] for entry in people]
@@ -318,6 +324,44 @@ def propose_next_sprint(
     pace = throughput_by_owner(board, limit=limit)
     history = has_history(board, limit=limit)
     slips = {str(key): str(val) for key, val in (slip_reasons or {}).items()}
+
+    mem_cap: dict[str, float] = {}
+    mem_skills: dict[str, list[str]] = {}
+    mem_bias = 1.0
+    if isinstance(memory, dict):
+        raw_people = memory.get("people", [])
+        if isinstance(raw_people, list):
+            for entry in raw_people:
+                if not isinstance(entry, dict):
+                    continue
+                label = str(entry.get("name", "")).strip()
+                if not label:
+                    continue
+                try:
+                    hours = max(0.0, float(entry.get("weekly_capacity", 0) or 0))
+                except (TypeError, ValueError):
+                    hours = 0.0
+                mem_cap[label] = hours
+                skills = entry.get("skillsets", [])
+                if isinstance(skills, str):
+                    skills = [skills]
+                mem_skills[label] = [
+                    str(skill).strip().lower()
+                    for skill in (skills or [])
+                    if str(skill).strip()
+                ]
+        try:
+            mem_bias = float(memory.get("bias", 1.0) or 1.0)
+        except (TypeError, ValueError):
+            mem_bias = 1.0
+    mem_active = bool(mem_cap) or abs(mem_bias - 1.0) >= 1e-9
+    if mem_active:
+        for label, hours in mem_cap.items():
+            if capacity.get(label, 0.0) <= 0 and hours > 0:
+                capacity[label] = hours
+            if label not in names:
+                names.append(label)
+                capacity.setdefault(label, hours)
 
     try:
         all_items = list(board.list_items(limit=limit)) if board is not None else []
@@ -333,6 +377,7 @@ def propose_next_sprint(
     selected: set[str] = set()
     items: list[dict[str, Any]] = []
     deferred: list[str] = []
+    held_for_capacity: list[str] = []
 
     def _assign(preferred: str, hours: float) -> tuple[str, str]:
         if preferred and preferred in loads:
@@ -352,16 +397,99 @@ def propose_next_sprint(
             return pick, f"Load balance, assigned to {pick}."
         return "", "Needs an owner."
 
+    def _correct(hours: float) -> float:
+        if mem_active and abs(mem_bias - 1.0) >= 1e-9:
+            return round(hours * mem_bias, 2)
+        return hours
+
+    def _mem_room(label: str) -> float:
+        return _effective_room(
+            capacity.get(label, 0.0),
+            pace.get(label, 0.0) if history else 0.0,
+            loads.get(label, 0.0),
+        )
+
+    def _mem_bounded(label: str) -> bool:
+        if capacity.get(label, 0.0) > 0:
+            return True
+        return history and pace.get(label, 0.0) > 0
+
+    def _skill_pick(text: str, hours: float) -> tuple[str, str]:
+        toks = {
+            tok
+            for tok in re.findall(r"[a-z0-9]+", str(text or "").lower())
+            if len(tok) >= 3
+        }
+        if not toks:
+            return "", ""
+        ranked: list[tuple[int, float, float, str, str]] = []
+        for label in names:
+            skills = mem_skills.get(label, [])
+            if not skills:
+                continue
+            hit = sorted(toks & set(skills))
+            if not hit:
+                continue
+            if _mem_bounded(label) and _mem_room(label) < hours:
+                continue
+            ranked.append(
+                (
+                    len(hit),
+                    loads.get(label, 0.0),
+                    pace.get(label, 0.0),
+                    label,
+                    hit[0],
+                )
+            )
+        if not ranked:
+            return "", ""
+        ranked.sort(key=lambda row: (-row[0], row[1], row[2], row[3]))
+        return ranked[0][3], ranked[0][4]
+
+    def _assign_mem(
+        preferred: str, hours: float, text: str
+    ) -> tuple[str, str] | None:
+        if (
+            preferred
+            and preferred in loads
+            and (not _mem_bounded(preferred) or _mem_room(preferred) >= hours)
+        ):
+            loads[preferred] += hours
+            return preferred, f"Keep with {preferred}."
+        pick, word = _skill_pick(text, hours)
+        if pick:
+            loads[pick] += hours
+            return pick, f"Skill match ({word}), assigned to {pick}."
+        open_names = [
+            label
+            for label in names
+            if not _mem_bounded(label) or _mem_room(label) >= hours
+        ]
+        if open_names:
+            ordered = sorted(
+                open_names,
+                key=lambda label: (
+                    loads.get(label, 0.0),
+                    pace.get(label, 0.0),
+                    label,
+                ),
+            )
+            pick = ordered[0]
+            loads[pick] += hours
+            return pick, f"Load balance, assigned to {pick}."
+        return None
+
     for action in retro_actions or []:
         draft = _retro_draft(action)
-        owner, why = _assign(draft["owner"], draft["estimate"])
+        estimate = _correct(draft["estimate"])
+        owner, why = _assign(draft["owner"], estimate)
         items.append(
             {
                 "item_id": "",
                 "title": draft["title"],
                 "owner": owner,
                 "reason": f"Retro action. {why}",
-                "estimate": draft["estimate"],
+                "estimate": estimate,
                 "kind": "retro",
                 "description": draft["description"],
             }
@@ -369,7 +497,7 @@ def propose_next_sprint(
 
     for item in carryover_items(board, current_iteration_id, limit=limit):
         item_id = _item_id(item)
-        hours = estimate_of(item)
+        hours = _correct(estimate_of(item))
         current = owner_of(item)
         if current and current not in loads:
             loads[current] = 0.0
@@ -407,7 +535,15 @@ def propose_next_sprint(
                 hours = max(0.0, float(item.get("estimate", DEFAULT_ESTIMATE)))
             except (TypeError, ValueError):
                 hours = DEFAULT_ESTIMATE
-            owner, why = _assign(str(item.get("owner", "") or ""), hours)
+            hours = _correct(hours)
+            if mem_active:
+                placed = _assign_mem(str(item.get("owner", "") or ""), hours, title)
+                if placed is None:
+                    held_for_capacity.append(title)
+                    continue
+                owner, why = placed
+            else:
+                owner, why = _assign(str(item.get("owner", "") or ""), hours)
             items.append(
                 {
                     "item_id": "",
@@ -430,7 +566,7 @@ def propose_next_sprint(
         if blocked_by:
             deferred.append(_item_title(item))
             continue
-        hours = estimate_of(item)
+        hours = _correct(estimate_of(item))
         current = owner_of(item)
         if current and current not in loads:
             loads[current] = 0.0
@@ -452,7 +588,17 @@ def propose_next_sprint(
                 < hours
                 for label in names
             )
-        if current and room_ok:
+        if mem_active:
+            placed = _assign_mem(current, hours, _item_title(item))
+            if placed is None:
+                held_for_capacity.append(_item_title(item))
+                continue
+            owner, why = placed
+            if owner == current and current:
+                why = f"Backlog, keep with {current}."
+            else:
+                why = f"Backlog. {why}"
+        elif current and room_ok:
             loads[current] = loads.get(current, 0.0) + hours
             owner, why = current, f"Backlog, keep with {current}."
         else:
@@ -480,10 +626,19 @@ def propose_next_sprint(
     )
     if over:
         risks.append(f"Over capacity: {', '.join(over)}.")
+    if mem_active and abs(mem_bias - 1.0) >= 1e-9:
+        risks.append(f"Estimates corrected by past bias x{mem_bias:g}.")
     if deferred:
         shown = ", ".join(deferred[:3])
         more = "" if len(deferred) <= 3 else f" plus {len(deferred) - 3} more"
         risks.append(f"Held for dependencies: {shown}{more}.")
+    if held_for_capacity:
+        shown_cap = ", ".join(held_for_capacity[:3])
+        more_cap = (
+            "" if len(held_for_capacity) <= 3
+            else f" plus {len(held_for_capacity) - 3} more"
+        )
+        risks.append(f"Held for capacity: {shown_cap}{more_cap}.")
     if not risks:
         risks.append("Load fits capacity and dependencies clear.")
     return {

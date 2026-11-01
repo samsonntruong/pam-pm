@@ -35,6 +35,109 @@
   </form>
 </section>
 
+<section class="card" id="settings-memory">
+  <h2>Team memory</h2>
+  <p class="muted">Long term memory of teammates and planning rhythm. The setup token is needed to save here.</p>
+  <h3>Lifecycle summary</h3>
+  <dl class="memory-summary">
+    <div>
+      <dt>Throughput (hours per week)</dt>
+      <dd>{% if memory_throughput %}{% for week, hours in memory_throughput.items() %}{{ week }}: {{ hours }}{% if not loop.last %}, {% endif %}{% endfor %}{% else %}No weeks logged yet{% endif %}</dd>
+    </div>
+    <div>
+      <dt>Bias factor (actual over estimated)</dt>
+      <dd>{{ memory_bias }}</dd>
+    </div>
+    <div>
+      <dt>Style note</dt>
+      <dd>{% if memory_style_note %}{{ memory_style_note }}{% else %}No style note saved yet{% endif %}</dd>
+    </div>
+  </dl>
+  <form hx-post="/api/settings/memory/style?project={{ project }}" hx-target="#memory-style-result" hx-swap="innerHTML">
+    <label for="memory-style-note">Style note (planning rhythm)</label>
+    <textarea id="memory-style-note" name="style_note" rows="2" placeholder="Team plans every Monday">{{ memory_style_note }}</textarea>
+    <label for="memory-style-token">Setup token</label>
+    <input id="memory-style-token" name="token" type="password" value="" placeholder="Paste setup token" autocomplete="off">
+    <div class="form-actions">
+      <button type="submit">Save style note</button>
+    </div>
+    <div id="memory-style-result" class="result" aria-live="polite"></div>
+  </form>
+  <h3>Teammates</h3>
+  {% if memory_people %}
+  <form hx-post="/api/settings/memory/person?project={{ project }}" hx-target="#memory-result" hx-swap="innerHTML">
+    <table class="roster">
+      <thead>
+        <tr><th scope="col">Name</th><th scope="col">Role</th><th scope="col">Skillsets</th><th scope="col">Capacity (hours per week)</th><th scope="col">Source</th></tr>
+      </thead>
+      <tbody>
+        {% for entry in memory_people %}
+        <tr>
+          <td>{{ entry.name }}<input type="hidden" name="name" value="{{ entry.name }}"></td>
+          <td><input type="text" name="role" value="{{ entry.role }}" aria-label="Role for {{ entry.name }}" autocomplete="off"></td>
+          <td><input type="text" name="skills" value="{{ entry.skillsets | join(', ') }}" aria-label="Skillsets for {{ entry.name }}" autocomplete="off"></td>
+          <td><input type="number" name="capacity" value="{{ entry.weekly_capacity }}" min="0" step="1" aria-label="Capacity in hours per week for {{ entry.name }}"></td>
+          <td>{{ entry.source or "unknown" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <label for="memory-token">Setup token</label>
+    <input id="memory-token" name="token" type="password" value="" placeholder="Paste setup token" autocomplete="off">
+    <div class="form-actions">
+      <button type="submit">Save team memory</button>
+    </div>
+    <div id="memory-result" class="result" aria-live="polite"></div>
+  </form>
+  <h3>Remove one teammate</h3>
+  <ul class="memory-delete">
+    {% for entry in memory_people %}
+    <li>
+      <form hx-post="/api/settings/memory/person/delete?project={{ project }}" hx-target="#memory-delete-result" hx-swap="innerHTML">
+        <input type="hidden" name="name" value="{{ entry.name }}">
+        <span>{{ entry.name }}</span>
+        <input type="password" name="token" value="" placeholder="Setup token" aria-label="Setup token to remove {{ entry.name }}" autocomplete="off">
+        <button type="submit">Delete</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+  <div id="memory-delete-result" class="result" aria-live="polite"></div>
+  {% else %}
+  <p class="muted">No teammates in memory yet. Add one below.</p>
+  {% endif %}
+  <h3>Add teammate</h3>
+  <form hx-post="/api/settings/memory/person?project={{ project }}" hx-target="#memory-add-result" hx-swap="innerHTML">
+    <label for="memory-add-name">Name</label>
+    <input id="memory-add-name" type="text" name="name" value="" autocomplete="off">
+    <label for="memory-add-role">Role</label>
+    <input id="memory-add-role" type="text" name="role" value="" autocomplete="off">
+    <label for="memory-add-skills">Skillsets (comma separated)</label>
+    <input id="memory-add-skills" type="text" name="skills" value="" autocomplete="off">
+    <label for="memory-add-capacity">Capacity (hours per week)</label>
+    <input id="memory-add-capacity" type="number" name="capacity" value="" min="0" step="1">
+    <label for="memory-add-token">Setup token</label>
+    <input id="memory-add-token" name="token" type="password" value="" placeholder="Paste setup token" autocomplete="off">
+    <div class="form-actions">
+      <button type="submit">Add teammate</button>
+    </div>
+    <div id="memory-add-result" class="result" aria-live="polite"></div>
+  </form>
+  <h3>Clear all</h3>
+  <form hx-post="/api/settings/memory/clear?project={{ project }}" hx-target="#memory-clear-result" hx-swap="innerHTML" hx-confirm="Clear all teammates from memory?">
+    <label class="toggle">
+      <input type="checkbox" name="confirm" value="on">
+      Yes, clear every teammate
+    </label>
+    <label for="memory-clear-token">Setup token</label>
+    <input id="memory-clear-token" name="token" type="password" value="" placeholder="Paste setup token" autocomplete="off">
+    <div class="form-actions">
+      <button type="submit">Clear team memory</button>
+    </div>
+    <div id="memory-clear-result" class="result" aria-live="polite"></div>
+  </form>
+</section>
+
 <section class="card" id="settings-safety">
   <h2>Safety</h2>
   <p class="muted">When dry run is on, Pam shows what it would do without changing anything. The daily spend cap stops paid work for the day when reached.</p>

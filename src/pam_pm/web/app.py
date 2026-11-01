@@ -32,6 +32,7 @@ from pam_pm.adapters.pm.sqlite_board import SQLiteBoard
 from pam_pm.agents.lead import synthesize_review
 from pam_pm.agents.planner import approve_proposal, propose_sprint
 from pam_pm.core import auth as auth_mod
+from pam_pm.core import memory as memory_mod
 from pam_pm.core import provider as provider_mod
 from pam_pm.core import raid as raid_mod
 from pam_pm.core import recovery as recovery_mod
@@ -2174,6 +2175,14 @@ def settings_page(request: Request) -> HTMLResponse:
     dry_run, spend_cap = _effective_safety()
     entries = _roster_entries(project)
     cost = _cost_summary()
+    try:
+        memory_people = memory_mod.list_people(_db_path())
+        memory_life = memory_mod.get_lifecycle(_db_path(), project)
+        memory_bias = memory_mod.bias_factor(_db_path(), project)
+    except Exception:  # noqa: BLE001
+        memory_people = []
+        memory_life = {"throughput": {}, "style_note": ""}
+        memory_bias = 1.0
     ctx.update(
         {
             "people_text": "\n".join(entry["name"] for entry in entries),
@@ -2182,6 +2191,10 @@ def settings_page(request: Request) -> HTMLResponse:
             "spend_cap": spend_cap,
             "cost": cost,
             "cost_dollars": f"{cost['dollars']:.4f}",
+            "memory_people": memory_people,
+            "memory_throughput": dict(memory_life.get("throughput", {})),
+            "memory_bias": memory_bias,
+            "memory_style_note": str(memory_life.get("style_note", "") or ""),
         }
     )
     return templates.TemplateResponse(request, "settings.html", ctx)  # type: ignore[return-value]
@@ -2289,6 +2302,202 @@ async def save_settings_safety(request: Request) -> Any:
     if "hx-request" in request.headers:
         return HTMLResponse(_test_result_html(True, message))
     return {"ok": True, "dry_run": dry_run, "spend_cap": spend_cap}
+
+
+@app.get("/api/settings/memory")
+async def view_settings_memory(request: Request) -> Any:
+    if not await _setup_token_ok(request):
+        return _setup_token_denied(request)
+    project = request.query_params.get("project", "default").strip() or "default"
+    people = memory_mod.list_people(_db_path())
+    life = memory_mod.get_lifecycle(_db_path(), project)
+    return {
+        "ok": True,
+        "project": project,
+        "people": people,
+        "lifecycle": {
+            "throughput": dict(life.get("throughput", {})),
+            "bias": memory_mod.bias_factor(estimates=life.get("estimates", [])),
+            "style_note": str(life.get("style_note", "") or ""),
+        },
+    }
+
+
+@app.post("/api/settings/memory/person")
+async def save_settings_memory_person(request: Request) -> Any:
+    if not await _setup_token_ok(request):
+        return _setup_token_denied(request)
+    project = request.query_params.get("project", "default").strip() or "default"
+    entries: list[dict[str, Any]] = []
+    ctype = request.headers.get("content-type", "")
+    if "application/json" in ctype:
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = {}
+        if isinstance(payload, dict):
+            project = str(payload.get("project", project)).strip() or project
+            raw = payload.get("entries", [])
+            if isinstance(raw, list) and raw:
+                entries = [dict(item) for item in raw if isinstance(item, dict)]
+            elif str(payload.get("name", "")).strip():
+                entries = [dict(payload)]
+    else:
+        form = await request.form()
+        if "project" in form:
+            project = str(form.get("project", project)).strip() or project
+        names = form.getlist("name")
+        roles = form.getlist("role")
+        skills = form.getlist("skills")
+        capacities = form.getlist("capacity")
+        for index, label in enumerate(names):
+            entries.append(
+                {
+                    "name": str(label),
+                    "role": str(roles[index]) if index < len(roles) else "",
+                    "skills": str(skills[index]) if index < len(skills) else "",
+                    "capacity": str(capacities[index])
+                    if index < len(capacities)
+                    else 0,
+                }
+            )
+    saved: list[dict[str, Any]] = []
+    for item in entries:
+        label = str(item.get("name", "")).strip()
+        if not label:
+            continue
+        try:
+            hours = float(
+                str(item.get("capacity", item.get("weekly_capacity", 0)) or 0)
+            )
+        except (TypeError, ValueError):
+            hours = 0.0
+        try:
+            saved.append(
+                memory_mod.upsert_person(
+                    _db_path(),
+                    label,
+                    role=str(item.get("role", "") or "") or None,
+                    skillsets=str(item.get("skills", item.get("skillsets", ""))
+                    or "") or None,
+                    weekly_capacity=hours if hours > 0 else None,
+                    source="settings",
+                )
+            )
+        except ValueError:
+            continue
+    word = "teammate" if len(saved) == 1 else "teammates"
+    message = f"Saved {len(saved)} {word} to team memory."
+    if "hx-request" in request.headers:
+        return HTMLResponse(_test_result_html(True, message))
+    return {"ok": True, "project": project, "people": saved}
+
+
+@app.post("/api/settings/memory/person/delete")
+async def delete_settings_memory_person(request: Request) -> Any:
+    if not await _setup_token_ok(request):
+        return _setup_token_denied(request)
+    name = request.query_params.get("name", "").strip()
+    ctype = request.headers.get("content-type", "")
+    if "application/json" in ctype:
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = {}
+        if isinstance(payload, dict) and str(payload.get("name", "")).strip():
+            name = str(payload.get("name", "")).strip()
+    else:
+        form = await request.form()
+        if str(form.get("name", "")).strip():
+            name = str(form.get("name", "")).strip()
+    if not name:
+        msg = "Name is required to delete a teammate."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg))
+        return JSONResponse({"ok": False, "message": msg}, status_code=400)
+    removed = memory_mod.delete_person(_db_path(), name)
+    if not removed:
+        msg = f"No teammate named {name} was found."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg))
+        return JSONResponse({"ok": False, "message": msg}, status_code=404)
+    message = f"Removed {name} from team memory."
+    if "hx-request" in request.headers:
+        return HTMLResponse(_test_result_html(True, message))
+    return {"ok": True, "name": name}
+
+
+@app.delete("/api/settings/memory/person")
+async def remove_settings_memory_person(request: Request) -> Any:
+    return await delete_settings_memory_person(request)
+
+
+@app.post("/api/settings/memory/clear")
+async def clear_settings_memory(request: Request) -> Any:
+    if not await _setup_token_ok(request):
+        return _setup_token_denied(request)
+    confirmed = False
+    ctype = request.headers.get("content-type", "")
+    if "application/json" in ctype:
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = {}
+        if isinstance(payload, dict):
+            confirmed = payload.get("confirm", False) in (
+                True,
+                "on",
+                "true",
+                "1",
+                1,
+                "yes",
+            )
+    else:
+        form = await request.form()
+        confirmed = str(form.get("confirm", "")).lower() in (
+            "on",
+            "true",
+            "1",
+            "yes",
+        )
+    if not confirmed:
+        msg = "Tick the confirm box to clear all of team memory."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg))
+        return JSONResponse({"ok": False, "message": msg}, status_code=400)
+    count = memory_mod.clear_people(_db_path())
+    word = "teammate" if count == 1 else "teammates"
+    message = f"Cleared {count} {word} from team memory."
+    if "hx-request" in request.headers:
+        return HTMLResponse(_test_result_html(True, message))
+    return {"ok": True, "cleared": count}
+
+
+@app.post("/api/settings/memory/style")
+async def save_settings_memory_style(request: Request) -> Any:
+    if not await _setup_token_ok(request):
+        return _setup_token_denied(request)
+    project = request.query_params.get("project", "default").strip() or "default"
+    note = ""
+    ctype = request.headers.get("content-type", "")
+    if "application/json" in ctype:
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = {}
+        if isinstance(payload, dict):
+            project = str(payload.get("project", project)).strip() or project
+            note = str(payload.get("style_note", payload.get("note", "")) or "")
+    else:
+        form = await request.form()
+        if "project" in form:
+            project = str(form.get("project", project)).strip() or project
+        note = str(form.get("style_note", form.get("note", "") or "") or "")
+    life = memory_mod.save_style_note(_db_path(), project, note)
+    message = "Saved the lifecycle style note."
+    if "hx-request" in request.headers:
+        return HTMLResponse(_test_result_html(True, message))
+    return {"ok": True, "project": project, "style_note": life.get("style_note", "")}
 
 
 @app.post("/api/test/{which}")
@@ -5522,8 +5731,18 @@ def next_sprint_run_route(request: Request) -> Any:
         return JSONResponse({"ok": False, "message": msg}, status_code=502)
     roster = _roster_entries(project)
     retro = [dict(a) for a in LAST_REVIEW.get("retro_actions", [])]
+    db_path = _db_path()
+    snapshot = None
     try:
-        proposal = ns_mod.propose_next_sprint(adapter, roster, retro_actions=retro)
+        from pam_pm.core.memory import planning_context
+
+        snapshot = planning_context(db_path, project)
+    except Exception:  # noqa: BLE001
+        snapshot = None
+    try:
+        proposal = ns_mod.propose_next_sprint(
+            adapter, roster, retro_actions=retro, memory=snapshot, db=db_path
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("next sprint propose failed: %s", exc)
         msg = "The sprint could not be proposed."

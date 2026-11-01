@@ -79,6 +79,7 @@ Full list: [docs/features.md](docs/features.md).
 - RAID log: risks, assumptions, issues, and dependencies with propose plus accept, manual add and edit, and CSV plus Markdown export. See [docs/raid.md](docs/raid.md).
 - Kickoff from a document: paste a brief or upload a file, review owner suggestions with reasons on one approval card, and create the items after you press Approve. See [docs/kickoff.md](docs/kickoff.md).
 - Next-sprint proposal: retro plus carryover plus backlog with owners, load, and risk on one approval card. Approve creates the next sprint. See [docs/next-sprint.md](docs/next-sprint.md).
+- Team memory: remembers roles, skills, capacity, and planning rhythm so forecasts improve; review it in Settings. See [docs/memory.md](docs/memory.md).
 - Board triage: daily scan for stale, unassigned, and blocked items with proposed fixes on one approval card. See [docs/triage.md](docs/triage.md).
 - Mid-sprint adjustment: proposes move out, swap, reassign, or pull from backlog when the sprint is off track, with the effect on the goal. See [docs/mid-sprint.md](docs/mid-sprint.md).
 - Chat add-task: mention Pam with `add a task: ...` to draft one task with owner and estimate; Approve creates it. See [docs/add-task.md](docs/add-task.md).

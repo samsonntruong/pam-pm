@@ -206,6 +206,10 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
     conn.execute(LISTEN_SESSIONS_TABLE_DDL)
     conn.execute(LISTEN_SEGMENTS_TABLE_DDL)
     conn.execute(LISTEN_NOTES_TABLE_DDL)
+    from pam_pm.core.memory import MEMORY_LIFECYCLE_TABLE_DDL, PEOPLE_TABLE_DDL
+
+    conn.execute(PEOPLE_TABLE_DDL)
+    conn.execute(MEMORY_LIFECYCLE_TABLE_DDL)
     _migrate_projects(conn)
     conn.commit()
 
