@@ -5,7 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Pam{% endblock %}</title>
   <link rel="stylesheet" href="/static/style.css">
-  <link rel="icon" type="image/svg+xml" href="/static/logo.svg">
+  <link rel="icon" type="image/svg+xml" href="/static/logo-dark.svg" media="(prefers-color-scheme: dark)">
+  <link rel="icon" type="image/svg+xml" href="/static/logo-light.svg" media="(prefers-color-scheme: light)">
+  <link rel="preload" as="image" href="/static/logo-dark.svg">
+  <link rel="preload" as="image" href="/static/logo-light.svg">
+  <style>
+    .brand-logo-light { display: none; }
+    html[data-theme="light"] .brand-logo-dark { display: none; }
+    html[data-theme="light"] .brand-logo-light { display: inline; }
+  </style>
   <!-- impeccable-disable overused-font: enterprise SaaS stack requested -->
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
   <script>
@@ -20,7 +28,7 @@
 </head>
 <body class="{% block bodyclass %}{% endblock %}">
   <header class="topbar">
-    <div class="brand" style="display:flex;align-items:center;gap:8px"><img src="/static/logo.svg" alt="Pam logo" style="height:28px;width:auto;border-radius:6px">Pam</div>
+    <div class="brand" style="display:flex;align-items:center;gap:8px"><img class="brand-logo-dark" src="/static/logo-dark.svg" alt="Pam logo" style="height:28px;width:auto"><img class="brand-logo-light" src="/static/logo-light.svg" alt="Pam logo" style="height:28px;width:auto"></div>
     <div class="topbar-right">
       <div class="project-switcher">
         <label for="project-switcher">Project</label>
