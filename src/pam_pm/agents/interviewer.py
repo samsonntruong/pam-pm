@@ -13,7 +13,7 @@ from pam_pm.core.schemas import InterviewResult
 
 logger = logging.getLogger(__name__)
 
-MAX_TURNS = 6
+MAX_TURNS = 4
 
 VAGUE_PHRASES = ("almost done", "soon", "working on it")
 
@@ -158,6 +158,8 @@ def join_ack_question(ack: str, question: str, sep: str = " ") -> str:
         return normalize_followup_spacing(right)
     if not right:
         return normalize_followup_spacing(left)
+    if left[-1] not in ".!?":
+        left += "."
     joiner = "\n" if sep == "\n" else " "
     return normalize_followup_spacing(left.rstrip() + joiner + right.lstrip())
 
@@ -170,7 +172,7 @@ def _one_question(text: str) -> str:
         base = cleaned.rstrip(".! ").strip()
         if not base:
             return "What remains and what is your ETA?"
-        return normalize_followup_spacing(base + " What remains and what is your ETA?")
+        return join_ack_question(base, "What remains and what is your ETA?")
     first = cleaned.split("?", 1)[0].strip()
     if not first:
         return "What remains and what is your ETA?"
@@ -459,6 +461,174 @@ def _build_fallback_result(conversation: list[dict[str, Any]]) -> InterviewResul
         blocker_owner=None,
         confidence=0.3,
     )
+
+
+SLOT_REMAINING = "remaining_work"
+SLOT_ETA = "eta"
+SLOT_BLOCKERS = "blockers"
+CHECKIN_SLOTS = (SLOT_REMAINING, SLOT_ETA, SLOT_BLOCKERS)
+
+SLOT_LABELS = {
+    SLOT_REMAINING: "remaining work",
+    SLOT_ETA: "ETA",
+    SLOT_BLOCKERS: "blockers",
+}
+
+_REMAINING_WORD_RE = re.compile(
+    r"\b(remain\w*|left|retry|retest|test\w*|fix\w*|finish\w*|implement\w*|"
+    r"cod\w+|review\w*|merge|deploy\w*|build\w*|debug\w*|refactor\w*|"
+    r"polish\w*|wrapping up|docs?|migration|design\w*)\b",
+    re.IGNORECASE,
+)
+_ETA_WORD_RE = re.compile(
+    r"(noon|midnight|morning|afternoon|evening|\beod\b|\beow\b|\bcob\b|"
+    r"today|tomorrow|done by|finish by|ready by|will finish|ship\w*|"
+    r"o'?clock|\d\s*(?:am|pm)|end of (?:day|week))",
+    re.IGNORECASE,
+)
+_BLOCKER_SLOT_RE = re.compile(
+    r"\bblock(?:er|ers|ed|ing)?\b|impediment|waiting on|\bstuck\b|dependen\w*",
+    re.IGNORECASE,
+)
+_BLOCKER_NEG_RE = re.compile(
+    r"\bno\s+block(?:er|ers)?\b|\bnot\s+blocked\b|nothing\s+blocking|"
+    r"\bno\s+impediment|^\s*none\.?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _answer_slots(answer: Any) -> dict[str, str]:
+    """Map one answer to the check-in slots it fills, with evidence."""
+    text = answer if isinstance(answer, str) else str(answer or "")
+    if not text.strip():
+        return {}
+    vague = is_vague(text)
+    slots: dict[str, str] = {}
+    evidence = text.strip()[:200]
+    if _extract_remaining(text) is not None or (
+        not vague and _REMAINING_WORD_RE.search(text)
+    ):
+        slots[SLOT_REMAINING] = evidence
+    if _extract_eta(text) is not None or (not vague and _ETA_WORD_RE.search(text)):
+        slots[SLOT_ETA] = evidence
+    if _BLOCKER_SLOT_RE.search(text):
+        slots[SLOT_BLOCKERS] = evidence
+    if not slots and not vague and len(text.strip()) >= 2:
+        slots[SLOT_REMAINING] = evidence
+    return slots
+
+
+def filled_slots(conversation: list[dict[str, Any]]) -> dict[str, str]:
+    """Return check-in slots filled by user turns, with first evidence."""
+    filled: dict[str, str] = {}
+    for turn in conversation or []:
+        if not isinstance(turn, dict) or turn.get("role") != "user":
+            continue
+        content = turn.get("content", "")
+        text = content if isinstance(content, str) else str(content or "")
+        if text.startswith(("Reminder:", "Extract ")):
+            continue
+        for slot, evidence in _answer_slots(text).items():
+            filled.setdefault(slot, evidence)
+    return filled
+
+
+def missing_slots(conversation: list[dict[str, Any]]) -> list[str]:
+    """Return check-in slots no user turn has filled yet."""
+    filled = filled_slots(conversation)
+    return [slot for slot in CHECKIN_SLOTS if slot not in filled]
+
+
+def _build_slot_result(
+    conversation: list[dict[str, Any]], filled: dict[str, str]
+) -> InterviewResult:
+    """Build a result from filled slots without asking the model."""
+    remaining: float | None = None
+    eta: str | None = None
+    for turn in reversed(conversation):
+        if not isinstance(turn, dict) or turn.get("role") != "user":
+            continue
+        content = str(turn.get("content", "") or "")
+        if remaining is None:
+            remaining = _extract_remaining(content)
+        if eta is None:
+            eta = _extract_eta(content)
+    blocker: str | None = None
+    blocker_evidence = filled.get(SLOT_BLOCKERS, "")
+    if blocker_evidence and not _BLOCKER_NEG_RE.search(blocker_evidence):
+        blocker = _clean_quote(blocker_evidence, 200)
+    parts = [filled[slot] for slot in CHECKIN_SLOTS if filled.get(slot)]
+    status = _clean_quote("; ".join(parts), 200) if parts else "unknown"
+    last = _last_user_text(conversation) or ""
+    quote = _clean_quote(last, 500)
+    if _is_bad_evidence(quote):
+        quote = ""
+    gaps = [slot for slot in CHECKIN_SLOTS if slot not in filled]
+    return InterviewResult(
+        status=status,
+        remaining=remaining,
+        eta=eta,
+        evidence_quote=quote,
+        blocker=blocker,
+        blocker_owner=None,
+        confidence=0.7 if not gaps else 0.4,
+    )
+
+
+def _model_thanks(
+    model_client: Any,
+    project_context: str,
+    conversation: list[dict[str, Any]],
+    result: InterviewResult,
+    item_id: str,
+) -> str:
+    """Ask the model to write the closing thanks message.
+
+    Falls back to the standard recorded line when the model is
+    unavailable or answers with another question.
+    """
+    fallback = f"Thanks. I recorded this for {item_id}: {result.status}"
+    try:
+        payload = build_messages(
+            "interviewer",
+            project_context,
+            conversation
+            + [
+                {
+                    "role": "user",
+                    "content": (
+                        "All check-in slots are filled. Write one short "
+                        "thanks message confirming what was recorded. "
+                        "No questions."
+                    ),
+                }
+            ],
+            {"item_id": item_id, "phase": "thanks"},
+        )
+        try:
+            raw = model_client.chat(payload["messages"], tools=payload["tools"])
+        except TypeError:
+            raw = model_client.chat(payload["messages"], payload["tools"])
+    except Exception:  # noqa: BLE001
+        return fallback
+    text, _ = _parse_model_result(raw)
+    cleaned = normalize_followup_spacing(text)
+    if not cleaned or "?" in cleaned:
+        return fallback
+    return cleaned[:500]
+
+
+def _note_gaps_on_board(board: Any, item_id: str, note: str) -> None:
+    """Post the honest gap note next to the capped check-in write."""
+    if not note:
+        return
+    add_comment = getattr(board, "add_comment", None)
+    if not callable(add_comment):
+        return
+    try:
+        add_comment(item_id, note, author="Pam")
+    except Exception:  # noqa: BLE001, S110
+        pass
 
 
 def format_checkin_comment(result: InterviewResult) -> str:
@@ -1122,6 +1292,81 @@ def resume_interview(
         "turn": asked,
         "phase": "resume",
     }
+    filled = filled_slots(conversation)
+    gaps = [slot for slot in CHECKIN_SLOTS if slot not in filled]
+    if not gaps:
+        candidate = _build_slot_result(conversation, filled)
+        outcome = _safe_board_update(board, item_id, candidate)
+        if not write_persisted(outcome):
+            reason = write_failure_reason(outcome)
+            _save_interview_state(db, person_id, item_id, conversation, marker)
+            _capture_resume_memory(db, person_id, conversation)
+            mid = _send(f"I could not write this to the board: {reason}")
+            return {
+                "kind": "write_failed",
+                "replied": bool(mid),
+                "person": person_id,
+                "item_id": item_id,
+                "message_id": mid,
+                "result": candidate,
+                "reason": reason,
+                "deterministic": True,
+            }
+        _save_interview_state(
+            db, person_id, item_id, conversation, marker, status=FINISHED_STATUS
+        )
+        _capture_resume_memory(db, person_id, conversation)
+        thanks = _model_thanks(
+            model_client, project_context, conversation, candidate, item_id
+        )
+        mid = _send(thanks)
+        return {
+            "kind": "finished",
+            "replied": bool(mid),
+            "person": person_id,
+            "item_id": item_id,
+            "message_id": mid,
+            "result": candidate,
+            "deterministic": True,
+        }
+    if asked >= max_turns:
+        capped = _build_slot_result(conversation, filled)
+        note = "Not reported: " + ", ".join(SLOT_LABELS[slot] for slot in gaps) + "."
+        outcome = _safe_board_update(board, item_id, capped)
+        _note_gaps_on_board(board, item_id, note)
+        if not write_persisted(outcome):
+            reason = write_failure_reason(outcome)
+            _save_interview_state(db, person_id, item_id, conversation, marker)
+            _capture_resume_memory(db, person_id, conversation)
+            mid = _send(f"I could not write this to the board: {reason}")
+            return {
+                "kind": "write_failed",
+                "replied": bool(mid),
+                "person": person_id,
+                "item_id": item_id,
+                "message_id": mid,
+                "result": capped,
+                "reason": reason,
+                "turn_cap": True,
+            }
+        _save_interview_state(
+            db, person_id, item_id, conversation, marker, status=FINISHED_STATUS
+        )
+        _capture_resume_memory(db, person_id, conversation)
+        mid = _send(
+            join_ack_question(
+                f"Thanks. I recorded this for {item_id}: {capped.status}", note
+            )
+        )
+        return {
+            "kind": "finished",
+            "replied": bool(mid),
+            "person": person_id,
+            "item_id": item_id,
+            "message_id": mid,
+            "result": capped,
+            "turn_cap": True,
+        }
     try:
         raw = _call_model_once(model_client, project_context, conversation, volatile)
     except Exception:  # noqa: BLE001
@@ -1186,45 +1431,6 @@ def resume_interview(
                     "result": candidate,
                 }
             text = ""
-    if asked >= max_turns:
-        result = _build_fallback_result(conversation)
-        outcome = _safe_board_update(board, item_id, result)
-        if not write_persisted(outcome):
-            reason = write_failure_reason(outcome)
-            _save_interview_state(
-                db, person_id, item_id, conversation, marker
-            )
-            _capture_resume_memory(db, person_id, conversation)
-            mid = _send(f"I could not write this to the board: {reason}")
-            return {
-                "kind": "write_failed",
-                "replied": bool(mid),
-                "person": person_id,
-                "item_id": item_id,
-                "message_id": mid,
-                "result": result,
-                "reason": reason,
-                "turn_cap": True,
-            }
-        _save_interview_state(
-            db,
-            person_id,
-            item_id,
-            conversation,
-            marker,
-            status=FINISHED_STATUS,
-        )
-        _capture_resume_memory(db, person_id, conversation)
-        mid = _send(f"Thanks. I recorded this for {item_id}: {result.status}")
-        return {
-            "kind": "finished",
-            "replied": bool(mid),
-            "person": person_id,
-            "item_id": item_id,
-            "message_id": mid,
-            "result": result,
-            "turn_cap": True,
-        }
     item = {"id": item_id, "title": item_id, "state": ""}
     question = _one_question(text or _default_question(item))
     last_user = _last_user_text(conversation)
@@ -1308,6 +1514,16 @@ class Interviewer:
             item_id = item["id"]
             awaiting = False
             while turns < self.max_turns and item_id not in results:
+                if _has_user_turn(conversation) and not missing_slots(conversation):
+                    done_result = _build_slot_result(
+                        conversation, filled_slots(conversation)
+                    )
+                    results[item_id] = done_result
+                    _safe_board_update(board, item_id, done_result)
+                    _save_interview_state(
+                        db, person_id, item_id, conversation, status="finished"
+                    )
+                    break
                 volatile = {
                     "item_id": item_id,
                     "person": person_id,
