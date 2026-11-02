@@ -165,6 +165,7 @@ def handle_slack_file(
     segmenter: Any = None,
     provider: str = "meta",
     event_sink: Any = None,
+    caption: str = "",
 ) -> dict[str, Any]:
     """Route one Slack file: image to planner, audio to polite decline.
 
@@ -196,6 +197,9 @@ def handle_slack_file(
 
         _ = _approve
     lines = [f"Found {len(readings)} notes in the photo (path: {path})."]
+    context = str(caption or "").strip()
+    if context:
+        lines.append(f"Context: {context[:200]}")
     for entry in proposal[:10]:
         lines.append(f"- {entry.get('title', '')}")
     message_id = chat.send_buttons(
@@ -206,12 +210,16 @@ def handle_slack_file(
             {"id": "plan_cancel", "label": "Cancel", "value": "cancel"},
         ],
     )
+    detail = f"path={path} readings={len(readings)} proposal={len(proposal)}"
+    context = str(caption or "").strip()
+    if context:
+        detail += f" caption={context[:120]}"
     event = {
         "operation": "plan_from_photo",
         "item_id": "",
         "evidence_quote": f"Planner path: {path} from Slack file {file_id}.",
         "status": "proposed",
-        "detail": f"path={path} readings={len(readings)} proposal={len(proposal)}",
+        "detail": detail,
     }
     if event_sink is not None:
         try:
@@ -233,6 +241,7 @@ def handle_slack_file(
         "proposal": proposal,
         "message_id": str(message_id),
         "event": event,
+        "caption": str(caption or ""),
     }
 
 
@@ -308,6 +317,7 @@ def handle_slack_event(
     channel = ""
     mime = str(mimetype or "")
     name = str(filename or "")
+    caption = ""
     if kind == "file_shared":
         file_id = str(inner.get("file_id", "") or "")
         channel = str(inner.get("channel_id", "") or "")
@@ -331,6 +341,7 @@ def handle_slack_event(
         channel = str(inner.get("channel", "") or "")
         if not channel:
             channel = str(inner.get("user", "") or "")
+        caption = str(inner.get("text", "") or "")
         if not file_id:
             return _handle_slack_text_message(
                 payload,
@@ -369,6 +380,7 @@ def handle_slack_event(
         segmenter=segmenter,
         provider=provider,
         event_sink=event_sink,
+        caption=caption,
     )
     result["file_id"] = file_id
     result["channel"] = channel

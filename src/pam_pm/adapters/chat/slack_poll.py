@@ -83,6 +83,35 @@ def should_handle_slack_message(
     return bool(text or (message.get("files") or []))
 
 
+def slack_files_of(message: dict[str, Any]) -> list[dict[str, str]]:
+    """Return normalized file attachments from a Slack message.
+
+    Each entry carries id, name, mimetype, and url so the poller
+    ChatMessage, the bus event, and the router event all share one
+    shape. Entries without an id are skipped.
+    """
+    raw = message.get("files")
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, str]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        file_id = str(entry.get("id", "") or "").strip()
+        if not file_id:
+            continue
+        name = str(entry.get("name", "") or entry.get("title", "") or "")
+        mime = str(entry.get("mimetype", "") or "")
+        url = str(
+            entry.get("url_private_download", "")
+            or entry.get("url_private", "")
+            or entry.get("permalink", "")
+            or ""
+        )
+        out.append({"id": file_id, "name": name, "mimetype": mime, "url": url})
+    return out
+
+
 def slack_message_to_chat_message(
     message: dict[str, Any], channel_id: str = ""
 ) -> ChatMessage:
@@ -95,6 +124,7 @@ def slack_message_to_chat_message(
         text=str(message.get("text", "") or ""),
         ts=ts,
         inbound=True,
+        files=slack_files_of(message),
     )
 
 
@@ -130,6 +160,7 @@ def publish_slack_message_to_bus(
         "channel_id": str(channel_id or ""),
         "message_id": message.id,
         "ts": message.ts,
+        "files": [dict(item) for item in (message.files or [])],
     }
     return bus.publish(event)
 
@@ -486,6 +517,7 @@ def handle_inbound_message(
             "user": message.user_id,
             "text": message.text,
             "ts": message.ts,
+            "files": [dict(item) for item in (message.files or [])],
         },
         chat=chat,
         board=board,

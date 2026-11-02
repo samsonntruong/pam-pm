@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -16,6 +16,7 @@ class ChatMessage:
     text: str
     ts: str = ""
     inbound: bool = False
+    files: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass

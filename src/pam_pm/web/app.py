@@ -468,6 +468,12 @@ def get_slack_poller(
 
     def _resume_polled(message: Any) -> None:
         try:
+            raw_files = getattr(message, "files", None)
+            kept = [
+                dict(item)
+                for item in (raw_files or [])
+                if isinstance(item, dict)
+            ]
             router_mod.handle_slack_event(
                 {
                     "type": "message",
@@ -479,6 +485,7 @@ def get_slack_poller(
                         or getattr(message, "id", "")
                         or ""
                     ),
+                    "files": kept,
                 },
                 chat=use_chat,
                 board=get_board_adapter(project),
