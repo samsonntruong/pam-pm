@@ -28,6 +28,8 @@ _TOKEN_RES = (
     re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]+"),
 )
 
+_USER_ID_RE = re.compile(r"^[UW][A-Z0-9]{2,}$")
+
 
 def redact(text: object, extra: str | None = None) -> str:
     """Redact Slack tokens and bearer values from log text."""
@@ -79,6 +81,7 @@ class SlackAdapter(ChatAdapter):
         )
         self._timeout = timeout
         self._client: Any = None
+        self._user_cache: dict[str, str] = {}
 
     @staticmethod
     def _resolve_token(name: str, explicit: str | None, data_dir: str | Path | None) -> str:
@@ -117,10 +120,65 @@ class SlackAdapter(ChatAdapter):
         logger.error("slack %s failed: %s", op, detail)
         return SlackError(f"{op} failed: {detail}")
 
+    @staticmethod
+    def _looks_like_user_id(value: str) -> bool:
+        return bool(_USER_ID_RE.match(value.strip()))
+
+    def _resolve_user_id(self, client: Any, name: str) -> str | None:
+        """Resolve a display name to a Slack user ID via users.list."""
+        key = name.strip().lower()
+        if not key:
+            return None
+        cached = self._user_cache.get(key)
+        if cached:
+            return cached
+        try:
+            resp = client.users_list()
+        except Exception:  # noqa: BLE001
+            return None
+        members = resp.get("members", []) if isinstance(resp, dict) else []
+        for member in members or []:
+            if not isinstance(member, dict):
+                continue
+            uid = str(member.get("id", "") or "")
+            if not uid:
+                continue
+            profile = member.get("profile", {})
+            if not isinstance(profile, dict):
+                profile = {}
+            candidates = (
+                str(profile.get("display_name", "") or ""),
+                str(member.get("real_name", "") or ""),
+            )
+            if any(c.strip().lower() == key for c in candidates if c.strip()):
+                self._user_cache[key] = uid
+                return uid
+        return None
+
+    def _resolve_dm_channel(self, client: Any, target: str) -> str | None:
+        """Return a postable channel: IDs pass through, names resolve."""
+        text = (target or "").strip()
+        if not text:
+            return None
+        if self._looks_like_user_id(text):
+            return text
+        return self._resolve_user_id(client, text)
+
+    def _skip_unresolved(self, op: str, target: str) -> str:
+        logger.error(
+            "slack %s skipped: could not resolve '%s' to a Slack user ID",
+            op,
+            target,
+        )
+        return ""
+
     def send_dm(self, user_id: str, text: str) -> str:
         client = self._client_or_raise()
         try:
-            resp = client.chat_postMessage(channel=user_id, text=text)
+            channel = self._resolve_dm_channel(client, user_id)
+            if not channel:
+                return self._skip_unresolved("send_dm", user_id)
+            resp = client.chat_postMessage(channel=channel, text=text)
             return str(resp.get("ts", ""))
         except Exception as exc:
             raise self._fail("send_dm", exc) from exc
@@ -182,8 +240,11 @@ class SlackAdapter(ChatAdapter):
                 {"type": "section", "text": {"type": "mrkdwn", "text": text}},
                 {"type": "actions", "elements": elements},
             ]
+            channel = self._resolve_dm_channel(client, user_id)
+            if not channel:
+                return self._skip_unresolved("send_buttons", user_id)
             resp = client.chat_postMessage(
-                channel=user_id, text=text, blocks=blocks
+                channel=channel, text=text, blocks=blocks
             )
             return str(resp.get("ts", ""))
         except Exception as exc:
