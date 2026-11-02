@@ -8,6 +8,7 @@ appears in errors or logs.
 from __future__ import annotations
 
 import base64
+import logging
 import os
 import re
 from pathlib import Path
@@ -73,6 +74,18 @@ def redact(text: object, *secrets: str) -> str:
     return out
 
 
+logger = logging.getLogger(__name__)
+
+_STATE_KEYS = {"state", "System.State", "/fields/System.State"}
+_ASSIGNEE_KEYS = {
+    "assigned_to",
+    "owner",
+    "System.AssignedTo",
+    "/fields/System.AssignedTo",
+}
+_CANONICAL_STATES = {"open", "active", "done"}
+
+
 class ADOError(RuntimeError):
     """ADO call failure with the PAT already redacted."""
 
@@ -134,6 +147,7 @@ class ADOAdapter(PMAdapter):
         )
         cleaned = (process or "").strip()
         self._process: str | None = cleaned if cleaned in STATE_MAP else None
+        self._warnings: list[str] = []
 
     def close(self) -> None:
         self._client.close()
@@ -195,11 +209,119 @@ class ADOAdapter(PMAdapter):
         return None
 
     def _mapped_state(self, kind: str) -> str:
-        proc = self._process if self._process in STATE_MAP else None
-        if proc is None:
-            proc = self.detect_process()
-        mapping = STATE_MAP.get(str(proc), STATE_MAP["Agile"])
+        if self._process not in STATE_MAP:
+            self._process = self.detect_process()
+        mapping = STATE_MAP.get(str(self._process), STATE_MAP["Agile"])
         return str(mapping.get(kind, mapping["open"]))
+
+    def pop_warnings(self) -> list[str]:
+        """Return and clear pending adapter warnings for Activity."""
+        out = list(self._warnings)
+        self._warnings.clear()
+        return out
+
+    def _identities_base(self) -> str:
+        org = self._org.rstrip("/")
+        if "dev.azure.com" in org:
+            return org.replace("dev.azure.com", "vssps.dev.azure.com")
+        return org
+
+    @staticmethod
+    def _looks_like_descriptor(value: str) -> bool:
+        text = value.strip()
+        if not text:
+            return True
+        return (
+            ";" in text
+            or "\\" in text
+            or text.startswith(("aad.", "Microsoft."))
+        )
+
+    def _resolve_identity_descriptor(self, name: str) -> str | None:
+        """Resolve a display name to an ADO identity descriptor."""
+        query = name.strip()
+        if not query or self._looks_like_descriptor(query):
+            return None
+        url = (
+            f"{self._identities_base()}/_apis/identities"
+            f"?searchFilter=General&query={quote(query)}"
+            f"&api-version={API_VERSION}"
+        )
+        try:
+            data = self._request("GET", url)
+        except ADOError:
+            return None
+        values = data.get("value", []) if isinstance(data, dict) else []
+        if not isinstance(values, list) or not values:
+            return None
+        lowered = query.lower()
+        for entry in values:
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("displayName", "")).strip().lower() == lowered:
+                desc = str(entry.get("descriptor", "")).strip()
+                if desc:
+                    return desc
+        for entry in values:
+            if isinstance(entry, dict):
+                desc = str(entry.get("descriptor", "")).strip()
+                if desc:
+                    return desc
+        return None
+
+    def _resolve_assignee(self, raw: object) -> tuple[object, str | None]:
+        if raw is None:
+            return raw, None
+        text = str(raw).strip()
+        if not text or self._looks_like_descriptor(text):
+            return raw, None
+        try:
+            descriptor = self._resolve_identity_descriptor(text)
+        except Exception:  # noqa: BLE001
+            descriptor = None
+        if descriptor:
+            return descriptor, None
+        msg = (
+            f"assignee '{text}' could not be resolved; "
+            "item may be unassigned"
+        )
+        logger.warning("%s", self._clean(msg))
+        self._warnings.append(msg)
+        try:
+            from pam_pm.web.app import bus as activity_bus
+
+            activity_bus.publish(
+                {
+                    "operation": "warning",
+                    "item_id": "",
+                    "evidence_quote": msg,
+                    "status": "applied",
+                    "detail": msg,
+                }
+            )
+        except Exception:  # noqa: BLE001, S110
+            pass
+        return raw, msg
+
+    def _normalize_state_value(self, value: object) -> object:
+        if isinstance(value, str) and value.strip().lower() in _CANONICAL_STATES:
+            return self._mapped_state(value.strip().lower())
+        return value
+
+    def _normalize_fields(
+        self, fields: dict[str, Any]
+    ) -> tuple[dict[str, Any], list[str]]:
+        out = dict(fields)
+        warnings: list[str] = []
+        for key in list(out.keys()):
+            if key in _STATE_KEYS:
+                out[key] = self._normalize_state_value(out[key])
+            elif key in _ASSIGNEE_KEYS:
+                resolved, warn = self._resolve_assignee(out[key])
+                out[key] = resolved
+                if warn:
+                    warnings.append(warn)
+        return out, warnings
 
     def close_item(self, item_id: str) -> WorkItem:
         """Move one item to its mapped closed state."""
@@ -211,10 +333,9 @@ class ADOAdapter(PMAdapter):
 
     def list_states(self) -> list[str]:
         """List the canonical open, active, and done states in order."""
-        proc = self._process if self._process in STATE_MAP else None
-        if proc is None:
-            proc = self.detect_process()
-        mapping = STATE_MAP.get(str(proc), STATE_MAP["Agile"])
+        if self._process not in STATE_MAP:
+            self._process = self.detect_process()
+        mapping = STATE_MAP.get(str(self._process), STATE_MAP["Agile"])
         return [
             str(mapping.get("open", "")),
             str(mapping.get("active", "")),
@@ -342,18 +463,24 @@ class ADOAdapter(PMAdapter):
     def update_item(
         self, item_id: str, fields: dict[str, Any]
     ) -> WorkItem:
+        normalized, warnings = self._normalize_fields(dict(fields))
         url = self._url(
             f"/_apis/wit/workitems/{item_id}?api-version={API_VERSION}"
         )
         data = self._request(
             "PATCH",
             url,
-            self._patch_ops(dict(fields)),
+            self._patch_ops(normalized),
             "application/json-patch+json",
         )
         if not isinstance(data, dict) or not data.get("id"):
             raise ADOError(f"update failed for item: {item_id}")
-        return self._to_item(data)
+        item = self._to_item(data)
+        if warnings:
+            item.fields["warning"] = warnings[0]
+            if len(warnings) > 1:
+                item.fields["warnings"] = list(warnings)
+        return item
 
     def create_item(
         self, title: str, fields: dict[str, Any] | None = None
@@ -361,19 +488,27 @@ class ADOAdapter(PMAdapter):
         given = dict(fields or {})
         item_type = str(given.pop("type", "Task"))
         given.setdefault("title", title)
-        state_keys = {"state", "System.State", "/fields/System.State"}
-        if state_keys.isdisjoint(given):
+        if _STATE_KEYS.isdisjoint(given):
             given["state"] = self._mapped_state("open")
+        normalized, warnings = self._normalize_fields(given)
         url = self._url(
             f"/_apis/wit/workitems/${quote(item_type, safe='')}"
             f"?api-version={API_VERSION}"
         )
         data = self._request(
-            "POST", url, self._patch_ops(given), "application/json-patch+json"
+            "POST",
+            url,
+            self._patch_ops(normalized),
+            "application/json-patch+json",
         )
         if not isinstance(data, dict) or not data.get("id"):
             raise ADOError("create failed: no work item id returned")
-        return self._to_item(data)
+        item = self._to_item(data)
+        if warnings:
+            item.fields["warning"] = warnings[0]
+            if len(warnings) > 1:
+                item.fields["warnings"] = list(warnings)
+        return item
 
     def add_link(self, source_id: str, target_id: str, rel: str) -> Link:
         full = _REL_ALIASES.get(rel)
