@@ -437,6 +437,8 @@ def _handle_slack_text_message(
         resume_kind = "follow-up sent"
     elif raw_kind == "no_open_state":
         resume_kind = "no_open_state"
+    elif raw_kind == "blocker_no_state":
+        resume_kind = "blocker_no_state"
     elif "error" in raw_kind:
         resume_kind = "model_error"
     else:
@@ -446,6 +448,7 @@ def _handle_slack_text_message(
         "reply": "interview_reply",
         "finished": "interview_finished",
         "no_open_state": "interview_no_state",
+        "blocker_no_state": "interview_blocker",
         "duplicate": "interview_duplicate",
     }
     return {

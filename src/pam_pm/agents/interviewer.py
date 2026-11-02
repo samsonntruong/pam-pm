@@ -702,6 +702,232 @@ def _capture_resume_memory(
         return
 
 
+_BLOCKER_EXTRA_MARKS = (
+    "can't proceed",
+    "cant proceed",
+    "cannot proceed",
+    "can not proceed",
+    "dependencies",
+    "depends on",
+    "dependent on",
+    "waiting for",
+    "blocked by",
+    "blocked",
+    "blocker",
+)
+
+_BLOCKER_LINK_REL = "System.LinkTypes.Dependency-Forward"
+
+
+def _looks_like_blocker(text: str) -> bool:
+    """Return True when free text reads like a blocker report."""
+    try:
+        from pam_pm.rules.engine import is_blocker_message as _engine_match
+
+        if _engine_match(text or ""):
+            return True
+    except Exception:  # noqa: BLE001, S110
+        pass
+    lowered = (text or "").lower().replace("’", "'").replace("‘", "'")
+    squashed = lowered.replace("'", "")
+    for mark in _BLOCKER_EXTRA_MARKS:
+        if mark in lowered or mark.replace("'", "") in squashed:
+            return True
+    return False
+
+
+def _blocker_item_id(item: Any) -> str:
+    if isinstance(item, dict):
+        return str(item.get("id", item.get("item_id", "")) or "")
+    return str(getattr(item, "id", getattr(item, "item_id", "")) or "")
+
+
+def _blocker_item_title(item: Any) -> str:
+    if isinstance(item, dict):
+        return str(item.get("title", "") or _blocker_item_id(item))
+    return str(getattr(item, "title", "") or _blocker_item_id(item))
+
+
+def _blocker_item_state(item: Any) -> str:
+    if isinstance(item, dict):
+        return str(item.get("state", "") or "")
+    return str(getattr(item, "state", "") or "")
+
+
+def _blocker_item_owner(item: Any) -> str:
+    if isinstance(item, dict):
+        fields = item.get("fields", {})
+        if not isinstance(fields, dict):
+            fields = {}
+        for key in ("assigned_to", "owner", "assignee", "user_id"):
+            value = item.get(key) or fields.get(key)
+            if value:
+                return str(value)
+        return str(fields.get("System.AssignedTo", "") or "")
+    for key in ("assigned_to", "owner", "assignee", "user_id"):
+        value = getattr(item, key, None)
+        if value:
+            return str(value)
+    fields = getattr(item, "fields", None)
+    if isinstance(fields, dict):
+        for key in ("assigned_to", "owner", "assignee", "user_id"):
+            value = fields.get(key)
+            if value:
+                return str(value)
+        return str(fields.get("System.AssignedTo", "") or "")
+    return ""
+
+
+def _find_open_item_for(board: Any, candidates: list[str]) -> Any | None:
+    """Return the first open board item owned by one of the candidates."""
+    if board is None:
+        return None
+    try:
+        items = list(board.list_items(limit=200) or [])
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        from pam_pm.adapters.pm.base import is_closed as _is_closed
+    except Exception:  # noqa: BLE001
+        _is_closed = None
+    wants = {str(entry) for entry in candidates if str(entry)}
+    lowered = {str(entry).lower() for entry in candidates if str(entry)}
+    for item in items:
+        owner = _blocker_item_owner(item)
+        if owner not in wants and owner.lower() not in lowered:
+            continue
+        state = _blocker_item_state(item)
+        try:
+            closed = bool(_is_closed(state)) if _is_closed is not None else False
+        except Exception:  # noqa: BLE001
+            closed = False
+        if not closed:
+            return item
+    return None
+
+
+def _handle_blocker_without_state(
+    person_id: str,
+    answer: str,
+    chat: Any,
+    board: Any,
+    db: Any,
+    candidates: list[str],
+) -> dict[str, Any]:
+    """Link a blocker reported with no open check-in to the open item.
+
+    Finds the reporter's open item (creating one when the board has
+    none), flags it, links a blocking item to it, proposes the writes
+    with the report as evidence, and tells the reporter what happened.
+    Never sends the generic no-open-state shrug for blocker language.
+    """
+    evidence = answer.strip()[:500]
+
+    def _send(text: str) -> str:
+        try:
+            return str(chat.send_dm(person_id, text) or "")
+        except Exception:  # noqa: BLE001
+            return ""
+
+    blocked = _find_open_item_for(board, candidates)
+    if blocked is None and board is not None:
+        try:
+            blocked = board.create_item(
+                f"Blocked work for {person_id}",
+                {"assigned_to": person_id},
+            )
+        except Exception:  # noqa: BLE001
+            blocked = None
+    if blocked is None:
+        mid = _send(
+            "Got it, you are blocked. I have no board access right now, "
+            f"so I could not link this yet: {evidence[:200]}"
+        )
+        return {
+            "kind": "blocker_no_state",
+            "replied": bool(mid),
+            "person": person_id,
+            "item_id": "",
+            "message_id": mid,
+        }
+    blocked_id = _blocker_item_id(blocked)
+    title = _blocker_item_title(blocked)
+    try:
+        if isinstance(blocked, dict):
+            fields = blocked.get("fields", {})
+        else:
+            current = board.get_item(blocked_id)
+            if isinstance(current, dict):
+                fields = current.get("fields", {})
+            else:
+                fields = getattr(current, "fields", {})
+        tags = list((fields or {}).get("tags", []) or [])
+        if "blocked" not in [str(tag).lower() for tag in tags]:
+            tags.append("blocked")
+        board.update_item(blocked_id, {"tags": tags})
+    except Exception:  # noqa: BLE001, S110
+        pass
+    try:
+        add_comment = getattr(board, "add_comment", None)
+        if callable(add_comment):
+            add_comment(blocked_id, f"Blocker reported: {evidence}", author="Pam")
+    except Exception:  # noqa: BLE001, S110
+        pass
+    blocking_id = ""
+    try:
+        raw_states = board.list_states() or []
+        states = [str(entry) for entry in raw_states if str(entry)]
+        blocking = board.create_item(
+            f"Blocking: {answer.strip()[:60]}",
+            {"state": states[0] if states else "To Do"},
+        )
+        blocking_id = _blocker_item_id(blocking)
+    except Exception:  # noqa: BLE001
+        blocking_id = ""
+    if blocking_id:
+        try:
+            board.add_link(blocking_id, blocked_id, _BLOCKER_LINK_REL)
+        except Exception:  # noqa: BLE001, S110
+            pass
+    if db is not None:
+        try:
+            from pam_pm.core.writes import WriteService
+
+            service = WriteService(db, dry_run=True)
+            service.propose(
+                {
+                    "operation": "add_link",
+                    "item_id": blocked_id,
+                    "evidence_quote": evidence,
+                    "status": "proposed",
+                    "detail": f"Predecessor {blocking_id} Successor {blocked_id}",
+                }
+            )
+            service.propose(
+                {
+                    "operation": "comment",
+                    "item_id": blocked_id,
+                    "evidence_quote": evidence,
+                    "status": "proposed",
+                    "detail": "blocker flag from no-open-state report",
+                }
+            )
+        except Exception:  # noqa: BLE001, S110
+            pass
+    mid = _send(
+        f"Got it, you are blocked. I linked this to '{title}' ({blocked_id}) "
+        "and flagged it."
+    )
+    return {
+        "kind": "blocker_no_state",
+        "replied": bool(mid),
+        "person": person_id,
+        "item_id": blocked_id,
+        "blocking_item_id": blocking_id,
+        "message_id": mid,
+    }
+
+
 def resume_interview(
     person: Any,
     answer_text: Any,
@@ -756,6 +982,15 @@ def resume_interview(
                     "person": person_id,
                     "item_id": str((latest or {}).get("item_id", "") or ""),
                 }
+        if _looks_like_blocker(answer):
+            return _handle_blocker_without_state(
+                person_id,
+                answer,
+                chat,
+                board,
+                db,
+                _candidate_identities(chat, person_id),
+            )
         mid = _send(NO_OPEN_STATE_REPLY)
         return {
             "kind": "no_open_state",
