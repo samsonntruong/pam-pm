@@ -17,6 +17,13 @@
   const sessionEl = document.getElementById("listen-session");
   const notesBox = document.getElementById("listen-notes-link");
   const errorEl = document.getElementById("listen-error");
+  const proposalsCard = document.getElementById("listen-proposals-card");
+  const proposalsBox = document.getElementById("listen-proposals");
+  const pipelineStatus = document.getElementById("listen-pipeline-status");
+  const proposalsResult = document.getElementById("listen-proposals-result");
+  const approveAllBtn = document.getElementById("listen-approve-all");
+  const approveSelectedBtn = document.getElementById("listen-approve-selected");
+  const discardBtn = document.getElementById("listen-discard");
 
   let ws = null;
   let ctx = null;
@@ -26,6 +33,8 @@
   let pending = new Uint8Array(0);
   let sessionId = root.dataset.session || "";
   let stopped = false;
+  let pipelineStarted = false;
+  let proposals = [];
 
   function setStatus(text, cls) {
     if (!statusEl) return;
@@ -102,6 +111,10 @@
     setError("");
     if (ws) return;
     stopped = false;
+    pipelineStarted = false;
+    proposals = [];
+    if (proposalsCard) proposalsCard.hidden = true;
+    if (proposalsResult) proposalsResult.textContent = "";
     setStatus("Connecting", "");
     if (startBtn) startBtn.disabled = true;
     setTitleDisabled(true);
@@ -172,6 +185,7 @@
       if (stopBtn) stopBtn.disabled = true;
       setTitleDisabled(false);
       showNotesLink();
+      runPipeline();
     };
 
     socket.onerror = function () {
@@ -199,11 +213,174 @@
     if (stopBtn) stopBtn.disabled = true;
     setTitleDisabled(false);
     showNotesLink();
+    runPipeline();
     try { if (ws) ws.close(); } catch (err) { /* noop */ }
   }
 
   if (startBtn) startBtn.addEventListener("click", function () { void start(); });
   if (stopBtn) stopBtn.addEventListener("click", stop);
+
+  function api(path) {
+    return "/api/meetings/" + encodeURIComponent(sessionId) + path +
+      (path.indexOf("?") >= 0 ? "&" : "?") + "project=" + encodeURIComponent(project);
+  }
+
+  function setPipelineStatus(text) {
+    if (pipelineStatus) pipelineStatus.textContent = text || "";
+  }
+
+  function setProposalsResult(text) {
+    if (proposalsResult) proposalsResult.textContent = text || "";
+  }
+
+  function labeledInput(labelText, input) {
+    const label = document.createElement("label");
+    label.appendChild(document.createTextNode(labelText + " "));
+    label.appendChild(input);
+    return label;
+  }
+
+  function renderProposals(list) {
+    proposals = Array.isArray(list) ? list : [];
+    if (!proposalsBox) return;
+    proposalsBox.innerHTML = "";
+    if (!proposals.length) {
+      const none = document.createElement("p");
+      none.className = "muted";
+      none.textContent = "No tasks proposed yet.";
+      proposalsBox.appendChild(none);
+      return;
+    }
+    proposals.forEach(function (draft, index) {
+      const card = document.createElement("article");
+      const heading = document.createElement("h3");
+      const pick = document.createElement("label");
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = true;
+      box.dataset.index = String(index);
+      box.setAttribute("aria-label", "Select proposal " + (index + 1));
+      pick.appendChild(box);
+      pick.appendChild(document.createTextNode(" Proposal " + (index + 1)));
+      heading.appendChild(pick);
+      card.appendChild(heading);
+      const title = document.createElement("input");
+      title.type = "text";
+      title.value = draft.title || "";
+      title.maxLength = 200;
+      title.dataset.field = "title";
+      title.dataset.index = String(index);
+      card.appendChild(labeledInput("Title", title));
+      const owner = document.createElement("input");
+      owner.type = "text";
+      owner.value = draft.owner || "";
+      owner.placeholder = "Unassigned";
+      owner.maxLength = 120;
+      owner.dataset.field = "owner";
+      owner.dataset.index = String(index);
+      card.appendChild(labeledInput("Owner", owner));
+      const estimate = document.createElement("input");
+      estimate.type = "number";
+      estimate.min = "0";
+      estimate.max = "80";
+      estimate.step = "0.5";
+      estimate.value = String(draft.estimate == null ? 2 : draft.estimate);
+      estimate.dataset.field = "estimate";
+      estimate.dataset.index = String(index);
+      card.appendChild(labeledInput("Estimate (hours)", estimate));
+      const evidence = document.createElement("p");
+      evidence.className = "muted";
+      evidence.textContent = "Evidence: " + (draft.evidence_quote || "");
+      card.appendChild(evidence);
+      proposalsBox.appendChild(card);
+    });
+  }
+
+  function readEdits() {
+    const edits = proposals.map(function (draft) {
+      return {
+        title: draft.title || "",
+        owner: draft.owner || "",
+        estimate: draft.estimate == null ? 2 : draft.estimate,
+      };
+    });
+    if (!proposalsBox) return { edits: edits, selected: [] };
+    const selected = [];
+    proposalsBox.querySelectorAll("input[data-field]").forEach(function (input) {
+      const index = Number(input.dataset.index || "-1");
+      if (index < 0 || index >= edits.length) return;
+      if (input.dataset.field === "estimate") {
+        const num = Number(input.value);
+        edits[index].estimate = Number.isFinite(num) ? num : edits[index].estimate;
+      } else {
+        edits[index][input.dataset.field] = input.value;
+      }
+    });
+    proposalsBox.querySelectorAll("input[type=checkbox][data-index]").forEach(function (box) {
+      if (box.checked) selected.push(Number(box.dataset.index));
+    });
+    return { edits: edits, selected: selected };
+  }
+
+  async function runPipeline() {
+    if (!sessionId || pipelineStarted || !proposalsCard) return;
+    pipelineStarted = true;
+    proposalsCard.hidden = false;
+    setPipelineStatus("Summarizing the transcript and proposing tasks...");
+    setProposalsResult("");
+    try {
+      const res = await fetch(api("/finish"), { method: "POST" });
+      const body = await res.json();
+      if (!res.ok || !body.ok) throw new Error((body && body.message) || "pipeline failed");
+      renderProposals(body.proposals || []);
+      const count = (body.proposals || []).length;
+      setPipelineStatus(count ? "Edit below, then approve. Nothing is posted until you approve." : "No tasks proposed from this meeting.");
+    } catch (err) {
+      setPipelineStatus("Proposals failed. Open the meeting page and try Generate notes.");
+    }
+  }
+
+  async function approve(all) {
+    if (!proposals.length) return;
+    const state = readEdits();
+    const selected = all ? proposals.map(function (_, i) { return i; }) : state.selected;
+    if (!selected.length) {
+      setProposalsResult("Select at least one proposal.");
+      return;
+    }
+    setProposalsResult("Approving...");
+    try {
+      const res = await fetch(api("/proposals/approve"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ selected: selected, proposals: state.edits }),
+      });
+      const body = await res.json();
+      if (!res.ok || !body.ok) throw new Error((body && body.message) || "approve failed");
+      setProposalsResult("Created " + body.created + " of " + body.total + " proposed tasks.");
+    } catch (err) {
+      setProposalsResult("Approve failed. Try again.");
+    }
+  }
+
+  async function discard() {
+    if (!sessionId) return;
+    setProposalsResult("Discarding...");
+    try {
+      const res = await fetch(api("/proposals/discard"), { method: "POST" });
+      const body = await res.json();
+      if (!res.ok || !body.ok) throw new Error("discard failed");
+      renderProposals([]);
+      setPipelineStatus("Proposals discarded.");
+      setProposalsResult("Discarded. Nothing was posted.");
+    } catch (err) {
+      setProposalsResult("Discard failed. Try again.");
+    }
+  }
+
+  if (approveAllBtn) approveAllBtn.addEventListener("click", function () { void approve(true); });
+  if (approveSelectedBtn) approveSelectedBtn.addEventListener("click", function () { void approve(false); });
+  if (discardBtn) discardBtn.addEventListener("click", function () { void discard(); });
 
   /* Test hooks for Playwright fake media runs. */
   window.pamListen = {
@@ -211,6 +388,7 @@
     get state() { return statusEl ? statusEl.textContent : ""; },
     start: start,
     stop: stop,
+    proposals: function () { return proposals.slice(); },
     finals: function () {
       if (!transcriptEl) return [];
       return Array.from(transcriptEl.querySelectorAll("li")).map(function (li) { return li.textContent || ""; });

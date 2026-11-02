@@ -32,6 +32,18 @@
     <div id="listen-notes-link" class="form-actions" aria-live="polite"></div>
   </section>
 
+  <section class="card" id="listen-proposals-card" hidden>
+    <h2>Proposed tasks</h2>
+    <p class="muted" id="listen-pipeline-status" aria-live="polite"></p>
+    <div id="listen-proposals" aria-live="polite"></div>
+    <div class="form-actions">
+      <button type="button" id="listen-approve-all">Approve all</button>
+      <button type="button" id="listen-approve-selected">Approve selected</button>
+      <button type="button" id="listen-discard">Discard</button>
+    </div>
+    <p class="muted" id="listen-proposals-result" role="status" aria-live="polite"></p>
+  </section>
+
   <section class="card">
     <h2>Privacy</h2>
     <p class="muted">Audio goes to transcription and is not kept. Only final text is stored. Tell the room before you start: Pam is transcribing this meeting for notes.</p>

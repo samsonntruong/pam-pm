@@ -153,6 +153,15 @@ LISTEN_NOTES_TABLE_DDL = """CREATE TABLE IF NOT EXISTS listen_notes (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 )"""
 
+LISTEN_PROPOSALS_TABLE_DDL = """CREATE TABLE IF NOT EXISTS listen_proposals (
+  session_id TEXT PRIMARY KEY,
+  project TEXT NOT NULL DEFAULT 'default',
+  payload_json TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'proposed',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+)"""
+
 LISTEN_KEEP_AUDIO_KEY = "listen.keep_audio"
 
 CATCHUP_KEY = "catchup_last"
@@ -217,6 +226,7 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
     conn.execute(LISTEN_SESSIONS_TABLE_DDL)
     conn.execute(LISTEN_SEGMENTS_TABLE_DDL)
     conn.execute(LISTEN_NOTES_TABLE_DDL)
+    conn.execute(LISTEN_PROPOSALS_TABLE_DDL)
     from pam_pm.core.memory import MEMORY_LIFECYCLE_TABLE_DDL, PEOPLE_TABLE_DDL
 
     conn.execute(PEOPLE_TABLE_DDL)
@@ -684,6 +694,73 @@ def set_listen_notes_status(db: DbLike, session_id: str, status: str) -> bool:
         return cur.rowcount > 0
 
 
+def save_listen_proposals(
+    db: DbLike,
+    session_id: str,
+    project: str,
+    proposals: list,
+    status: str = "proposed",
+) -> None:
+    """Store task proposals for a session, replacing any prior draft."""
+    want_project = (project or "default").strip() or "default"
+    want_status = (status or "proposed").strip() or "proposed"
+    body = list(proposals or [])
+    with _connect(db) as conn:
+        _ensure_tables(conn)
+        conn.execute(
+            "INSERT INTO listen_proposals"
+            " (session_id, project, payload_json, status,"
+            " created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))"
+            " ON CONFLICT(session_id) DO UPDATE SET"
+            " project = excluded.project,"
+            " payload_json = excluded.payload_json,"
+            " status = excluded.status, updated_at = datetime('now')",
+            (str(session_id), want_project, json.dumps(body), want_status),
+        )
+        conn.commit()
+
+
+def get_listen_proposals(db: DbLike, session_id: str) -> dict | None:
+    """Fetch one proposals draft by session id, or None when missing."""
+    with _connect(db) as conn:
+        _ensure_tables(conn)
+        row = conn.execute(
+            "SELECT session_id, project, payload_json, status"
+            " FROM listen_proposals WHERE session_id = ?",
+            (str(session_id),),
+        ).fetchone()
+    if row is None:
+        return None
+    try:
+        payload = json.loads(row[2] or "[]")
+    except ValueError:
+        payload = []
+    if not isinstance(payload, list):
+        payload = []
+    return {
+        "session_id": str(row[0]),
+        "project": str(row[1] or "default"),
+        "proposals": [p for p in payload if isinstance(p, dict)],
+        "status": str(row[3] or "proposed"),
+    }
+
+
+def set_listen_proposals_status(
+    db: DbLike, session_id: str, status: str
+) -> bool:
+    """Set a proposals draft status, returning True when changed."""
+    with _connect(db) as conn:
+        _ensure_tables(conn)
+        cur = conn.execute(
+            "UPDATE listen_proposals SET status = ?,"
+            " updated_at = datetime('now') WHERE session_id = ?",
+            (str(status), str(session_id)),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
 def get_meeting_detail(db: DbLike, session_id: str) -> dict | None:
     """Return session plus segments plus notes for one meeting."""
     session = get_listen_session(db, str(session_id))
@@ -720,6 +797,9 @@ def delete_meeting(db: DbLike, session_id: str) -> bool:
         )
         conn.execute(
             "DELETE FROM listen_notes WHERE session_id = ?", (want,)
+        )
+        conn.execute(
+            "DELETE FROM listen_proposals WHERE session_id = ?", (want,)
         )
         conn.execute(
             "DELETE FROM listen_sessions WHERE session_id = ?", (want,)

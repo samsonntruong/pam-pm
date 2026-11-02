@@ -5458,6 +5458,121 @@ def _notes_approval_html(
     return "\n".join(parts)
 
 
+def _listen_board_owners(project: str) -> list[str]:
+    owners: list[str] = []
+    for item in _listen_board_items(project):
+        if isinstance(item, dict):
+            raw = item.get("assigned_to", item.get("owner", ""))
+        else:
+            fields = getattr(item, "fields", {}) or {}
+            raw = fields.get("assigned_to", fields.get("owner", ""))
+        name = str(raw or "").strip()
+        if name and name not in owners:
+            owners.append(name)
+    return owners
+
+
+def _listen_team_people(project: str) -> list[dict[str, Any]]:
+    from pam_pm.core import memory as memory_mod
+
+    try:
+        people = [dict(p) for p in memory_mod.list_people(_db_path())]
+    except Exception:  # noqa: BLE001
+        people = []
+    seen = {str(p.get("name", "")).strip().lower() for p in people}
+    for entry in _roster_entries(project):
+        name = str(entry.get("name", "")).strip()
+        if not name or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        people.append(
+            {
+                "name": name,
+                "role": "",
+                "skillsets": str(entry.get("skills", "") or ""),
+            }
+        )
+    return people
+
+
+def _listen_proposals_html(
+    proposals: list[dict[str, Any]],
+    roster: list[dict[str, Any]],
+    session_id: str,
+    project: str,
+) -> str:
+    if not proposals:
+        return (
+            '<section class="card"><h2>Proposed tasks</h2>'
+            "<p class=\"muted\">No tasks proposed yet.</p></section>"
+        )
+    names = [str(e.get("name", "")) for e in roster if str(e.get("name", ""))]
+    cards: list[str] = []
+    for index, draft in enumerate(proposals):
+        title = str(draft.get("title", ""))
+        owner = str(draft.get("owner") or "")
+        try:
+            hours = float(draft.get("estimate", 2.0))
+        except (TypeError, ValueError):
+            hours = 2.0
+        quote = str(draft.get("evidence_quote", ""))
+        options = ['<option value="">Unassigned</option>']
+        for label in names:
+            sel = " selected" if label == owner else ""
+            options.append(
+                f'<option value="{html.escape(label)}"{sel}>'
+                f"{html.escape(label)}</option>"
+            )
+        if owner and owner not in names:
+            options.append(
+                f'<option value="{html.escape(owner)}" selected>'
+                f"{html.escape(owner)}</option>"
+            )
+        cards.append(
+            "<article>"
+            f"<h3><label>"
+            f'<input type="checkbox" name="selected-{index}" '
+            f'value="on" checked> Proposal {index + 1}</label></h3>'
+            f"<label>Title "
+            f'<input type="text" name="title-{index}" '
+            f'value="{html.escape(title)}" maxlength="200"></label>'
+            f"<label>Owner "
+            f'<select name="owner-{index}" '
+            f'aria-label="Owner for proposal {index + 1}">'
+            f'{"".join(options)}</select></label>'
+            f"<label>Estimate (hours) "
+            f'<input type="number" name="estimate-{index}" '
+            f'value="{hours:g}" min="0" max="80" step="0.5"></label>'
+            f"<p class=\"muted\">Evidence: {html.escape(quote)}</p>"
+            "</article>"
+        )
+    sid = html.escape(session_id)
+    proj = html.escape(project)
+    return (
+        '<section class="card"><h2>Proposed tasks</h2>'
+        "<p class=\"muted\">Edit title, owner, and estimate inline. "
+        "Nothing is posted until you approve.</p>"
+        f'<form hx-post="/api/meetings/{sid}/proposals/approve'
+        f'?project={proj}" hx-target="#listen-proposals-result" '
+        'hx-swap="innerHTML">'
+        + "".join(cards) +
+        '<div class="form-actions">'
+        "<button type=\"submit\">Approve selected</button>"
+        "</div></form>"
+        '<div class="form-actions">'
+        f'<button hx-post="/api/meetings/{sid}/proposals/approve'
+        f'?project={proj}&amp;all=1" '
+        'hx-target="#listen-proposals-result" hx-swap="innerHTML">'
+        "Approve all</button>"
+        f'<button hx-post="/api/meetings/{sid}/proposals/discard'
+        f'?project={proj}" hx-target="#listen-proposals-result" '
+        'hx-swap="innerHTML">Discard</button>'
+        "</div>"
+        '<div id="listen-proposals-result" class="result" '
+        'aria-live="polite"></div></section>'
+    )
+
+
 @app.get("/listen", response_class=HTMLResponse)
 def listen_page(request: Request) -> HTMLResponse:
     import uuid as _uuid
@@ -5623,6 +5738,216 @@ async def meeting_approve_route(request: Request, session_id: str) -> Any:
     if "hx-request" in request.headers:
         return HTMLResponse(_test_result_html(True, message))
     return {"ok": True, "created": len(created), "notified": notified, "posted": bool(posted)}
+
+
+@app.post("/api/meetings/{session_id}/finish")
+async def meeting_finish_route(request: Request, session_id: str) -> Any:
+    """Auto pipeline: transcribe saved finals, summarize, propose tasks."""
+    from pam_pm.agents import listen_pipeline as pipeline_mod
+    from pam_pm.agents import notes as notes_mod
+
+    project = _board_project(request)
+    try:
+        detail = store_mod.get_meeting_detail(_db_path(), session_id)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"ok": False, "message": str(exc)[:300]}, status_code=500)
+    if detail is None:
+        return JSONResponse({"ok": False, "message": "Meeting not found."}, status_code=404)
+    transcript = str(detail.get("transcript", "") or "")
+    existing = _listen_board_items(project)
+    roster = _roster_entries(project)
+    context = notes_mod.build_project_context(existing, roster)
+    result = notes_mod.extract_notes(
+        transcript, project_context=context,
+        existing_items=existing, roster=roster,
+    )
+    try:
+        store_mod.save_listen_notes(_db_path(), session_id, project, result)
+    except Exception:  # noqa: BLE001, S110
+        pass
+    people = _listen_team_people(project)
+    owners = _listen_board_owners(project)
+    proposals = pipeline_mod.propose_listen_tasks(
+        transcript, result, people, owners, session_id
+    )
+    try:
+        store_mod.save_listen_proposals(_db_path(), session_id, project, proposals)
+    except Exception:  # noqa: BLE001, S110
+        pass
+    if "hx-request" in request.headers:
+        return HTMLResponse(
+            _listen_proposals_html(proposals, roster, session_id, project)
+        )
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "transcript_chars": len(transcript),
+        "summary": str(result.get("summary", "")),
+        "proposals": proposals,
+    }
+
+
+@app.get("/api/meetings/{session_id}/proposals")
+def meeting_proposals_api(request: Request, session_id: str) -> Any:
+    _ = _board_project(request)
+    try:
+        saved = store_mod.get_listen_proposals(_db_path(), session_id)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"ok": False, "message": str(exc)[:300]}, status_code=500)
+    if saved is None:
+        return JSONResponse({"ok": False, "message": "No proposals yet."}, status_code=404)
+    return {"ok": True, **saved}
+
+
+def _proposal_edits(payload: dict[str, Any], proposals: list[dict[str, Any]]) -> None:
+    for index, draft in enumerate(proposals):
+        title_key, owner_key, est_key = f"title-{index}", f"owner-{index}", f"estimate-{index}"
+        if title_key in payload:
+            title = str(payload[title_key]).strip()
+            if title:
+                draft["title"] = title[:200]
+        if owner_key in payload:
+            draft["owner"] = str(payload[owner_key]).strip() or None
+        if est_key in payload:
+            try:
+                draft["estimate"] = max(0.0, min(80.0, float(payload[est_key])))
+            except (TypeError, ValueError):
+                pass
+    raw_list = payload.get("proposals")
+    if isinstance(raw_list, list):
+        for pos, edit in enumerate(raw_list):
+            if pos < len(proposals) and isinstance(edit, dict):
+                if str(edit.get("title", "")).strip():
+                    proposals[pos]["title"] = str(edit["title"]).strip()[:200]
+                if "owner" in edit:
+                    proposals[pos]["owner"] = str(edit["owner"]).strip() or None
+                if "estimate" in edit:
+                    try:
+                        proposals[pos]["estimate"] = max(0.0, min(80.0, float(edit["estimate"])))
+                    except (TypeError, ValueError):
+                        pass
+
+
+def _proposal_selection(payload: dict[str, Any], count: int) -> list[int]:
+    picked: list[int] = []
+    raw = payload.get("selected")
+    if isinstance(raw, list):
+        for value in raw:
+            try:
+                picked.append(int(value))
+            except (TypeError, ValueError):
+                continue
+    for index in range(count):
+        if str(payload.get(f"selected-{index}", "")).lower() in ("on", "1", "true", "yes"):
+            picked.append(index)
+    return sorted({i for i in picked if 0 <= i < count})
+
+
+@app.post("/api/meetings/{session_id}/proposals/approve")
+async def meeting_proposals_approve_route(request: Request, session_id: str) -> Any:
+    from pam_pm.agents import listen_pipeline as pipeline_mod
+
+    project = _board_project(request)
+    try:
+        saved = store_mod.get_listen_proposals(_db_path(), session_id)
+    except Exception:  # noqa: BLE001
+        saved = None
+    if saved is None or saved.get("status") == "discarded" or not saved.get("proposals"):
+        msg = "No proposals to approve. Finish the meeting first."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg))
+        return JSONResponse({"ok": False, "message": msg}, status_code=400)
+    proposals = [dict(p) for p in saved["proposals"]]
+    payload = await _board_payload(request)
+    _proposal_edits(payload, proposals)
+    want_all = request.query_params.get("all", "").lower() in ("1", "true", "on", "yes")
+    if not want_all:
+        want_all = str(payload.get("all", "")).lower() in ("1", "true", "on", "yes")
+    selected = list(range(len(proposals))) if want_all else _proposal_selection(payload, len(proposals))
+    if not selected:
+        msg = "Select at least one proposal."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg))
+        return JSONResponse({"ok": False, "message": msg}, status_code=400)
+    adapter = get_board_adapter(project)
+    if adapter is None:
+        msg = "Board is not configured for this project."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg))
+        return JSONResponse({"ok": False, "message": msg}, status_code=500)
+    try:
+        detail = store_mod.get_meeting_detail(_db_path(), session_id)
+    except Exception:  # noqa: BLE001
+        detail = None
+    transcript = str((detail or {}).get("transcript", "") or "")
+    title = str(((detail or {}).get("session", {}) or {}).get("title", "") or "")
+    dry_run, _cap = _effective_safety()
+    created = pipeline_mod.approve_listen_proposals(
+        adapter, proposals, selected, session_id, transcript,
+        db=_db_path(), dry_run=dry_run, meeting_title=title,
+    )
+    status = "approved" if len(selected) == len(proposals) else "partial"
+    try:
+        store_mod.save_listen_proposals(_db_path(), session_id, project, proposals, status=status)
+    except Exception:  # noqa: BLE001, S110
+        pass
+    message = f"Created {len(created)} of {len(proposals)} proposed tasks."
+    if "hx-request" in request.headers:
+        return HTMLResponse(_test_result_html(True, message))
+    return {"ok": True, "created": len(created), "total": len(proposals), "status": status}
+
+
+@app.post("/api/meetings/{session_id}/proposals/discard")
+async def meeting_proposals_discard_route(request: Request, session_id: str) -> Any:
+    project = _board_project(request)
+    try:
+        saved = store_mod.get_listen_proposals(_db_path(), session_id)
+    except Exception:  # noqa: BLE001
+        saved = None
+    if saved is None:
+        msg = "No proposals to discard."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg))
+        return JSONResponse({"ok": False, "message": msg}, status_code=404)
+    try:
+        store_mod.save_listen_proposals(_db_path(), session_id, project, [], status="discarded")
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"ok": False, "message": str(exc)[:300]}, status_code=500)
+    if "hx-request" in request.headers:
+        return HTMLResponse(_test_result_html(True, "Discarded. Nothing was posted."))
+    return {"ok": True, "discarded": True}
+
+
+@app.post("/api/meetings/{session_id}/proposals/{index}")
+async def meeting_proposal_edit_route(request: Request, session_id: str, index: int) -> Any:
+    project = _board_project(request)
+    try:
+        saved = store_mod.get_listen_proposals(_db_path(), session_id)
+    except Exception:  # noqa: BLE001
+        saved = None
+    if saved is None or saved.get("status") == "discarded":
+        return JSONResponse({"ok": False, "message": "No proposals to edit."}, status_code=400)
+    proposals = [dict(p) for p in saved.get("proposals", [])]
+    if index < 0 or index >= len(proposals):
+        return JSONResponse({"ok": False, "message": "Unknown proposal."}, status_code=404)
+    payload = await _board_payload(request)
+    draft = proposals[index]
+    if str(payload.get("title", "")).strip():
+        draft["title"] = str(payload["title"]).strip()[:200]
+    if "owner" in payload:
+        draft["owner"] = str(payload["owner"]).strip() or None
+    if "estimate" in payload:
+        try:
+            draft["estimate"] = max(0.0, min(80.0, float(payload["estimate"])))
+        except (TypeError, ValueError):
+            pass
+    try:
+        store_mod.save_listen_proposals(
+            _db_path(), session_id, project, proposals, status=str(saved.get("status", "proposed"))
+        )
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"ok": False, "message": str(exc)[:300]}, status_code=500)
+    return {"ok": True, "index": index, "proposal": draft}
 
 
 @app.delete("/api/meetings/{session_id}")
