@@ -31,6 +31,7 @@ CAP_NEXT_SPRINT = "next_sprint"
 CAP_LISTEN_NOTES = "listen_notes"
 CAP_TRANSCRIBE_REALTIME = "transcribe_realtime"
 CAP_SLACK_AUDIO = "slack_audio"
+CAP_TEAMS_TEXT = "teams_text"
 
 DEFAULT_VISION_MODEL = "sam-3.1"
 TRANSCRIBE_MODEL = "muse-voice-transcribe-1.0"
@@ -38,6 +39,7 @@ TRANSCRIBE_MODEL = "muse-voice-transcribe-1.0"
 TEXT_CAPABILITIES = frozenset(
     {
         CAP_SLACK_TEXT,
+        CAP_TEAMS_TEXT,
         CAP_INTERVIEW,
         CAP_VISION_READ,
         CAP_PLAN,
@@ -363,3 +365,139 @@ def handle_slack_event(
     result["file_id"] = file_id
     result["channel"] = channel
     return result
+
+
+def _teams_graph_fields(event: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a Graph message, bus event, or teams envelope to fields."""
+    text = ""
+    channel = ""
+    user_id = ""
+    message_id = ""
+    attachments: list[Any] = []
+    mimetype = ""
+    filename = ""
+    body = event.get("body")
+    if isinstance(body, dict):
+        from pam_pm.adapters.chat.teams_poll import message_text as _graph_text
+
+        text = _graph_text(event)
+        sender = event.get("from") or {}
+        if isinstance(sender, dict):
+            user = sender.get("user") or {}
+            if isinstance(user, dict):
+                user_id = str(user.get("id", "") or "")
+        channel = str(event.get("chat_id", "") or user_id)
+        message_id = str(event.get("id", "") or "")
+        raw = event.get("attachments") or []
+        attachments = list(raw) if isinstance(raw, list) else []
+    else:
+        text = str(event.get("text", "") or "")
+        user_id = str(event.get("user_id", "") or "")
+        channel = str(event.get("channel", "") or event.get("chat_id", "") or user_id)
+        message_id = str(event.get("message_id", "") or event.get("id", "") or "")
+        raw = event.get("attachments") or []
+        attachments = list(raw) if isinstance(raw, list) else []
+        mimetype = str(event.get("mimetype", "") or "")
+        filename = str(event.get("filename", "") or "")
+    return {
+        "text": text,
+        "channel": channel,
+        "user_id": user_id,
+        "message_id": message_id,
+        "attachments": attachments,
+        "mimetype": mimetype,
+        "filename": filename,
+    }
+
+
+def _teams_attachment_file(attachments: list[Any]) -> tuple[str, str, str]:
+    """Return file id, mimetype, and name for the first file attachment."""
+    for item in attachments:
+        if not isinstance(item, dict):
+            continue
+        content_type = str(item.get("contentType", "") or "").lower()
+        if "reference" not in content_type and "file" not in content_type:
+            continue
+        content = item.get("content") or {}
+        if isinstance(content, dict):
+            url = str(content.get("contentUrl", "") or content.get("url", "") or "")
+            name = str(content.get("name", "") or "")
+        else:
+            url = str(item.get("contentUrl", "") or "")
+            name = str(item.get("name", "") or "")
+        if url:
+            return url, "", name
+    return "", "", ""
+
+
+def handle_teams_event(
+    event: Any,
+    *,
+    chat: Any,
+    board: Any = None,
+    mimetype: str = "",
+    filename: str = "",
+    file_bytes: bytes | None = None,
+    vision: Any = None,
+    segmenter: Any = None,
+    provider: str = "meta",
+    event_sink: Any = None,
+    bot_id: str = "",
+) -> dict[str, Any]:
+    """Route a polled Teams message the same way Slack events route.
+
+    Accepts a Graph chat message, a teams bus event, or a normalized
+    teams_message dict. Pam's own sends and empty non file messages
+    are ignored without a reply. File attachments go to the shared
+    planner path with Approve buttons, exactly like Slack files, so
+    proposals and approvals are unchanged. Text is logged under the
+    Teams text capability and left for rules to answer from the bus,
+    returning kind message with replied False.
+    """
+    payload = event if isinstance(event, dict) else {}
+    if bot_id:
+        sender = payload.get("from") or {}
+        if isinstance(sender, dict):
+            user = sender.get("user") or {}
+            if isinstance(user, dict) and str(user.get("id", "") or "") == bot_id:
+                logger.info("teams event ignored: own message")
+                return {"kind": "ignored", "replied": False}
+    fields = _teams_graph_fields(payload)
+    channel = str(fields["channel"] or "")
+    text = str(fields["text"] or "")
+    file_id, file_mime, file_name = _teams_attachment_file(
+        list(fields["attachments"])
+    )
+    mime = str(mimetype or "") or str(fields["mimetype"] or "") or file_mime
+    name = str(filename or "") or str(fields["filename"] or "") or file_name
+    if file_id and channel:
+        result = handle_slack_file(
+            file_id=file_id,
+            channel=channel,
+            chat=chat,
+            board=board,
+            mimetype=mime,
+            filename=name,
+            file_bytes=file_bytes,
+            vision=vision,
+            segmenter=segmenter,
+            provider=provider,
+            event_sink=event_sink,
+        )
+        result["file_id"] = file_id
+        result["channel"] = channel
+        return result
+    if not text.strip():
+        logger.info("teams event ignored: empty message")
+        return {"kind": "ignored", "replied": False}
+    log_route(CAP_TEAMS_TEXT, text_model(), f"teams message in {channel or 'chat'}")
+    return {
+        "kind": "message",
+        "capability": CAP_TEAMS_TEXT,
+        "model": text_model(),
+        "channel": channel,
+        "user_id": str(fields["user_id"] or ""),
+        "message_id": str(fields["message_id"] or ""),
+        "text": text,
+        "replied": False,
+    }

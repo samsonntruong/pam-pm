@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Teams two-way via Graph polling: Entra device code sign-in in the wizard Teams step, per-chat watermarks on the shared poll interval, DM plus mention detection onto the shared event bus. No public endpoint needed.
+
 ## v0.2.0 - 2026-11-01
 
 - Board backends: built-in editable Pam board plus Azure DevOps, chosen per project in the wizard; capability flags hide what a backend cannot do.

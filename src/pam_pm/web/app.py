@@ -379,6 +379,22 @@ LAST_PLAN: dict[str, Any] = {
 
 _SEEN_SLACK_EVENT_IDS: set[str] = set()
 
+_TEAMS_DEVICE_FLOWS: dict[str, Any] = {}
+TEAMS_TEST_TRANSPORT: Any = None
+
+
+def set_teams_test_transport(transport: Any) -> None:
+    """Pin a fake Entra transport for wizard device tests."""
+    global TEAMS_TEST_TRANSPORT
+    TEAMS_TEST_TRANSPORT = transport
+
+
+def reset_teams_device_state() -> None:
+    """Clear pending device flows and the pinned test transport."""
+    _TEAMS_DEVICE_FLOWS.clear()
+    global TEAMS_TEST_TRANSPORT
+    TEAMS_TEST_TRANSPORT = None
+
 
 def reset_slack_events() -> None:
     """Clear remembered Slack event ids (tests and restarts)."""
@@ -1091,7 +1107,10 @@ def _check_teams() -> tuple[bool, str, str]:
         )
     return (
         True,
-        "Teams check passed. Pam can send messages.",
+        (
+            "Teams check passed. Pam can send messages, and polling brings "
+            "replies in with no public endpoint."
+        ),
         "",
     )
 
@@ -1627,6 +1646,7 @@ def setup_page(request: Request, token: str = "") -> HTMLResponse:
             "has_app_id": False,
             "has_app_password": False,
             "has_tenant_id": False,
+            "has_refresh_token": False,
         }
     try:
         saved_ado = secrets_mod.load_ado_config(Config().ensure_data_dir())
@@ -1698,6 +1718,7 @@ def setup_page(request: Request, token: str = "") -> HTMLResponse:
             "teams_has_app_id": bool(saved_teams.get("has_app_id", False)),
             "teams_has_password": bool(saved_teams.get("has_app_password", False)),
             "teams_has_tenant": bool(saved_teams.get("has_tenant_id", False)),
+            "teams_signed_in": bool(saved_teams.get("has_refresh_token", False)),
             "ado_org_url": str(saved_ado.get("org_url", "") or ""),
             "ado_project": str(saved_ado.get("project", "") or ""),
             "ado_team": str(saved_ado.get("team", "") or ""),
@@ -3448,6 +3469,156 @@ async def save_setup_teams(request: Request) -> Any:
     if "hx-request" in request.headers:
         return HTMLResponse(_test_result_html(True, message))
     return {"ok": True, "project": project, "teams": saved}
+
+
+@app.post("/api/setup/teams/device/start")
+async def start_teams_device(request: Request) -> Any:
+    """Start the Entra device code sign-in for Teams polling.
+
+    Returns the user code plus the microsoft.com/devicelogin link for
+    the wizard to show. The device code stays server side, keyed by
+    project, and is never logged or returned to the browser.
+    """
+    if not await _setup_token_ok(request):
+        return _setup_token_denied(request)
+    project = _safe_project(request.query_params.get("project", "default"))
+    app_id = ""
+    tenant_id = ""
+    ctype = request.headers.get("content-type", "")
+    try:
+        if "application/json" in ctype:
+            payload = await request.json()
+            fields = _setup_payload(
+                request, payload if isinstance(payload, dict) else {}
+            )
+            project = _safe_project(fields.get("project", project))
+            app_id = fields.get("app_id", fields.get("TEAMS_APP_ID", ""))
+            tenant_id = fields.get("tenant_id", fields.get("TEAMS_TENANT_ID", ""))
+        else:
+            form = await request.form()
+            project = _safe_project(str(form.get("project", project) or project))
+            app_id = str(form.get("app_id", form.get("TEAMS_APP_ID", "") or "") or "")
+            tenant_id = str(
+                form.get("tenant_id", form.get("TEAMS_TENANT_ID", "") or "") or ""
+            )
+    except Exception:  # noqa: BLE001
+        return JSONResponse(
+            {"ok": False, "message": "Device sign-in could not start."},
+            status_code=400,
+        )
+    try:
+        from pam_pm.adapters.chat import teams_auth as teams_auth_mod
+
+        if app_id.strip() or tenant_id.strip():
+            secrets_mod.save_teams_config(
+                Config().ensure_data_dir(),
+                app_id=app_id,
+                tenant_id=tenant_id,
+            )
+        effective = secrets_mod.effective_teams_config(Config().ensure_data_dir())
+        session = teams_auth_mod.start_device_code(
+            str(effective.get("app_id", "") or ""),
+            str(effective.get("tenant_id", "") or ""),
+            transport=TEAMS_TEST_TRANSPORT,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("teams device start failed")
+        detail = str(exc)[:200] if str(exc) else "Check the App ID and Tenant ID."
+        return JSONResponse({"ok": False, "message": detail}, status_code=502)
+    _TEAMS_DEVICE_FLOWS[project] = session
+    return {
+        "ok": True,
+        "project": project,
+        "user_code": session.user_code,
+        "verification_uri": session.verification_uri,
+        "message": session.message,
+        "expires_in": session.expires_in,
+        "interval": session.interval,
+    }
+
+
+@app.post("/api/setup/teams/device/poll")
+async def poll_teams_device(request: Request) -> Any:
+    """Poll once for device code completion, storing the refresh token.
+
+    Pending returns status pending so the wizard can retry. Complete
+    stores the refresh token in the secrets store (0600) and marks
+    the project signed in for silent hourly token minting.
+    """
+    if not await _setup_token_ok(request):
+        return _setup_token_denied(request)
+    project = _safe_project(request.query_params.get("project", "default"))
+    try:
+        if "application/json" in request.headers.get("content-type", ""):
+            payload = await request.json()
+            if isinstance(payload, dict):
+                fields = _setup_payload(request, payload)
+                project = _safe_project(fields.get("project", project))
+    except Exception:  # noqa: BLE001, S110
+        pass
+    session = _TEAMS_DEVICE_FLOWS.get(project)
+    if session is None:
+        return JSONResponse(
+            {"ok": False, "status": "missing", "message": "Start sign-in first."},
+            status_code=400,
+        )
+    try:
+        from pam_pm.adapters.chat import teams_auth as teams_auth_mod
+
+        effective = secrets_mod.effective_teams_config(Config().ensure_data_dir())
+        result = teams_auth_mod.poll_device_token(
+            session,
+            client_secret=str(effective.get("app_password", "") or ""),
+            transport=TEAMS_TEST_TRANSPORT,
+        )
+    except Exception as exc:  # noqa: BLE001
+        from pam_pm.adapters.chat import teams_auth as teams_auth_mod
+
+        if isinstance(exc, teams_auth_mod.DeviceCodePending):
+            return {"ok": True, "status": "pending", "project": project}
+        if isinstance(exc, teams_auth_mod.DeviceCodeSlowDown):
+            return {"ok": True, "status": "pending", "slow_down": True, "project": project}
+        if isinstance(exc, teams_auth_mod.DeviceCodeExpired):
+            _TEAMS_DEVICE_FLOWS.pop(project, None)
+            return JSONResponse(
+                {"ok": False, "status": "expired", "message": str(exc)},
+                status_code=410,
+            )
+        logger.warning("teams device poll failed")
+        return JSONResponse(
+            {"ok": False, "status": "error", "message": str(exc)[:200]},
+            status_code=502,
+        )
+    teams_auth_mod.store_teams_refresh_token(
+        result.refresh_token, Config().ensure_data_dir()
+    )
+    _TEAMS_DEVICE_FLOWS.pop(project, None)
+    try:
+        secrets_mod.save_teams_config(Config().ensure_data_dir())
+    except Exception:  # noqa: BLE001, S110
+        pass
+    try:
+        _write_project_step(project, "teams_signin", {"signed_in": True})
+    except Exception:  # noqa: BLE001, S110
+        pass
+    return {"ok": True, "status": "complete", "project": project, "signed_in": True}
+
+
+@app.get("/api/setup/teams/device/status")
+async def teams_device_status(request: Request) -> Any:
+    """Return whether Teams polling is signed in for a project."""
+    project = _safe_project(request.query_params.get("project", "default"))
+    try:
+        saved = secrets_mod.load_teams_config(Config().ensure_data_dir())
+        signed_in = bool(saved.get("has_refresh_token", False))
+    except Exception:  # noqa: BLE001
+        signed_in = False
+    return {
+        "ok": True,
+        "project": project,
+        "signed_in": signed_in,
+        "pending": project in _TEAMS_DEVICE_FLOWS,
+    }
 
 
 @app.post("/api/setup/ado")

@@ -23,6 +23,7 @@ SECRET_FILES = {
     "TEAMS_APP_ID": "teams_app_id.txt",
     "TEAMS_APP_PASSWORD": "teams_app_password.txt",
     "TEAMS_TENANT_ID": "teams_tenant_id.txt",
+    "TEAMS_REFRESH_TOKEN": "teams_refresh_token.txt",
     "ADO_PAT": "ado_pat.txt",
     "JIRA_API_TOKEN": "jira_api_token.txt",
     "LINEAR_API_KEY": "linear_api_key.txt",
@@ -240,21 +241,29 @@ def save_teams_config(
     app_id: str = "",
     app_password: str = "",
     tenant_id: str = "",
+    refresh_token: str = "",
 ) -> dict[str, Any]:
     has_app_id = save_secret("TEAMS_APP_ID", app_id, data_dir)
     has_password = save_secret("TEAMS_APP_PASSWORD", app_password, data_dir)
     has_tenant = save_secret("TEAMS_TENANT_ID", tenant_id, data_dir)
+    if (refresh_token or "").strip():
+        has_refresh = save_secret("TEAMS_REFRESH_TOKEN", refresh_token, data_dir)
+    else:
+        has_refresh = has_secret("TEAMS_REFRESH_TOKEN", data_dir)
     payload = {
         "has_app_id": bool(has_app_id),
         "has_app_password": bool(has_password),
         "has_tenant_id": bool(has_tenant),
+        "has_refresh_token": bool(has_refresh),
     }
     _write_json(TEAMS_FILENAME, payload, data_dir)
     logger.info(
-        "teams config saved: has_app_id=%s has_app_password=%s has_tenant_id=%s",
+        "teams config saved: has_app_id=%s has_app_password=%s has_tenant_id=%s"
+        " has_refresh_token=%s",
         payload["has_app_id"],
         payload["has_app_password"],
         payload["has_tenant_id"],
+        payload["has_refresh_token"],
     )
     return dict(payload)
 
@@ -264,6 +273,7 @@ def load_teams_config(data_dir: str | Path | None = None) -> dict[str, Any]:
         "has_app_id": has_secret("TEAMS_APP_ID", data_dir),
         "has_app_password": has_secret("TEAMS_APP_PASSWORD", data_dir),
         "has_tenant_id": has_secret("TEAMS_TENANT_ID", data_dir),
+        "has_refresh_token": has_secret("TEAMS_REFRESH_TOKEN", data_dir),
     }
 
 
@@ -274,6 +284,7 @@ def effective_teams_config(
         "app_id": effective_secret("TEAMS_APP_ID", data_dir),
         "app_password": effective_secret("TEAMS_APP_PASSWORD", data_dir),
         "tenant_id": effective_secret("TEAMS_TENANT_ID", data_dir),
+        "refresh_token": effective_secret("TEAMS_REFRESH_TOKEN", data_dir),
     }
 
 

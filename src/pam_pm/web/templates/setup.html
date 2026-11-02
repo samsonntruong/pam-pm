@@ -125,13 +125,14 @@
 
 <section class="card" id="step-2-teams">
   <h2>Step 2: Microsoft Teams (optional)</h2>
-  <p><img src="/static/icons/teams.svg" alt="" width="16" height="16"> Slack is the recommended path. If your team lives in Teams instead, register ONE bot in the Azure portal and paste the three values below, choose Save, then Test.</p>
+  <p><img src="/static/icons/teams.svg" alt="" width="16" height="16"> Slack is the recommended path. Teams is two-way via polling, not bot callbacks: Pam checks your watched 1:1 chats and channels on the poll interval from Settings. No public endpoint needed and no inbound ports.</p>
+  <p class="muted">Admin consent note: before you sign in below, your Microsoft 365 admin must consent once to the Chat and Channel message permissions on the app registration. Without that consent, sign-in succeeds but polling returns nothing.</p>
   <label for="teams-app-id">Teams App ID</label>
   <input id="teams-app-id" name="app_id" type="password" value="" placeholder="{% if teams_has_app_id %}Saved on this machine{% else %}Paste app ID here{% endif %}" autocomplete="off">
   <p class="muted">Find it on the app registration Overview page as Application (client) ID.</p>
   <label for="teams-password">App Password (client secret)</label>
   <input id="teams-password" name="app_password" type="password" value="" placeholder="{% if teams_has_password %}Saved on this machine{% else %}Paste client secret here{% endif %}" autocomplete="off">
-  <p class="muted">Find it under Certificates and secrets. Copy the secret Value right after you create it.</p>
+  <p class="muted">Find it under Certificates and secrets. Copy the secret Value right after you create it. Only used for token calls that need it.</p>
   <label for="teams-tenant">Tenant ID</label>
   <input id="teams-tenant" name="tenant_id" type="password" value="" placeholder="{% if teams_has_tenant %}Saved on this machine{% else %}Paste tenant ID here{% endif %}" autocomplete="off">
   <p class="muted">Find it on the app registration Overview page as Directory (tenant) ID.</p>
@@ -141,6 +142,18 @@
   </div>
   <div id="teams-save-result" class="result" aria-live="polite"></div>
   <div id="teams-result" class="result" aria-live="polite"></div>
+  <h3>Sign in for polling</h3>
+  {% if teams_signed_in %}
+  <p><span class="pill pill-ok">Pass: Teams polling is signed in</span></p>
+  <p class="muted">Pam mints a fresh access token silently each hour from the stored sign-in. Start a new sign-in below only to switch accounts.</p>
+  {% else %}
+  <p class="muted">After saving the App ID and Tenant ID above, start sign-in, open the link on any device, enter the shown code, then check status.</p>
+  {% endif %}
+  <div>
+    <button type="button" onclick="startTeamsDevice()">Start sign-in</button>
+    <button type="button" onclick="pollTeamsDevice()">I signed in, check status</button>
+  </div>
+  <div id="teams-device-result" class="result" aria-live="polite"></div>
 </section>
 
 <section class="card" id="step-3" {% if not show_ado %}hidden{% endif %}>
@@ -423,6 +436,63 @@
       if (tenant) tenant.value = "";
       await saveStep("teams", {data: {}});
     } catch (err) { saveResult("teams-save-result", false, "Save failed. Check your connection and try again."); }
+  }
+  async function startTeamsDevice() {
+    const project = projectName();
+    const box = document.getElementById("teams-device-result");
+    try {
+      const resp = await fetch("/api/setup/teams/device/start", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({project: project, token: setupToken()})
+      });
+      const data = await resp.json().catch(function () { return {}; });
+      if (!resp.ok || data.ok === false || !data.user_code) {
+        saveResult("teams-device-result", false, (data && data.message) ? data.message : "Sign-in failed to start. Save the App ID and Tenant ID first.");
+        return;
+      }
+      if (box) {
+        box.innerHTML = "";
+        const para = document.createElement("p");
+        const link = document.createElement("a");
+        link.href = data.verification_uri || "https://microsoft.com/devicelogin";
+        link.target = "_blank";
+        link.rel = "noopener";
+        link.textContent = data.verification_uri || "https://microsoft.com/devicelogin";
+        para.appendChild(document.createTextNode("Open "));
+        para.appendChild(link);
+        para.appendChild(document.createTextNode(" and enter this code: "));
+        const code = document.createElement("code");
+        code.textContent = data.user_code;
+        para.appendChild(code);
+        box.appendChild(para);
+        const hint = document.createElement("p");
+        hint.className = "muted";
+        hint.textContent = "After signing in there, choose 'I signed in, check status'.";
+        box.appendChild(hint);
+      }
+    } catch (err) { saveResult("teams-device-result", false, "Sign-in failed to start. Check your connection and try again."); }
+  }
+  async function pollTeamsDevice() {
+    const project = projectName();
+    try {
+      const resp = await fetch("/api/setup/teams/device/poll", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({project: project, token: setupToken()})
+      });
+      const data = await resp.json().catch(function () { return {}; });
+      if (data && data.status === "complete") {
+        saveResult("teams-device-result", true, "Teams polling is signed in.");
+        await saveStep("teams_signin", {data: {signed_in: true}});
+      } else if (data && data.status === "pending") {
+        saveResult("teams-device-result", true, "Still waiting. Finish signing in at the link above, then check again.");
+      } else if (data && data.status === "expired") {
+        saveResult("teams-device-result", false, "The code expired. Start sign-in again for a fresh code.");
+      } else {
+        saveResult("teams-device-result", false, (data && data.message) ? data.message : "Sign-in is not finished yet.");
+      }
+    } catch (err) { saveResult("teams-device-result", false, "Check failed. Check your connection and try again."); }
   }
   async function saveAdo() {
     const project = projectName();

@@ -1,11 +1,15 @@
-"""Teams adapter over the Bot Framework REST API.
+"""Teams adapter: Bot Framework send plus Graph poll mode.
 
-Realtime inbound messages arrive through the Bot Framework messaging
-endpoint, which calls handle_activity (directly or through
-publish_activity_to_bus onto the shared EventBus). This adapter only
-wraps token plus conversation calls, so importing or constructing it
-never touches the network. Tests must not call its live methods; use
-httpx.MockTransport or InMemoryChat instead.
+Outbound messages always go through the Bot Framework REST API.
+Inbound has two modes. Send mode (default) receives Bot Framework
+activities through handle_activity. Poll mode attaches a Graph
+poller: poll_once drains watched 1:1 chats and channels into the
+same inbound queues, so read_replies, proposals, and approvals work
+unchanged with no public endpoint and no inbound ports.
+
+Importing or constructing this adapter never touches the network.
+Tests must not call its live methods; use httpx.MockTransport or
+InMemoryChat instead.
 """
 
 from __future__ import annotations
@@ -38,7 +42,12 @@ def redact(text: object, *secrets: str) -> str:
     try:
         from pam_pm.core import secrets as secrets_mod
 
-        for name in ("TEAMS_APP_ID", "TEAMS_APP_PASSWORD", "TEAMS_TENANT_ID"):
+        for name in (
+            "TEAMS_APP_ID",
+            "TEAMS_APP_PASSWORD",
+            "TEAMS_TENANT_ID",
+            "TEAMS_REFRESH_TOKEN",
+        ):
             saved.append(secrets_mod.load_secret(name))
     except Exception:  # noqa: BLE001
         saved = []
@@ -47,6 +56,7 @@ def redact(text: object, *secrets: str) -> str:
         os.environ.get("TEAMS_APP_ID", ""),
         os.environ.get("TEAMS_APP_PASSWORD", ""),
         os.environ.get("TEAMS_TENANT_ID", ""),
+        os.environ.get("TEAMS_REFRESH_TOKEN", ""),
         *saved,
     ]
     for val in values:
@@ -121,6 +131,7 @@ class TeamsAdapter(ChatAdapter):
         timeout: int = 30,
         transport: httpx.BaseTransport | None = None,
         data_dir: str | Path | None = None,
+        mode: str = "send",
     ) -> None:
         self._app_id = self._resolve_value("TEAMS_APP_ID", app_id, data_dir)
         self._app_password = self._resolve_value(
@@ -133,6 +144,9 @@ class TeamsAdapter(ChatAdapter):
         self._client: httpx.Client | None = None
         self._token: str = ""
         self._inbound: dict[str, deque[ChatMessage]] = {}
+        want = str(mode or "send").strip().lower()
+        self._mode = "poll" if want == "poll" else "send"
+        self._poller: Any | None = None
 
     @staticmethod
     def _resolve_value(
@@ -159,6 +173,32 @@ class TeamsAdapter(ChatAdapter):
     @property
     def tenant_id(self) -> str:
         return self._tenant_id
+
+    @property
+    def poll_mode(self) -> bool:
+        """True when inbound arrives through the attached Graph poller."""
+        return self._mode == "poll"
+
+    def attach_poller(self, poller: Any) -> None:
+        """Attach a Graph poller used by poll_once in poll mode."""
+        self._poller = poller
+        self._mode = "poll"
+
+    def poll_once(self) -> list[ChatMessage]:
+        """Poll watched chats once, queueing inbound for read_replies.
+
+        Send mode returns an empty list. Poll mode without an
+        attached poller raises TeamsError.
+        """
+        if not self.poll_mode:
+            return []
+        if self._poller is None:
+            raise TeamsError("poll mode needs an attached Graph poller.")
+        found = list(self._poller.poll_once())
+        for message in found:
+            if isinstance(message, ChatMessage):
+                self._inbound.setdefault(message.user_id, deque()).append(message)
+        return [item for item in found if isinstance(item, ChatMessage)]
 
     def _client_or_raise(self) -> httpx.Client:
         if self._client is not None:
