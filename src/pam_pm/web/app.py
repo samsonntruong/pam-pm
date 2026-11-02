@@ -59,6 +59,8 @@ from pam_pm.models.vision import plan_from_photo
 
 _SLACK_POLLER: Any = None
 _SLACK_POLL_TASK: Any = None
+_SLACK_SOCKET: Any = None
+_SLACK_SOCKET_PROJECT = "default"
 
 logger = logging.getLogger(__name__)
 
@@ -524,10 +526,11 @@ def poll_slack_once(project: str = "default") -> list[Any]:
 
 
 async def _slack_poll_loop(project: str = "default") -> None:
-    """Poll Slack DMs forever on the shared poll interval."""
+    """Poll Slack DMs forever; stand down while the socket is healthy."""
     while True:
         try:
-            await asyncio.to_thread(poll_slack_once, project)
+            if not slack_socket_healthy():
+                await asyncio.to_thread(poll_slack_once, project)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001
@@ -563,9 +566,153 @@ def stop_slack_polling() -> None:
             logger.info("slack poll task cancel skipped")
 
 
+def slack_app_token() -> str:
+    """Return the configured Slack app token (xapp), or blank."""
+    try:
+        tokens = secrets_mod.effective_slack_tokens()
+    except Exception:  # noqa: BLE001
+        tokens = {"app_token": os.environ.get("SLACK_APP_TOKEN", "")}
+    token = str((tokens or {}).get("app_token", "") or "").strip()
+    if not token:
+        token = os.environ.get("SLACK_APP_TOKEN", "").strip()
+    return token
+
+
+def slack_socket_configured() -> bool:
+    """Return True when a Slack app token is available."""
+    return bool(slack_app_token())
+
+
+def slack_socket_healthy() -> bool:
+    """Return True while the Socket Mode websocket is live."""
+    sock = _SLACK_SOCKET
+    if sock is None:
+        return False
+    try:
+        return bool(sock.is_healthy)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def get_slack_socket() -> Any | None:
+    """Return the shared SocketModeInbound, if any."""
+    return _SLACK_SOCKET
+
+
+def _on_socket_status(live: bool) -> None:
+    """Log socket transitions; the poll loop reads health each tick."""
+    if live:
+        logger.info("slack socket live, poller on backup")
+    else:
+        logger.info("slack socket down, poller resumed")
+
+
+def _route_socket_envelope(
+    envelope: dict[str, Any], project: str
+) -> dict[str, Any]:
+    """Route one Socket Mode envelope through handle_slack_event.
+
+    Shares _SEEN_SLACK_EVENT_IDS with the webhook and poller so a
+    message handled on one path never fires again on another.
+    """
+    if not isinstance(envelope, dict):
+        return {}
+    if str(envelope.get("type", "") or "") == "url_verification":
+        return {}
+    event_id = str(envelope.get("event_id", "") or "").strip()
+    if event_id and event_id in _SEEN_SLACK_EVENT_IDS:
+        return {"ok": True, "duplicate": True}
+    try:
+        poller_id = _slack_poller_event_id(envelope)
+    except Exception:  # noqa: BLE001
+        poller_id = ""
+    if poller_id and poller_id in _SEEN_SLACK_EVENT_IDS:
+        return {"ok": True, "duplicate": True}
+    chat = get_chat_adapter(project)
+    if chat is None:
+        return {}
+    try:
+        result = router_mod.handle_slack_event(
+            envelope,
+            chat=chat,
+            board=get_board_adapter(project),
+            db=_db_path(),
+            model_client=_resume_model_client(project),
+            event_sink=bus.publish,
+        )
+    except Exception:  # noqa: BLE001
+        logger.info("slack socket resume failed, keeping local result")
+        return {}
+    if event_id:
+        _remember_slack_event(event_id)
+    if poller_id:
+        _remember_slack_event(poller_id)
+    return result if isinstance(result, dict) else {}
+
+
+def start_slack_socket(
+    project: str = "default",
+    client_factory: Any = None,
+    app_token: str | None = None,
+) -> Any | None:
+    """Start SocketModeInbound when an app token is configured.
+
+    Opens one outbound websocket (no inbound ports). Returns the shared
+    inbound, or None when no app token is configured.
+    """
+    global _SLACK_SOCKET, _SLACK_SOCKET_PROJECT
+    if _SLACK_SOCKET is not None:
+        return _SLACK_SOCKET
+    token = str(app_token).strip() if app_token is not None else slack_app_token()
+    if not token:
+        return None
+    try:
+        from pam_pm.adapters.chat.slack_socket import SocketModeInbound
+    except Exception:  # noqa: BLE001
+        return None
+    name = (project or "default").strip() or "default"
+    _SLACK_SOCKET_PROJECT = name
+
+    def _on_envelope(payload: dict[str, Any]) -> None:
+        _route_socket_envelope(payload, _SLACK_SOCKET_PROJECT)
+
+    try:
+        inbound = SocketModeInbound(
+            token,
+            _on_envelope,
+            client_factory=client_factory,
+            on_status=_on_socket_status,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    _SLACK_SOCKET = inbound
+    try:
+        inbound.start()
+    except Exception:  # noqa: BLE001
+        logger.info("slack socket startup skipped")
+    return inbound
+
+
+def stop_slack_socket() -> None:
+    """Stop the Socket Mode websocket and drop the shared inbound."""
+    global _SLACK_SOCKET
+    inbound = _SLACK_SOCKET
+    _SLACK_SOCKET = None
+    if inbound is None:
+        return
+    try:
+        inbound.stop()
+    except Exception:  # noqa: BLE001
+        logger.info("slack socket shutdown skipped")
+
+
 @app.on_event("startup")
 async def _startup_slack_poll() -> None:
-    """Start Slack DM polling when Slack is configured."""
+    """Start Socket Mode when configured, with the poller as backup."""
+    try:
+        start_slack_socket()
+    except Exception:  # noqa: BLE001
+        logger.info("slack socket startup skipped")
     try:
         start_slack_polling()
     except Exception:  # noqa: BLE001
@@ -574,7 +721,11 @@ async def _startup_slack_poll() -> None:
 
 @app.on_event("shutdown")
 async def _shutdown_slack_poll() -> None:
-    """Stop the Slack DM poller."""
+    """Stop the Socket Mode websocket and the Slack DM poller."""
+    try:
+        stop_slack_socket()
+    except Exception:  # noqa: BLE001
+        logger.info("slack socket shutdown skipped")
     try:
         stop_slack_polling()
     except Exception:  # noqa: BLE001
