@@ -31,6 +31,14 @@ _TOKEN_RES = (
 
 _USER_ID_RE = re.compile(r"^[UW][A-Z0-9]{2,}$")
 
+# Process-wide name -> user id cache so repeated polls do not hammer the API.
+_USER_ID_CACHE: dict[str, str] = {}
+
+
+def clear_user_id_cache() -> None:
+    """Clear the process-wide Slack user id cache (tests)."""
+    _USER_ID_CACHE.clear()
+
 
 def redact(text: object, extra: str | None = None) -> str:
     """Redact Slack tokens and bearer values from log text."""
@@ -135,20 +143,75 @@ class SlackAdapter(ChatAdapter):
             return data
         return resp
 
+    def _resolve_via_dm_membership(self, client: Any, key: str) -> str | None:
+        """Resolve a lowercase name via DM membership plus users.info."""
+        list_fn = getattr(client, "conversations_list", None)
+        info_fn = getattr(client, "users_info", None)
+        if not callable(list_fn) or not callable(info_fn):
+            return None
+        try:
+            payload = self._unwrap(list_fn(types="im", limit=200))
+        except TypeError:
+            try:
+                payload = self._unwrap(list_fn(types="im"))
+            except Exception:  # noqa: BLE001
+                return None
+        except Exception:  # noqa: BLE001
+            return None
+        channels = payload.get("channels", []) if isinstance(payload, dict) else []
+        for entry in channels or []:
+            if not isinstance(entry, dict):
+                continue
+            uid = str(entry.get("user", "") or "").strip()
+            if not uid:
+                continue
+            try:
+                detail = self._unwrap(info_fn(user=uid))
+            except Exception:  # noqa: BLE001,S112
+                continue
+            user = detail.get("user", {}) if isinstance(detail, dict) else {}
+            if not isinstance(user, dict):
+                continue
+            profile = user.get("profile", {})
+            if not isinstance(profile, dict):
+                profile = {}
+            candidates = (
+                str(profile.get("display_name", "") or ""),
+                str(user.get("real_name", "") or ""),
+            )
+            if any(c.strip().lower() == key for c in candidates if c.strip()):
+                return uid
+        return None
+
     def _resolve_user_id(self, client: Any, name: str) -> str | None:
-        """Resolve a display name to a Slack user ID via users.list."""
+        """Resolve a display name to a Slack user ID.
+
+        Tries DM channel membership first (authoritative user ids per
+        channel, matched via users.info), then users.list display or
+        real name match. Results cache process-wide.
+        """
         stripped = name.strip()
         if not stripped:
             return None
         if self._looks_like_user_id(stripped):
             return stripped
         key = stripped.lower()
-        cached = self._user_cache.get(key)
+        cached = self._user_cache.get(key) or _USER_ID_CACHE.get(key)
         if cached:
+            self._user_cache[key] = cached
             return cached
         try:
-            resp = self._unwrap(client.users_list())
+            via_dm = self._resolve_via_dm_membership(client, key)
         except Exception:  # noqa: BLE001
+            via_dm = None
+        if via_dm:
+            self._user_cache[key] = via_dm
+            _USER_ID_CACHE[key] = via_dm
+            return via_dm
+        try:
+            resp = self._unwrap(client.users_list())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("slack resolve '%s' failed via users.list: %s", name, exc)
             return None
         members = resp.get("members", []) if isinstance(resp, dict) else []
         for member in members or []:
@@ -163,10 +226,13 @@ class SlackAdapter(ChatAdapter):
             candidates = (
                 str(profile.get("display_name", "") or ""),
                 str(member.get("real_name", "") or ""),
+                str(profile.get("real_name", "") or ""),
             )
             if any(c.strip().lower() == key for c in candidates if c.strip()):
                 self._user_cache[key] = uid
+                _USER_ID_CACHE[key] = uid
                 return uid
+        logger.warning("slack resolve '%s' failed: no match in users.list", name)
         return None
 
     def _resolve_dm_channel(self, client: Any, target: str) -> str | None:

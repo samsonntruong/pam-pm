@@ -134,6 +134,19 @@ def publish_slack_message_to_bus(
     return bus.publish(event)
 
 
+def bot_id_from_client(client: Any) -> str:
+    """Return the bot user ID via auth.test, or blank on failure."""
+    if client is None or not callable(getattr(client, "auth_test", None)):
+        return ""
+    try:
+        payload = _unwrap(client.auth_test())
+    except Exception:  # noqa: BLE001
+        return ""
+    if isinstance(payload, dict):
+        return str(payload.get("user_id", "") or "").strip()
+    return ""
+
+
 def _raw_client_of(source: Any) -> Any | None:
     if source is None:
         return None
@@ -230,6 +243,15 @@ class SlackPoller:
             self.interval = interval
         self.bus = bus
         self.bot_user_id = (bot_user_id or "").strip()
+        if not self.bot_user_id:
+            try:
+                learned = bot_id_from_client(_raw_client_of(source))
+            except Exception:  # noqa: BLE001
+                learned = ""
+            if learned:
+                self.bot_user_id = learned
+            else:
+                logger.warning("slack poll: auth.test failed, bot user id unknown")
         self.on_message = on_message
         self.seen_hook = seen_hook
         self._seen_ids: set[str] = set()
