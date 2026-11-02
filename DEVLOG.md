@@ -71,6 +71,7 @@ Build log for Pam. Three lines per entry.
 | Muse Code | E2E loop simulations | Six full journeys with fakes, live Meta plus SAM checks pass, 387 pass |
 | Muse Code | Teams chat connector | Bot Framework adapter, wizard card, 10 tests, 397 pass |
 | Muse Code | Phase 0 batch A1 | Test check-in, ADO writes, reporter-first, poll setting, 415 pass |
+| Muse Code | Phase 0 batch A2 | Blocker action plan with child tasks and ETA, 436 pass |
 
 ## Entries
 
