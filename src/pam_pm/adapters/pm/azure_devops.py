@@ -89,6 +89,16 @@ _CANONICAL_STATES = {"open", "active", "done"}
 class ADOError(RuntimeError):
     """ADO call failure with the PAT already redacted."""
 
+    def __init__(
+        self,
+        message: str = "",
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.applied: list[str] = []
+        self.rejected: dict[str, str] = {}
+
 
 class ADOAdapter(PMAdapter):
     """PM adapter backed by the ADO work item REST API."""
@@ -372,7 +382,8 @@ class ADOAdapter(PMAdapter):
         if resp.status_code >= 400:
             detail = resp.text[:500]
             raise ADOError(
-                self._clean(f"{method} {url} status={resp.status_code}: {detail}")
+                self._clean(f"{method} {url} status={resp.status_code}: {detail}"),
+                status_code=resp.status_code,
             )
         if not resp.text.strip():
             return {}
@@ -446,41 +457,133 @@ class ADOAdapter(PMAdapter):
         return item
 
     @staticmethod
-    def _patch_ops(fields: dict[str, Any]) -> list[dict[str, Any]]:
-        ops: list[dict[str, Any]] = []
-        for key, val in fields.items():
-            if key.startswith("/fields/"):
-                path = key
-            elif key in FIELD_MAP:
-                path = "/fields/" + FIELD_MAP[key]
-            elif "." in key:
-                path = "/fields/" + key
-            else:
-                path = "/fields/" + key
-            ops.append({"op": "add", "path": path, "value": val})
-        return ops
+    def _field_path(key: str) -> str:
+        if key.startswith("/fields/"):
+            return key
+        if key in FIELD_MAP:
+            return "/fields/" + FIELD_MAP[key]
+        return "/fields/" + key
+
+    @classmethod
+    def _patch_ops(cls, fields: dict[str, Any]) -> list[dict[str, Any]]:
+        return [
+            {"op": "add", "path": cls._field_path(key), "value": val}
+            for key, val in fields.items()
+        ]
+
+    def _attach_write_meta(
+        self,
+        item: WorkItem,
+        warnings: list[str],
+        applied: list[str],
+        rejected: dict[str, str],
+    ) -> WorkItem:
+        if warnings:
+            item.fields["warning"] = warnings[0]
+            if len(warnings) > 1:
+                item.fields["warnings"] = list(warnings)
+        item.fields["applied_fields"] = list(applied)
+        item.fields["rejected_fields"] = dict(rejected)
+        return item
+
+    def _update_fields_one_by_one(
+        self,
+        item_id: str,
+        sendable: dict[str, Any],
+        warnings: list[str],
+        url: str,
+    ) -> WorkItem:
+        """Retry a rejected bulk PATCH one field at a time.
+
+        Keeps every field ADO accepts and records ADO's reason for
+        each rejected field. One bad field (unknown on this process,
+        invalid state, wrong op) no longer fails the rest. Each field
+        tries add first, then replace. Raises only when zero fields
+        persisted, carrying applied and rejected on the error.
+        """
+        applied: list[str] = []
+        rejected: dict[str, str] = {}
+        for key, val in sendable.items():
+            path = self._field_path(key)
+            try:
+                self._request(
+                    "PATCH",
+                    url,
+                    [{"op": "add", "path": path, "value": val}],
+                    "application/json-patch+json",
+                )
+                applied.append(key)
+                continue
+            except ADOError as first:
+                if first.status_code != 400:
+                    first.applied = list(applied)
+                    first.rejected = dict(rejected)
+                    raise
+                try:
+                    self._request(
+                        "PATCH",
+                        url,
+                        [{"op": "replace", "path": path, "value": val}],
+                        "application/json-patch+json",
+                    )
+                    applied.append(key)
+                except ADOError as second:
+                    if second.status_code != 400:
+                        second.applied = list(applied)
+                        second.rejected = dict(rejected)
+                        raise
+                    rejected[key] = str(first)
+        if not applied:
+            detail = "; ".join(f"{key}: {rejected[key]}" for key in rejected)
+            err = ADOError(
+                self._clean(
+                    "update failed for item"
+                    f" {item_id}: no fields persisted. {detail}"
+                ),
+                status_code=400,
+            )
+            err.applied = []
+            err.rejected = dict(rejected)
+            raise err
+        try:
+            item = self.get_item(item_id)
+        except ADOError:
+            item = WorkItem(id=str(item_id), title="", state="", changed="")
+        return self._attach_write_meta(item, warnings, applied, rejected)
 
     def update_item(
         self, item_id: str, fields: dict[str, Any]
     ) -> WorkItem:
         normalized, warnings = self._normalize_fields(dict(fields))
+        sendable = {
+            key: val for key, val in normalized.items() if val is not None
+        }
+        if not sendable:
+            try:
+                item = self.get_item(item_id)
+            except ADOError:
+                item = WorkItem(id=str(item_id), title="", state="", changed="")
+            return self._attach_write_meta(item, warnings, [], {})
         url = self._url(
             f"/_apis/wit/workitems/{item_id}?api-version={API_VERSION}"
         )
-        data = self._request(
-            "PATCH",
-            url,
-            self._patch_ops(normalized),
-            "application/json-patch+json",
-        )
+        try:
+            data = self._request(
+                "PATCH",
+                url,
+                self._patch_ops(sendable),
+                "application/json-patch+json",
+            )
+        except ADOError as exc:
+            if exc.status_code != 400:
+                raise
+            return self._update_fields_one_by_one(
+                item_id, sendable, warnings, url
+            )
         if not isinstance(data, dict) or not data.get("id"):
             raise ADOError(f"update failed for item: {item_id}")
         item = self._to_item(data)
-        if warnings:
-            item.fields["warning"] = warnings[0]
-            if len(warnings) > 1:
-                item.fields["warnings"] = list(warnings)
-        return item
+        return self._attach_write_meta(item, warnings, list(sendable), {})
 
     def create_item(
         self, title: str, fields: dict[str, Any] | None = None

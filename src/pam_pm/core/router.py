@@ -450,6 +450,7 @@ def _handle_slack_text_message(
         "no_open_state": "interview_no_state",
         "blocker_no_state": "interview_blocker",
         "duplicate": "interview_duplicate",
+        "write_failed": "interview_write_failed",
     }
     return {
         "kind": kinds.get(str(outcome.get("kind", "") or ""), "interview_resume"),

@@ -481,34 +481,114 @@ def write_interview_result(
 
     Updates RemainingWork through the canonical remaining field and
     posts the outcome as a comment. Same call shapes on Pam board
-    and ADO, so both backends behave the same way.
+    and ADO, so both backends behave the same way. The comment is
+    attempted even when the field update fails, and the outcome
+    reports which fields persisted so callers never claim a write
+    that did not stick.
     """
     evidence = result.evidence_quote
     if _is_bad_evidence(evidence):
         evidence = ""
-    updated = board.update_item(
-        item_id,
-        {
-            "state": result.status[:80] if result.status else "",
-            "remaining": result.remaining,
-            "eta": result.eta,
-            "evidence_quote": evidence,
-        },
-    )
-    comment = None
+    payload = {
+        "state": result.status[:80] if result.status else "",
+        "remaining": result.remaining,
+        "eta": result.eta,
+        "evidence_quote": evidence,
+    }
+    sent = [key for key, val in payload.items() if val is not None]
+    updated: Any = None
+    update_error: str | None = None
+    applied: list[str] = []
+    rejected: dict[str, str] = {}
+    try:
+        updated = board.update_item(item_id, payload)
+    except Exception as exc:  # noqa: BLE001
+        update_error = str(exc) or type(exc).__name__
+        applied = list(getattr(exc, "applied", []) or [])
+        raw_rejected = getattr(exc, "rejected", None)
+        if isinstance(raw_rejected, dict):
+            rejected = {str(k): str(v) for k, v in raw_rejected.items()}
+        if not rejected and not applied:
+            rejected = {key: update_error for key in sent}
+    else:
+        fields = getattr(updated, "fields", None)
+        if isinstance(fields, dict) and "applied_fields" in fields:
+            applied = [str(k) for k in (fields.get("applied_fields") or [])]
+            raw = fields.get("rejected_fields") or {}
+            if isinstance(raw, dict):
+                rejected = {str(k): str(v) for k, v in raw.items()}
+        else:
+            applied = list(sent)
+    comment: Any = None
+    comment_error: str | None = None
     add_comment = getattr(board, "add_comment", None)
     if callable(add_comment):
-        comment = add_comment(item_id, format_checkin_comment(result), author="Pam")
-    return {"updated": updated, "comment": comment}
+        try:
+            comment = add_comment(
+                item_id, format_checkin_comment(result), author="Pam"
+            )
+        except Exception as exc:  # noqa: BLE001
+            comment_error = str(exc) or type(exc).__name__
+    return {
+        "updated": updated,
+        "comment": comment,
+        "applied_fields": applied,
+        "rejected_fields": rejected,
+        "update_error": update_error,
+        "comment_error": comment_error,
+    }
 
 
-def _safe_board_update(board: Any, item_id: str, result: InterviewResult) -> None:
+def write_persisted(outcome: Any) -> bool:
+    """Return True when at least the core evidence reached the board."""
+    if not isinstance(outcome, dict):
+        return False
+    if outcome.get("comment") is not None:
+        return True
+    return bool(outcome.get("applied_fields"))
+
+
+def write_failure_reason(outcome: Any) -> str:
+    """Summarize why a board write persisted nothing, without secrets."""
+    if not isinstance(outcome, dict):
+        return "board write failed"
+    rejected = outcome.get("rejected_fields") or {}
+    if isinstance(rejected, dict) and rejected:
+        key = min(rejected)
+        detail = str(rejected[key])[:200].strip()
+        if detail:
+            return f"{key}: {detail}"
+        return str(key)
+    for entry in (outcome.get("update_error"), outcome.get("comment_error")):
+        if entry:
+            return str(entry)[:200].strip()
+    return "board write failed"
+
+
+def _safe_board_update(
+    board: Any, item_id: str, result: InterviewResult
+) -> dict[str, Any]:
     if board is None:
-        return
+        return {
+            "updated": None,
+            "comment": None,
+            "applied_fields": [],
+            "rejected_fields": {},
+            "update_error": "no board configured",
+            "comment_error": None,
+        }
     try:
-        write_interview_result(board, item_id, result)
-    except Exception:  # noqa: BLE001
-        return
+        return write_interview_result(board, item_id, result)
+    except Exception as exc:  # noqa: BLE001
+        reason = str(exc) or type(exc).__name__
+        return {
+            "updated": None,
+            "comment": None,
+            "applied_fields": [],
+            "rejected_fields": {},
+            "update_error": reason,
+            "comment_error": None,
+        }
 
 
 FINISHED_STATUS = "finished"
@@ -1067,7 +1147,25 @@ def resume_interview(
                 and (candidate.remaining is None or candidate.eta is None)
             )
             if not needs_pushback:
-                _safe_board_update(board, item_id, candidate)
+                outcome = _safe_board_update(board, item_id, candidate)
+                if not write_persisted(outcome):
+                    reason = write_failure_reason(outcome)
+                    _save_interview_state(
+                        db, person_id, item_id, conversation, marker
+                    )
+                    _capture_resume_memory(db, person_id, conversation)
+                    mid = _send(
+                        f"I could not write this to the board: {reason}"
+                    )
+                    return {
+                        "kind": "write_failed",
+                        "replied": bool(mid),
+                        "person": person_id,
+                        "item_id": item_id,
+                        "message_id": mid,
+                        "result": candidate,
+                        "reason": reason,
+                    }
                 _save_interview_state(
                     db,
                     person_id,
@@ -1090,7 +1188,24 @@ def resume_interview(
             text = ""
     if asked >= max_turns:
         result = _build_fallback_result(conversation)
-        _safe_board_update(board, item_id, result)
+        outcome = _safe_board_update(board, item_id, result)
+        if not write_persisted(outcome):
+            reason = write_failure_reason(outcome)
+            _save_interview_state(
+                db, person_id, item_id, conversation, marker
+            )
+            _capture_resume_memory(db, person_id, conversation)
+            mid = _send(f"I could not write this to the board: {reason}")
+            return {
+                "kind": "write_failed",
+                "replied": bool(mid),
+                "person": person_id,
+                "item_id": item_id,
+                "message_id": mid,
+                "result": result,
+                "reason": reason,
+                "turn_cap": True,
+            }
         _save_interview_state(
             db,
             person_id,
