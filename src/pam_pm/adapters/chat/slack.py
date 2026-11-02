@@ -189,6 +189,20 @@ class SlackAdapter(ChatAdapter):
         except Exception as exc:
             raise self._fail("send_buttons", exc) from exc
 
+    def file_info(self, file_id: str) -> dict[str, str]:
+        client = self._client_or_raise()
+        try:
+            info = client.files_info(file=file_id).get("file", {})
+            if not isinstance(info, dict):
+                return {}
+            name = str(info.get("name", "") or info.get("title", "") or "")
+            return {
+                "mimetype": str(info.get("mimetype", "") or ""),
+                "filename": name,
+            }
+        except Exception as exc:
+            raise self._fail("file_info", exc) from exc
+
     def download_file(self, file_id: str) -> bytes:
         client = self._client_or_raise()
         try:

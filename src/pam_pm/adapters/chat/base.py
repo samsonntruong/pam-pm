@@ -52,3 +52,13 @@ class ChatAdapter(ABC):
     @abstractmethod
     def download_file(self, file_id: str) -> bytes:
         """Download a file by id, returning its raw bytes."""
+
+    def file_info(self, file_id: str) -> dict[str, str]:
+        """Return file metadata (mimetype, filename) for a file id.
+
+        Optional: the default returns an empty dict. Slack implements
+        it through files.info so file_shared events without inline
+        metadata still route to the planner.
+        """
+        _ = file_id
+        return {}

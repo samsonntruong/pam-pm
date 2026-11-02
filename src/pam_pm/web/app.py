@@ -377,6 +377,28 @@ LAST_PLAN: dict[str, Any] = {
     "approved": [],
 }
 
+_SEEN_SLACK_EVENT_IDS: set[str] = set()
+
+
+def reset_slack_events() -> None:
+    """Clear remembered Slack event ids (tests and restarts)."""
+    _SEEN_SLACK_EVENT_IDS.clear()
+
+
+def _remember_slack_event(event_id: str) -> bool:
+    """Return False when event_id was already seen, else remember it."""
+    key = str(event_id or "").strip()
+    if not key:
+        return True
+    if key in _SEEN_SLACK_EVENT_IDS:
+        return False
+    _SEEN_SLACK_EVENT_IDS.add(key)
+    if len(_SEEN_SLACK_EVENT_IDS) > 2000:
+        for old in list(_SEEN_SLACK_EVENT_IDS)[:500]:
+            _SEEN_SLACK_EVENT_IDS.discard(old)
+    return True
+
+
 _DEMO_BOARD: SQLiteBoard | None = None
 
 
@@ -606,22 +628,25 @@ def _review_result_html(result: dict[str, Any]) -> str:
 
 
 def _plan_result_html(photo: dict[str, Any], proposal: list[dict[str, Any]]) -> str:
+    from pam_pm.models.vision import pair_masks_with_readings
+
     parts: list[str] = []
-    masks = photo.get("masks", [])
+    pairs = pair_masks_with_readings(photo)
     parts.append('<section class="card"><h2>Notes found</h2>')
-    if masks:
-        items = "".join(f"<li>Note {index + 1}</li>" for index in range(len(masks)))
-        word = "note" if len(masks) == 1 else "notes"
-        parts.append(f"<p>Found {len(masks)} {word} in the photo.</p><ul>{items}</ul>")
+    if pairs:
+        word = "note" if len(pairs) == 1 else "notes"
+        parts.append(f"<p>Found {len(pairs)} {word} in the photo.</p>")
+        items = "".join(
+            '<li class="note-pair" style="display:flex;gap:1rem;align-items:baseline">'
+            f"<span class=\"note-mask\">{html.escape(str(entry['mask_label']))}</span>"
+            f"<span class=\"note-reading\">"
+            f"{html.escape(str(entry['reading']) or '(no words found)')}</span>"
+            "</li>"
+            for entry in pairs
+        )
+        parts.append(f'<ul class="note-pairs">{items}</ul>')
     else:
         parts.append("<p>No separate notes found. The whole photo was read as one.</p>")
-    parts.append("</section>")
-    parts.append('<section class="card"><h2>What the notes say</h2>')
-    readings = photo.get("readings", [])
-    if readings:
-        items = "".join(f"<li>{html.escape(str(r))}</li>" for r in readings)
-        parts.append(f"<ul>{items}</ul>")
-    else:
         parts.append(
             '<p class="muted">No words were found in the photo. '
             "Try a closer, brighter photo and upload again.</p>"
@@ -722,7 +747,9 @@ def _setup_token_denied(request: Request) -> Any:
     return JSONResponse({"ok": False, "message": msg, "hint": hint})
 
 
-AUTH_EXEMPT_PATHS = frozenset({"/", "/health", "/healthz", "/login"})
+AUTH_EXEMPT_PATHS = frozenset(
+    {"/", "/health", "/healthz", "/login", "/api/slack/events"}
+)
 AUTH_EXEMPT_PREFIXES = ("/static", "/api/auth")
 
 
@@ -3308,6 +3335,59 @@ async def save_setup_slack(request: Request) -> Any:
     return {"ok": True, "project": project, "slack": saved}
 
 
+@app.post("/api/slack/events")
+async def slack_events_route(request: Request) -> Any:
+    """Accept Slack Events API envelopes and route them to the planner.
+
+    Handles url_verification by echoing the challenge. All other
+    envelopes go to handle_slack_event. Slack retries share one
+    event_id, so ids already seen return a duplicate response without
+    posting again.
+    """
+    project = _safe_project(request.query_params.get("project", "default"))
+    try:
+        envelope = await request.json()
+    except Exception:  # noqa: BLE001
+        envelope = None
+    if not isinstance(envelope, dict):
+        return JSONResponse(
+            {"ok": False, "message": "Invalid Slack envelope."}, status_code=400
+        )
+    if str(envelope.get("type", "") or "") == "url_verification":
+        result = router_mod.handle_slack_event(
+            envelope, chat=get_chat_adapter(project)
+        )
+        return {"challenge": str(result.get("challenge", "") or "")}
+    event_id = str(envelope.get("event_id", "") or "").strip()
+    if event_id and event_id in _SEEN_SLACK_EVENT_IDS:
+        logger.info("slack event duplicate ignored: event_id=%s", event_id)
+        return {"ok": True, "duplicate": True}
+    chat = get_chat_adapter(project)
+    if chat is None:
+        return JSONResponse(
+            {"ok": False, "message": "Chat is not configured."}, status_code=502
+        )
+    board = get_board_adapter(project)
+    try:
+        result = router_mod.handle_slack_event(
+            envelope, chat=chat, board=board, event_sink=bus.publish
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("slack event failed: %s", exc)
+        return JSONResponse(
+            {"ok": False, "message": "Slack event could not be handled."},
+            status_code=502,
+        )
+    if event_id:
+        _remember_slack_event(event_id)
+    return {
+        "ok": True,
+        "kind": str(result.get("kind", "") or ""),
+        "replied": bool(result.get("replied", False)),
+        "duplicate": False,
+    }
+
+
 @app.post("/api/setup/teams")
 async def save_setup_teams(request: Request) -> Any:
     if not await _setup_token_ok(request):
@@ -4010,7 +4090,26 @@ async def set_autostart(request: Request) -> Any:
 
 @app.post("/api/review/run")
 async def run_review(request: Request) -> Any:
-    result = _run_review_now()
+    from pam_pm.agents import lead as lead_mod
+
+    project = _safe_project(request.query_params.get("project", "default"))
+    result = _run_review_now(project)
+    posted = False
+    try:
+        chat = get_chat_adapter(project)
+        channel = os.environ.get(lead_mod.REVIEW_CHANNEL_ENV, "").strip()
+        target = channel
+        if not target:
+            try:
+                names = _people_names(project)
+            except Exception:  # noqa: BLE001
+                names = []
+            target = str(names[0]).strip() if names else ""
+        if chat is not None and target:
+            posted = bool(lead_mod.post_review(chat, result, channel=target))
+    except Exception:  # noqa: BLE001
+        posted = False
+    result["posted"] = posted
     if "hx-request" in request.headers:
         return HTMLResponse(_review_result_html(result))
     return {
@@ -4018,6 +4117,7 @@ async def run_review(request: Request) -> Any:
         "markdown": result["review_markdown"],
         "retro_actions": result["retro_actions"],
         "low_confidence": result["low_confidence"],
+        "posted": posted,
     }
 
 

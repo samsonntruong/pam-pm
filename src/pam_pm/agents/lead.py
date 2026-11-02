@@ -460,6 +460,71 @@ def approve_retro_actions(board: Any, actions: Any, **kwargs: Any) -> list[Any]:
     return create_retro_items(board, actions, **kwargs)
 
 
+REVIEW_CHANNEL_ENV = "SLACK_REVIEW_CHANNEL_ID"
+REVIEW_MESSAGE_LIMIT = 3000
+
+
+def format_review_message(review: Any) -> str:
+    """Render a review as one Slack message with its retro actions."""
+    if isinstance(review, dict):
+        markdown = str(review.get("review_markdown", review.get("markdown", "")) or "")
+        actions = review.get("retro_actions", []) or []
+    else:
+        markdown = str(
+            getattr(review, "review_markdown", getattr(review, "markdown", "")) or ""
+        )
+        actions = getattr(review, "retro_actions", []) or []
+    lines = ["Sprint review posted.", ""]
+    if markdown.strip():
+        lines.append(markdown.strip()[:REVIEW_MESSAGE_LIMIT])
+    else:
+        lines.append("No review text.")
+    names: list[str] = []
+    for action in actions or []:
+        if isinstance(action, dict):
+            title = str(action.get("title", "") or "").strip()
+        else:
+            title = str(getattr(action, "title", "") or "").strip()
+        if title:
+            names.append(title)
+    lines += ["", f"Retro actions ({len(names)}):"]
+    if names:
+        for title in names[:10]:
+            lines.append(f"- {title[:200]}")
+    else:
+        lines.append("None.")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def review_target(channel: str = "", lead: str = "") -> str:
+    """Return the Slack target: channel when configured, else lead DM."""
+    if str(channel or "").strip():
+        return str(channel).strip()
+    return str(lead or "").strip()
+
+
+def post_review(
+    chat: Any,
+    review: Any,
+    channel: str = "",
+    lead: str = "",
+) -> bool:
+    """Post a review to the channel, or to the lead DM where unconfigured.
+
+    Mirrors post_next_sprint: one message through the chat adapter,
+    True on success, False without a chat or target, never raises.
+    send_dm reaches both channels and DMs on Slack.
+    """
+    target = review_target(channel, lead)
+    if chat is None or not target:
+        return False
+    try:
+        chat.send_dm(target, format_review_message(review))
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 class LeadAgent:
     """Synthesis helper that delegates to synthesize_daily."""
 

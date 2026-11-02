@@ -19,8 +19,36 @@ class InMemoryChat(ChatAdapter):
     def __init__(self) -> None:
         self.messages: list[ChatMessage] = []
         self.dms: list[dict[str, Any]] = []
+        self.files: dict[str, dict[str, Any]] = {}
         self._replies: dict[str, deque[str]] = {}
         self._counter = 0
+
+    def register_file(
+        self,
+        file_id: str,
+        *,
+        mimetype: str = "",
+        filename: str = "",
+        data: bytes | None = None,
+    ) -> str:
+        """Register a fake file for file_info and download_file."""
+        key = str(file_id or "").strip() or f"F{len(self.files) + 1}"
+        self.files[key] = {
+            "mimetype": str(mimetype or ""),
+            "filename": str(filename or ""),
+            "data": bytes(data) if data is not None else b"",
+        }
+        return key
+
+    def file_info(self, file_id: str) -> dict[str, str]:
+        """Return registered metadata for a file id, else empty."""
+        entry = self.files.get(str(file_id or ""))
+        if not entry:
+            return {}
+        return {
+            "mimetype": str(entry.get("mimetype", "") or ""),
+            "filename": str(entry.get("filename", "") or ""),
+        }
 
     def script_replies(
         self, user_id: str, replies: Sequence[str] | str
@@ -98,7 +126,10 @@ class InMemoryChat(ChatAdapter):
         return mid
 
     def download_file(self, file_id: str) -> bytes:
-        return ("fake-file:" + file_id).encode("utf-8")
+        entry = self.files.get(str(file_id or ""))
+        if entry and entry.get("data"):
+            return bytes(entry["data"])
+        return ("fake-file:" + str(file_id)).encode("utf-8")
 
 
 FakeChatAdapter = InMemoryChat

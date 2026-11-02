@@ -232,3 +232,134 @@ def handle_slack_file(
         "message_id": str(message_id),
         "event": event,
     }
+
+
+def _event_file_meta(file_obj: Any) -> tuple[str, str]:
+    if not isinstance(file_obj, dict):
+        return "", ""
+    mime = str(file_obj.get("mimetype", "") or "")
+    name = str(file_obj.get("name", "") or file_obj.get("title", "") or "")
+    return mime, name
+
+
+def _event_channel_fallback(file_obj: Any) -> str:
+    if not isinstance(file_obj, dict):
+        return ""
+    for key in ("channels", "groups", "ims"):
+        raw = file_obj.get(key)
+        if isinstance(raw, list) and raw:
+            return str(raw[0])
+    shares = file_obj.get("shares")
+    if isinstance(shares, dict):
+        for raw in shares.values():
+            if isinstance(raw, list) and raw:
+                first = raw[0]
+                if isinstance(first, dict):
+                    ident = str(first.get("id", "") or "")
+                else:
+                    ident = str(first or "")
+                if ident:
+                    return ident
+    return ""
+
+
+def handle_slack_event(
+    event: Any,
+    *,
+    chat: Any,
+    board: Any = None,
+    mimetype: str = "",
+    filename: str = "",
+    file_bytes: bytes | None = None,
+    vision: Any = None,
+    segmenter: Any = None,
+    provider: str = "meta",
+    event_sink: Any = None,
+) -> dict[str, Any]:
+    """Route a Slack event: file shares flow to the planner automatically.
+
+    Accepts a full Events API envelope or the inner event. A file_shared
+    event for an image in a DM or in a thread Pam is in goes straight to
+    handle_slack_file: SAM plus Muse Spark read the notes and the
+    proposal posts back to the same channel with an Approve button, so no
+    manual upload is needed. Message events carrying files route the
+    same way. Metadata comes from the event inline, else from
+    chat.file_info, else the file is ignored. Unknown events, files
+    without an id or channel, and non file events are ignored without a
+    reply. Audio files get the one polite Listen reply from
+    handle_slack_file.
+    """
+    payload = event if isinstance(event, dict) else {}
+    if str(payload.get("type", "") or "") == "url_verification":
+        return {
+            "kind": "url_verification",
+            "challenge": str(payload.get("challenge", "") or ""),
+            "replied": False,
+        }
+    inner = payload.get("event")
+    if not isinstance(inner, dict):
+        inner = payload
+    kind = str(inner.get("type", "") or "")
+    file_id = ""
+    channel = ""
+    mime = str(mimetype or "")
+    name = str(filename or "")
+    if kind == "file_shared":
+        file_id = str(inner.get("file_id", "") or "")
+        channel = str(inner.get("channel_id", "") or "")
+        file_obj = inner.get("file")
+        if isinstance(file_obj, dict):
+            file_id = file_id or str(file_obj.get("id", "") or "")
+            inline_mime, inline_name = _event_file_meta(file_obj)
+            mime = mime or inline_mime
+            name = name or inline_name
+            channel = channel or _event_channel_fallback(file_obj)
+        if not channel:
+            channel = str(inner.get("user_id", "") or "")
+    elif kind == "message":
+        files = inner.get("files")
+        first: Any = files[0] if isinstance(files, list) and files else None
+        if isinstance(first, dict):
+            file_id = str(first.get("id", "") or "")
+            inline_mime, inline_name = _event_file_meta(first)
+            mime = mime or inline_mime
+            name = name or inline_name
+        channel = str(inner.get("channel", "") or "")
+        if not channel:
+            channel = str(inner.get("user", "") or "")
+        if not file_id:
+            logger.info("slack event ignored: message without files")
+            return {"kind": "ignored", "replied": False}
+    else:
+        logger.info("slack event ignored: type=%s", kind or "none")
+        return {"kind": "ignored", "replied": False}
+    if not file_id or not channel:
+        logger.info("slack event ignored: missing file id or channel")
+        return {"kind": "ignored", "replied": False}
+    if not mime and not name and chat is not None:
+        info_fn = getattr(chat, "file_info", None)
+        info: Any = {}
+        if callable(info_fn):
+            try:
+                info = info_fn(file_id) or {}
+            except Exception:  # noqa: BLE001
+                info = {}
+        if isinstance(info, dict):
+            mime = str(info.get("mimetype", "") or "")
+            name = name or str(info.get("filename", "") or info.get("name", "") or "")
+    result = handle_slack_file(
+        file_id=file_id,
+        channel=channel,
+        chat=chat,
+        board=board,
+        mimetype=mime,
+        filename=name,
+        file_bytes=file_bytes,
+        vision=vision,
+        segmenter=segmenter,
+        provider=provider,
+        event_sink=event_sink,
+    )
+    result["file_id"] = file_id
+    result["channel"] = channel
+    return result

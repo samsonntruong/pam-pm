@@ -131,6 +131,77 @@ class VisionClient:
         return str(result or "")
 
 
+def mask_label(mask: Any, index: int) -> str:
+    """Return a short label for one SAM mask beside its reading.
+
+    Real SAM output can be an int index, a string id, or a dict with
+    segmentation details; each form renders as Mask N with a short
+    detail suffix when one is available. A missing mask renders as a
+    placeholder label so fallback photos still pair one mask slot
+    beside every reading.
+    """
+    tag = f"Mask {index + 1}"
+    if mask is None:
+        return f"Placeholder {tag.lower()}"
+    if isinstance(mask, bool):
+        return tag
+    if isinstance(mask, int):
+        return tag if mask == index else f"{tag} (id {mask})"
+    if isinstance(mask, str):
+        text = mask.strip()
+        if not text or text == str(index):
+            return tag
+        return f"{tag} ({text[:40]})"
+    if isinstance(mask, dict):
+        for key in ("label", "id", "name"):
+            value = mask.get(key)
+            if value not in (None, ""):
+                return f"{tag} ({str(value)[:40]})"
+        detail = mask.get("bbox", mask.get("box", mask.get("polygon")))
+        if detail is not None:
+            return f"{tag} (segmented)"
+        return tag
+    if isinstance(mask, (bytes, bytearray)):
+        return f"{tag} ({len(mask)} bytes)"
+    if isinstance(mask, (list, tuple)):
+        return f"{tag} ({len(mask)} points)"
+    text = str(mask).strip()
+    if not text:
+        return tag
+    return f"{tag} ({text[:40]})"
+
+
+def pair_masks_with_readings(photo: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Pair each SAM mask with its reading for the plan screen.
+
+    Returns one entry per note with index, mask, mask_label, and
+    reading, so the plan screen can render each mask beside its
+    reading. SAM photos pair real masks with readings in order.
+    Fallback photos carry no masks, so each reading pairs with a
+    placeholder mask slot instead. Never raises on odd input.
+    """
+    if not isinstance(photo, dict):
+        return []
+    raw_readings = photo.get("readings", [])
+    raw_masks = photo.get("masks", [])
+    readings = list(raw_readings) if isinstance(raw_readings, (list, tuple)) else []
+    masks = list(raw_masks) if isinstance(raw_masks, (list, tuple)) else []
+    count = max(len(readings), len(masks))
+    pairs: list[dict[str, Any]] = []
+    for index in range(count):
+        mask = masks[index] if index < len(masks) else None
+        reading = readings[index] if index < len(readings) else ""
+        pairs.append(
+            {
+                "index": index,
+                "mask": mask,
+                "mask_label": mask_label(mask, index),
+                "reading": str(reading or ""),
+            }
+        )
+    return pairs
+
+
 def plan_from_photo(
     image_bytes: bytes | bytearray | None,
     vision: VisionClient | None = None,
