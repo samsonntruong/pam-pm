@@ -68,6 +68,7 @@ Build log for Pam. Three lines per entry.
 | Muse Code | CI green plus listen pipeline | Playwright guard, healthz, auto proposals with approval, 376 pass |
 | Muse Code | Acceptance sweep | 10 of 10 PASS, fresh install to security, 376 pass |
 | Muse Code | Model routing verification | One router, SAM fallback logged, Slack audio reply, 381 pass |
+| Muse Code | E2E loop simulations | Six full journeys with fakes, live Meta plus SAM checks pass, 387 pass |
 
 ## Entries
 
