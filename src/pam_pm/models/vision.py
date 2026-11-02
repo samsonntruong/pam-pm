@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import importlib
 import logging
 from collections.abc import Sequence
@@ -14,6 +15,21 @@ logger = logging.getLogger(__name__)
 SAM_MODULE_CANDIDATES = ("sam3", "segment_anything_3", "sam_3")
 PATH_SAM = "sam"
 PATH_FALLBACK = "fallback"
+
+
+def _data_uri(raw: bytes) -> str:
+    """Return a base64 data URI for raw image bytes.
+
+    PNG and JPEG are detected from magic bytes; anything else falls
+    back to PNG so the model still receives the real bytes.
+    """
+    if raw[:3] == b"\xff\xd8\xff":
+        mime = "image/jpeg"
+    elif raw[:8] == b"\x89PNG\r\n\x1a\n":
+        mime = "image/png"
+    else:
+        mime = "image/png"
+    return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
 
 
 def sam_available() -> bool:
@@ -115,7 +131,7 @@ class VisionClient:
             prompt = "Read the sticky notes in this photo, one per line."
             content: Any = [
                 {"type": "text", "text": prompt},
-                {"type": "input_image", "image_url": f"bytes:{len(image)}"},
+                {"type": "input_image", "image_url": _data_uri(bytes(image))},
             ]
         else:
             content = f"Read the sticky notes in this image: {image}."
