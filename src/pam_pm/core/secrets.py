@@ -20,6 +20,9 @@ SECRET_FILES = {
     "META_API_KEY": "meta_api_key.txt",
     "SLACK_BOT_TOKEN": "slack_bot_token.txt",
     "SLACK_APP_TOKEN": "slack_app_token.txt",
+    "TEAMS_APP_ID": "teams_app_id.txt",
+    "TEAMS_APP_PASSWORD": "teams_app_password.txt",
+    "TEAMS_TENANT_ID": "teams_tenant_id.txt",
     "ADO_PAT": "ado_pat.txt",
     "JIRA_API_TOKEN": "jira_api_token.txt",
     "LINEAR_API_KEY": "linear_api_key.txt",
@@ -32,6 +35,7 @@ SECRET_FILES = {
 
 META_FILENAME = "meta.json"
 SLACK_FILENAME = "slack.json"
+TEAMS_FILENAME = "teams.json"
 ADO_FILENAME = "ado.json"
 JIRA_FILENAME = "jira.json"
 LINEAR_FILENAME = "linear.json"
@@ -63,9 +67,7 @@ def secret_path(name: str, data_dir: str | Path | None = None) -> Path:
     return _data_dir(data_dir) / filename
 
 
-def save_secret(
-    name: str, value: str, data_dir: str | Path | None = None
-) -> bool:
+def save_secret(name: str, value: str, data_dir: str | Path | None = None) -> bool:
     """Save one secret, returning True when a value is stored.
 
     An empty value keeps the existing file, matching the provider
@@ -105,9 +107,11 @@ def load_secret(name: str, data_dir: str | Path | None = None) -> str:
     if key not in SECRET_FILES:
         raise ValueError(f"unknown secret: {key}")
     try:
-        return (_data_dir(data_dir) / str(SECRET_FILES[key])).read_text(
-            encoding="utf-8"
-        ).strip()
+        return (
+            (_data_dir(data_dir) / str(SECRET_FILES[key]))
+            .read_text(encoding="utf-8")
+            .strip()
+        )
     except (FileNotFoundError, OSError):
         return ""
 
@@ -151,9 +155,7 @@ def _write_json(
 ) -> None:
     directory = _data_dir(data_dir)
     directory.mkdir(parents=True, exist_ok=True)
-    (directory / filename).write_text(
-        json.dumps(payload, indent=2), encoding="utf-8"
-    )
+    (directory / filename).write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def save_meta_config(
@@ -230,6 +232,48 @@ def effective_slack_tokens(
     return {
         "bot_token": effective_secret("SLACK_BOT_TOKEN", data_dir),
         "app_token": effective_secret("SLACK_APP_TOKEN", data_dir),
+    }
+
+
+def save_teams_config(
+    data_dir: str | Path | None = None,
+    app_id: str = "",
+    app_password: str = "",
+    tenant_id: str = "",
+) -> dict[str, Any]:
+    has_app_id = save_secret("TEAMS_APP_ID", app_id, data_dir)
+    has_password = save_secret("TEAMS_APP_PASSWORD", app_password, data_dir)
+    has_tenant = save_secret("TEAMS_TENANT_ID", tenant_id, data_dir)
+    payload = {
+        "has_app_id": bool(has_app_id),
+        "has_app_password": bool(has_password),
+        "has_tenant_id": bool(has_tenant),
+    }
+    _write_json(TEAMS_FILENAME, payload, data_dir)
+    logger.info(
+        "teams config saved: has_app_id=%s has_app_password=%s has_tenant_id=%s",
+        payload["has_app_id"],
+        payload["has_app_password"],
+        payload["has_tenant_id"],
+    )
+    return dict(payload)
+
+
+def load_teams_config(data_dir: str | Path | None = None) -> dict[str, Any]:
+    return {
+        "has_app_id": has_secret("TEAMS_APP_ID", data_dir),
+        "has_app_password": has_secret("TEAMS_APP_PASSWORD", data_dir),
+        "has_tenant_id": has_secret("TEAMS_TENANT_ID", data_dir),
+    }
+
+
+def effective_teams_config(
+    data_dir: str | Path | None = None,
+) -> dict[str, str]:
+    return {
+        "app_id": effective_secret("TEAMS_APP_ID", data_dir),
+        "app_password": effective_secret("TEAMS_APP_PASSWORD", data_dir),
+        "tenant_id": effective_secret("TEAMS_TENANT_ID", data_dir),
     }
 
 
@@ -326,9 +370,7 @@ def effective_jira_config(
     data_dir: str | Path | None = None,
 ) -> dict[str, str]:
     saved = load_jira_config(data_dir)
-    base = (
-        os.environ.get("JIRA_BASE_URL", "").strip().rstrip("/") or saved["base_url"]
-    )
+    base = os.environ.get("JIRA_BASE_URL", "").strip().rstrip("/") or saved["base_url"]
     mail = os.environ.get("JIRA_EMAIL", "").strip() or saved["email"]
     proj = os.environ.get("JIRA_PROJECT", "").strip().upper() or saved["project"]
     token = effective_secret("JIRA_API_TOKEN", data_dir)

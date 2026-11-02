@@ -123,6 +123,26 @@
   <blockquote>Pam was added to the workspace. You will get a morning message about your work. Your answers stay private. There is nothing to install.</blockquote>
 </section>
 
+<section class="card" id="step-2-teams">
+  <h2>Step 2: Microsoft Teams (optional)</h2>
+  <p><img src="/static/icons/teams.svg" alt="" width="16" height="16"> Slack is the recommended path. If your team lives in Teams instead, register ONE bot in the Azure portal and paste the three values below, choose Save, then Test.</p>
+  <label for="teams-app-id">Teams App ID</label>
+  <input id="teams-app-id" name="app_id" type="password" value="" placeholder="{% if teams_has_app_id %}Saved on this machine{% else %}Paste app ID here{% endif %}" autocomplete="off">
+  <p class="muted">Find it on the app registration Overview page as Application (client) ID.</p>
+  <label for="teams-password">App Password (client secret)</label>
+  <input id="teams-password" name="app_password" type="password" value="" placeholder="{% if teams_has_password %}Saved on this machine{% else %}Paste client secret here{% endif %}" autocomplete="off">
+  <p class="muted">Find it under Certificates and secrets. Copy the secret Value right after you create it.</p>
+  <label for="teams-tenant">Tenant ID</label>
+  <input id="teams-tenant" name="tenant_id" type="password" value="" placeholder="{% if teams_has_tenant %}Saved on this machine{% else %}Paste tenant ID here{% endif %}" autocomplete="off">
+  <p class="muted">Find it on the app registration Overview page as Directory (tenant) ID.</p>
+  <div>
+    <button type="button" onclick="saveTeams()">Save</button>
+    <button hx-post="/api/test/teams?project={{ project }}" hx-target="#teams-result" hx-swap="innerHTML">Test</button>
+  </div>
+  <div id="teams-save-result" class="result" aria-live="polite"></div>
+  <div id="teams-result" class="result" aria-live="polite"></div>
+</section>
+
 <section class="card" id="step-3" {% if not show_ado %}hidden{% endif %}>
   <h2>Step 3: Azure DevOps</h2>
   <p>Only needed when Azure DevOps is chosen above. Paste the values below, choose Save, then Test.</p>
@@ -384,6 +404,25 @@
       if (app) app.value = "";
       await saveStep("slack", {data: {}});
     } catch (err) { saveResult("slack-save-result", false, "Save failed. Check your connection and try again."); }
+  }
+  async function saveTeams() {
+    const project = projectName();
+    const appId = document.getElementById("teams-app-id");
+    const password = document.getElementById("teams-password");
+    const tenant = document.getElementById("teams-tenant");
+    try {
+      const resp = await fetch("/api/setup/teams", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({project: project, app_id: appId ? appId.value : "", app_password: password ? password.value : "", tenant_id: tenant ? tenant.value : "", token: setupToken()})
+      });
+      const data = await resp.json().catch(function () { return {}; });
+      saveResult("teams-save-result", resp.ok && data.ok !== false, (resp.ok && data.ok !== false) ? "Saved Teams settings." : ((data && data.message) ? data.message : "Save failed. Check the fields and try again."));
+      if (appId) appId.value = "";
+      if (password) password.value = "";
+      if (tenant) tenant.value = "";
+      await saveStep("teams", {data: {}});
+    } catch (err) { saveResult("teams-save-result", false, "Save failed. Check your connection and try again."); }
   }
   async function saveAdo() {
     const project = projectName();

@@ -100,6 +100,8 @@ def get_setup_token() -> str:
         _SETUP_TOKEN_FALLBACK = secrets.token_urlsafe(32)
         globals()["SETUP_TOKEN"] = _SETUP_TOKEN_FALLBACK
     return _SETUP_TOKEN_FALLBACK
+
+
 SETUP_DONE = False
 
 LISTEN_CONNECT_FN: Any = None
@@ -420,7 +422,9 @@ def _run_review_now(project: str = "default") -> dict[str, Any]:
         if candidate.model and candidate.base_url and candidate._api_key:
             model_client = candidate
         else:
-            router_mod.log_route(router_mod.CAP_REVIEW, "", "no Meta creds, local render")
+            router_mod.log_route(
+                router_mod.CAP_REVIEW, "", "no Meta creds, local render"
+            )
     except Exception:  # noqa: BLE001
         model_client = None
     try:
@@ -588,7 +592,7 @@ def _review_result_html(result: dict[str, Any]) -> str:
         title = html.escape(str(action.get("title", "")))
         desc = html.escape(str(action.get("description", "")))
         parts.append(
-            '<article>'
+            "<article>"
             f"<h3>{title}</h3>"
             f'<p class="muted">{desc}</p>'
             f'<button hx-post="/api/review/retro/create?index={index}" '
@@ -619,7 +623,7 @@ def _plan_result_html(photo: dict[str, Any], proposal: list[dict[str, Any]]) -> 
         parts.append(f"<ul>{items}</ul>")
     else:
         parts.append(
-            "<p class=\"muted\">No words were found in the photo. "
+            '<p class="muted">No words were found in the photo. '
             "Try a closer, brighter photo and upload again.</p>"
         )
     parts.append("</section>")
@@ -820,8 +824,8 @@ def _login_page_html(mode: str, message: str) -> str:
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>{html.escape(title)}</title>"
         "<style>"
-        "body{font-family:\"Inter\",-apple-system,BlinkMacSystemFont,\"Segoe UI\","
-        "Roboto,\"Helvetica Neue\",Arial,sans-serif;background:#0e141a;color:#e8eef3;"
+        'body{font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",'
+        'Roboto,"Helvetica Neue",Arial,sans-serif;background:#0e141a;color:#e8eef3;'
         "margin:0;display:flex;min-height:100vh;align-items:center;"
         "justify-content:center;padding:1rem;box-sizing:border-box;}"
         ".card{background:#161e26;border:1px solid #2c3742;border-radius:0.75rem;"
@@ -846,7 +850,7 @@ def _login_page_html(mode: str, message: str) -> str:
         '<label for="password">Password</label>'
         '<input type="password" id="password" name="password" '
         'autocomplete="current-password" minlength="8" required>'
-        f"<button type=\"submit\">{html.escape(button)}</button>"
+        f'<button type="submit">{html.escape(button)}</button>'
         "</form></main></body></html>"
     )
 
@@ -1030,6 +1034,37 @@ def _check_slack() -> tuple[bool, str, str]:
     return (
         True,
         "Slack check passed. Pam can send messages.",
+        "",
+    )
+
+
+def _check_teams() -> tuple[bool, str, str]:
+    try:
+        effective = secrets_mod.effective_teams_config()
+    except Exception:  # noqa: BLE001
+        effective = {
+            "app_id": os.environ.get("TEAMS_APP_ID", ""),
+            "app_password": os.environ.get("TEAMS_APP_PASSWORD", ""),
+            "tenant_id": os.environ.get("TEAMS_TENANT_ID", ""),
+        }
+    missing: list[str] = []
+    if not str(effective.get("app_id", "") or "").strip():
+        missing.append("app ID")
+    if not str(effective.get("app_password", "") or "").strip():
+        missing.append("app password")
+    if not str(effective.get("tenant_id", "") or "").strip():
+        missing.append("tenant ID")
+    if missing:
+        return (
+            False,
+            "Teams check failed. Pam cannot send messages.",
+            "Open Step 2, add the missing "
+            + ", ".join(missing)
+            + ", choose Save, then Test again.",
+        )
+    return (
+        True,
+        "Teams check passed. Pam can send messages.",
         "",
     )
 
@@ -1326,6 +1361,18 @@ def _effective_safety() -> tuple[bool, float]:
     return _apply_safety_overrides(dry_run, spend_cap)
 
 
+POLL_INTERVAL_KEY = "settings.poll_interval"
+
+
+def _effective_poll_interval() -> int:
+    try:
+        from pam_pm.rules.poller import effective_poll_interval
+
+        return effective_poll_interval(_db_path())
+    except Exception:  # noqa: BLE001
+        return 60
+
+
 def _check_safety() -> tuple[bool, str, str]:
     try:
         cfg = Config()
@@ -1532,7 +1579,12 @@ def setup_page(request: Request, token: str = "") -> HTMLResponse:
     try:
         saved_provider = provider_mod.load_provider(Config().ensure_data_dir())
     except Exception:  # noqa: BLE001
-        saved_provider = {"provider": "meta", "base_url": "", "model": "", "has_key": False}
+        saved_provider = {
+            "provider": "meta",
+            "base_url": "",
+            "model": "",
+            "has_key": False,
+        }
     try:
         saved_meta = secrets_mod.load_meta_config(Config().ensure_data_dir())
     except Exception:  # noqa: BLE001
@@ -1541,6 +1593,14 @@ def setup_page(request: Request, token: str = "") -> HTMLResponse:
         saved_slack = secrets_mod.load_slack_config(Config().ensure_data_dir())
     except Exception:  # noqa: BLE001
         saved_slack = {"has_bot_token": False, "has_app_token": False}
+    try:
+        saved_teams = secrets_mod.load_teams_config(Config().ensure_data_dir())
+    except Exception:  # noqa: BLE001
+        saved_teams = {
+            "has_app_id": False,
+            "has_app_password": False,
+            "has_tenant_id": False,
+        }
     try:
         saved_ado = secrets_mod.load_ado_config(Config().ensure_data_dir())
     except Exception:  # noqa: BLE001
@@ -1608,6 +1668,9 @@ def setup_page(request: Request, token: str = "") -> HTMLResponse:
             "meta_has_key": bool(saved_meta.get("has_key", False)),
             "slack_has_bot": bool(saved_slack.get("has_bot_token", False)),
             "slack_has_app": bool(saved_slack.get("has_app_token", False)),
+            "teams_has_app_id": bool(saved_teams.get("has_app_id", False)),
+            "teams_has_password": bool(saved_teams.get("has_app_password", False)),
+            "teams_has_tenant": bool(saved_teams.get("has_tenant_id", False)),
             "ado_org_url": str(saved_ado.get("org_url", "") or ""),
             "ado_project": str(saved_ado.get("project", "") or ""),
             "ado_team": str(saved_ado.get("team", "") or ""),
@@ -1632,9 +1695,7 @@ def setup_page(request: Request, token: str = "") -> HTMLResponse:
             "share_url": (
                 get_share_url(project) if _project_share_on_lan(project) else ""
             ),
-            "console_has_password": auth_mod.has_password(
-                Config().ensure_data_dir()
-            ),
+            "console_has_password": auth_mod.has_password(Config().ensure_data_dir()),
         }
     )
     return templates.TemplateResponse(request, "setup.html", ctx)  # type: ignore[return-value]
@@ -1660,6 +1721,10 @@ def rules_page(request: Request) -> HTMLResponse:
 def activity_page(request: Request) -> HTMLResponse:
     ctx = _context(request, "activity")
     ctx["events"] = _activity_events()
+    try:
+        ctx["checkin_people"] = _people_names(ctx["project"])
+    except Exception:  # noqa: BLE001
+        ctx["checkin_people"] = []
     try:
         ctx["lifecycle"] = recovery_mod.list_lifecycle(_db_path(), limit=50)
     except Exception:  # noqa: BLE001
@@ -1731,7 +1796,14 @@ def set_board_adapter(project: str, adapter: Any) -> None:
 
 def reset_board_state() -> None:
     """Clear pinned adapters and cached boards (tests call this)."""
-    global _ADO_BOARD, _JIRA_BOARD, _LINEAR_BOARD, _TRELLO_BOARD, _CLICKUP_BOARD, _ASANA_BOARD, _MONDAY_BOARD
+    global \
+        _ADO_BOARD, \
+        _JIRA_BOARD, \
+        _LINEAR_BOARD, \
+        _TRELLO_BOARD, \
+        _CLICKUP_BOARD, \
+        _ASANA_BOARD, \
+        _MONDAY_BOARD
     _BOARD_OVERRIDES.clear()
     for board in _NATIVE_BOARDS.values():
         try:
@@ -1739,7 +1811,15 @@ def reset_board_state() -> None:
         except Exception:  # noqa: BLE001, S110
             pass
     _NATIVE_BOARDS.clear()
-    for cached in (_ADO_BOARD, _JIRA_BOARD, _LINEAR_BOARD, _TRELLO_BOARD, _CLICKUP_BOARD, _ASANA_BOARD, _MONDAY_BOARD):
+    for cached in (
+        _ADO_BOARD,
+        _JIRA_BOARD,
+        _LINEAR_BOARD,
+        _TRELLO_BOARD,
+        _CLICKUP_BOARD,
+        _ASANA_BOARD,
+        _MONDAY_BOARD,
+    ):
         if cached is not None:
             try:
                 cached.close()
@@ -1767,7 +1847,14 @@ def get_board_adapter(project: str) -> Any | None:
     Native projects get a per-project SQLite board file. Other
     backends share one client each, or None when not configured.
     """
-    global _ADO_BOARD, _JIRA_BOARD, _LINEAR_BOARD, _TRELLO_BOARD, _CLICKUP_BOARD, _ASANA_BOARD, _MONDAY_BOARD
+    global \
+        _ADO_BOARD, \
+        _JIRA_BOARD, \
+        _LINEAR_BOARD, \
+        _TRELLO_BOARD, \
+        _CLICKUP_BOARD, \
+        _ASANA_BOARD, \
+        _MONDAY_BOARD
     name = _safe_project(project)
     if name in _BOARD_OVERRIDES:
         return _BOARD_OVERRIDES[name]
@@ -1839,6 +1926,44 @@ def get_board_adapter(project: str) -> Any | None:
         except Exception:  # noqa: BLE001
             return None
     return _ADO_BOARD
+
+
+_CHAT_OVERRIDES: dict[str, Any] = {}
+_MODEL_OVERRIDES: dict[str, Any] = {}
+
+
+def set_chat_adapter(project: str, adapter: Any) -> None:
+    """Pin a chat adapter for a project (tests and local runs)."""
+    _CHAT_OVERRIDES[_safe_project(project)] = adapter
+
+
+def set_model_client(project: str, client: Any) -> None:
+    """Pin a model client for a project (tests and local runs)."""
+    _MODEL_OVERRIDES[_safe_project(project)] = client
+
+
+def reset_chat_state() -> None:
+    """Clear pinned chat and model clients."""
+    _CHAT_OVERRIDES.clear()
+    _MODEL_OVERRIDES.clear()
+
+
+def get_chat_adapter(project: str) -> Any | None:
+    """Return the chat adapter for a project, or None when missing."""
+    name = _safe_project(project)
+    if name in _CHAT_OVERRIDES:
+        return _CHAT_OVERRIDES[name]
+    try:
+        from pam_pm.adapters.chat.slack import SlackAdapter
+
+        return SlackAdapter()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def get_model_client(project: str) -> Any | None:
+    """Return the pinned model client for a project, if any."""
+    return _MODEL_OVERRIDES.get(_safe_project(project))
 
 
 def _board_capabilities(project: str, adapter: Any | None) -> dict[str, bool]:
@@ -2277,6 +2402,7 @@ def settings_page(request: Request) -> HTMLResponse:
             "memory_throughput": dict(memory_life.get("throughput", {})),
             "memory_bias": memory_bias,
             "memory_style_note": str(memory_life.get("style_note", "") or ""),
+            "poll_interval": _effective_poll_interval(),
         }
     )
     return templates.TemplateResponse(request, "settings.html", ctx)  # type: ignore[return-value]
@@ -2386,6 +2512,170 @@ async def save_settings_safety(request: Request) -> Any:
     return {"ok": True, "dry_run": dry_run, "spend_cap": spend_cap}
 
 
+@app.post("/api/settings/poll-interval")
+async def save_poll_interval(request: Request) -> Any:
+    raw: Any = None
+    ctype = request.headers.get("content-type", "")
+    if "application/json" in ctype:
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = {}
+        if isinstance(payload, dict):
+            raw = payload.get("poll_interval", payload.get("interval"))
+    else:
+        form = await request.form()
+        raw = form.get("poll_interval", form.get("interval", ""))
+    try:
+        seconds = int(str(raw).strip())
+    except (TypeError, ValueError):
+        seconds = 0
+    if seconds < 1:
+        msg = "Poll interval must be a whole number of seconds, at least 1."
+        hint = "Type a value such as 10, then save again."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg, hint))
+        return JSONResponse(
+            {"ok": False, "message": msg, "hint": hint}, status_code=400
+        )
+    try:
+        recovery_mod.kv_set(_db_path(), POLL_INTERVAL_KEY, str(seconds))
+    except Exception:  # noqa: BLE001
+        msg = "Poll interval could not be saved."
+        hint = "Check the data directory is writable, then save again."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg, hint))
+        return JSONResponse(
+            {"ok": False, "message": msg, "hint": hint}, status_code=500
+        )
+    message = (
+        f"Poll interval saved. The board poller checks every {seconds} seconds."
+    )
+    if "hx-request" in request.headers:
+        return HTMLResponse(_test_result_html(True, message))
+    return {"ok": True, "poll_interval": seconds}
+
+
+@app.post("/api/checkin/test")
+async def test_checkin_route(request: Request) -> Any:
+    project = request.query_params.get("project", "default").strip() or "default"
+    person = ""
+    ctype = request.headers.get("content-type", "")
+    if "application/json" in ctype:
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = {}
+        if isinstance(payload, dict):
+            project = str(payload.get("project", project)).strip() or "default"
+            person = str(payload.get("person", payload.get("teammate", "")))
+    else:
+        form = await request.form()
+        if "project" in form:
+            project = str(form.get("project", project)).strip() or "default"
+        person = str(form.get("person", form.get("teammate", "")))
+    person = person.strip()
+    if not person:
+        try:
+            names = _people_names(project)
+        except Exception:  # noqa: BLE001
+            names = []
+        person = names[0] if names else ""
+    if not person:
+        msg = "Choose a teammate for the test check-in."
+        hint = "Type a teammate name, then press Send test check-in again."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg, hint))
+        return JSONResponse(
+            {"ok": False, "message": msg, "hint": hint}, status_code=400
+        )
+    chat = get_chat_adapter(project)
+    board = get_board_adapter(project)
+    if chat is None or board is None:
+        msg = "Chat or board is not connected for this project."
+        hint = "Finish the Setup steps for Slack and the board, then try again."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg, hint))
+        return JSONResponse(
+            {"ok": False, "message": msg, "hint": hint}, status_code=400
+        )
+    model = get_model_client(project)
+    if model is None:
+        try:
+            from pam_pm.models.client import ModelClient
+
+            candidate = ModelClient()
+            if candidate.model and candidate.base_url and candidate._api_key:
+                model = candidate
+        except Exception:  # noqa: BLE001
+            model = None
+    if model is None:
+        try:
+            mid = chat.send_dm(
+                person, "Morning check-in: what is the status of your open work?"
+            )
+        except Exception:  # noqa: BLE001
+            msg = "The test check-in could not be sent."
+            hint = "Check the chat connection, then try again."
+            if "hx-request" in request.headers:
+                return HTMLResponse(_test_result_html(False, msg, hint))
+            return JSONResponse(
+                {"ok": False, "message": msg, "hint": hint}, status_code=500
+            )
+        bus.publish(
+            {
+                "id": len(bus.history()) + 1,
+                "operation": "test_checkin",
+                "item_id": person,
+                "evidence_quote": "Console test check-in sent.",
+                "status": "applied",
+                "detail": f"Test check-in sent to {person}.",
+            }
+        )
+        message = f"Test check-in sent to {person}."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(True, message))
+        return {"ok": True, "person": person, "dm_id": mid, "fallback": True}
+    from pam_pm.rules.templates.morning import test_checkin
+
+    dry_run, _cap = _effective_safety()
+    try:
+        out = test_checkin(
+            person,
+            chat,
+            board,
+            model,
+            project=project,
+            db=_db_path(),
+            dry_run=dry_run,
+            backend=_project_backend(project),
+        )
+    except Exception as exc:  # noqa: BLE001
+        msg = "The test check-in did not finish."
+        hint = f"Detail: {exc}"
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg, hint))
+        return JSONResponse(
+            {"ok": False, "message": msg, "hint": hint}, status_code=500
+        )
+    results = out.get(person, {})
+    count = len(results) if isinstance(results, dict) else 0
+    bus.publish(
+        {
+            "id": len(bus.history()) + 1,
+            "operation": "test_checkin",
+            "item_id": person,
+            "evidence_quote": "Console test check-in sent.",
+            "status": "applied",
+            "detail": f"Test check-in sent to {person} ({count} items).",
+        }
+    )
+    message = f"Test check-in sent to {person} ({count} items)."
+    if "hx-request" in request.headers:
+        return HTMLResponse(_test_result_html(True, message))
+    return {"ok": True, "person": person, "items": count}
+
+
 @app.get("/api/settings/memory")
 async def view_settings_memory(request: Request) -> Any:
     if not await _setup_token_ok(request):
@@ -2460,8 +2750,8 @@ async def save_settings_memory_person(request: Request) -> Any:
                     _db_path(),
                     label,
                     role=str(item.get("role", "") or "") or None,
-                    skillsets=str(item.get("skills", item.get("skillsets", ""))
-                    or "") or None,
+                    skillsets=str(item.get("skills", item.get("skillsets", "")) or "")
+                    or None,
                     weekly_capacity=hours if hours > 0 else None,
                     source="settings",
                 )
@@ -2592,6 +2882,8 @@ async def test_connection(which: str, request: Request) -> Any:
         ok, message, hint = _check_provider()
     elif name == "slack":
         ok, message, hint = _check_slack()
+    elif name == "teams":
+        ok, message, hint = _check_teams()
     elif name == "ado":
         ok, message, hint = _check_ado()
     elif name == "jira":
@@ -2619,7 +2911,7 @@ async def test_connection(which: str, request: Request) -> Any:
             {
                 "ok": False,
                 "message": "Unknown target.",
-                "hint": "Use one of: model, slack, ado, jira, linear, trello, clickup, asana, monday, people, rules, safety.",
+                "hint": "Use one of: model, slack, teams, ado, jira, linear, trello, clickup, asana, monday, people, rules, safety.",
             },
             status_code=404,
         )
@@ -2674,7 +2966,8 @@ async def save_setup_progress(request: Request) -> Any:
     if "hx-request" in request.headers:
         return HTMLResponse(
             _test_result_html(
-                True, f"Step {step} saved. Your progress is kept if you leave and come back."
+                True,
+                f"Step {step} saved. Your progress is kept if you leave and come back.",
             )
         )
     return {"ok": True, "project": project, "progress": entry}
@@ -2797,9 +3090,7 @@ async def save_setup_share(request: Request) -> Any:
             try:
                 auth_mod.set_password(password, data_dir)
             except ValueError as exc:
-                return JSONResponse(
-                    {"ok": False, "message": str(exc)}, status_code=400
-                )
+                return JSONResponse({"ok": False, "message": str(exc)}, status_code=400)
             password_set = True
             new_session = auth_mod.create_session()
             auth_mod.record_login_success(_client_ip(request))
@@ -2980,8 +3271,12 @@ async def save_setup_slack(request: Request) -> Any:
     else:
         form = await request.form()
         project = str(form.get("project", project)).strip() or "default"
-        bot_token = str(form.get("bot_token", form.get("SLACK_BOT_TOKEN", "") or "") or "")
-        app_token = str(form.get("app_token", form.get("SLACK_APP_TOKEN", "") or "") or "")
+        bot_token = str(
+            form.get("bot_token", form.get("SLACK_BOT_TOKEN", "") or "") or ""
+        )
+        app_token = str(
+            form.get("app_token", form.get("SLACK_APP_TOKEN", "") or "") or ""
+        )
     try:
         saved = secrets_mod.save_slack_config(
             Config().ensure_data_dir(),
@@ -3011,6 +3306,68 @@ async def save_setup_slack(request: Request) -> Any:
     if "hx-request" in request.headers:
         return HTMLResponse(_test_result_html(True, message))
     return {"ok": True, "project": project, "slack": saved}
+
+
+@app.post("/api/setup/teams")
+async def save_setup_teams(request: Request) -> Any:
+    if not await _setup_token_ok(request):
+        return _setup_token_denied(request)
+    project = request.query_params.get("project", "default").strip() or "default"
+    app_id = ""
+    app_password = ""
+    tenant_id = ""
+    ctype = request.headers.get("content-type", "")
+    if "application/json" in ctype:
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = {}
+        fields = _setup_payload(request, payload if isinstance(payload, dict) else {})
+        project = fields.get("project", project).strip() or "default"
+        app_id = fields.get("app_id", fields.get("TEAMS_APP_ID", ""))
+        app_password = fields.get("app_password", fields.get("TEAMS_APP_PASSWORD", ""))
+        tenant_id = fields.get("tenant_id", fields.get("TEAMS_TENANT_ID", ""))
+    else:
+        form = await request.form()
+        project = str(form.get("project", project)).strip() or "default"
+        app_id = str(form.get("app_id", form.get("TEAMS_APP_ID", "") or "") or "")
+        app_password = str(
+            form.get("app_password", form.get("TEAMS_APP_PASSWORD", "") or "") or ""
+        )
+        tenant_id = str(
+            form.get("tenant_id", form.get("TEAMS_TENANT_ID", "") or "") or ""
+        )
+    try:
+        saved = secrets_mod.save_teams_config(
+            Config().ensure_data_dir(),
+            app_id=app_id,
+            app_password=app_password,
+            tenant_id=tenant_id,
+        )
+    except Exception:  # noqa: BLE001
+        msg = "Teams settings could not be saved."
+        hint = "Check the data directory is writable, then save again."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg, hint))
+        return JSONResponse(
+            {"ok": False, "message": msg, "hint": hint}, status_code=500
+        )
+    try:
+        _write_project_step(
+            project,
+            "teams",
+            {
+                "has_app_id": saved.get("has_app_id", False),
+                "has_app_password": saved.get("has_app_password", False),
+                "has_tenant_id": saved.get("has_tenant_id", False),
+            },
+        )
+    except Exception:  # noqa: BLE001, S110
+        pass
+    message = "Teams settings saved."
+    if "hx-request" in request.headers:
+        return HTMLResponse(_test_result_html(True, message))
+    return {"ok": True, "project": project, "teams": saved}
 
 
 @app.post("/api/setup/ado")
@@ -3339,13 +3696,19 @@ async def save_setup_asana(request: Request) -> Any:
             payload = {}
         fields = _setup_payload(request, payload if isinstance(payload, dict) else {})
         project = fields.get("project", project).strip() or "default"
-        asana_project = fields.get("project_name", fields.get("project", fields.get("ASANA_PROJECT", "")))
+        asana_project = fields.get(
+            "project_name", fields.get("project", fields.get("ASANA_PROJECT", ""))
+        )
         api_token = fields.get("api_token", fields.get("ASANA_API_TOKEN", ""))
     else:
         form = await request.form()
         project = str(form.get("project", project)).strip() or "default"
-        asana_project = str(form.get("project_name", form.get("project", "") or "") or "") or str(form.get("ASANA_PROJECT", "") or "")
-        api_token = str(form.get("api_token", form.get("ASANA_API_TOKEN", "") or "") or "")
+        asana_project = str(
+            form.get("project_name", form.get("project", "") or "") or ""
+        ) or str(form.get("ASANA_PROJECT", "") or "")
+        api_token = str(
+            form.get("api_token", form.get("ASANA_API_TOKEN", "") or "") or ""
+        )
     try:
         saved = secrets_mod.save_asana_config(
             Config().ensure_data_dir(),
@@ -3357,9 +3720,18 @@ async def save_setup_asana(request: Request) -> Any:
         hint = "Check the data directory is writable, then save again."
         if "hx-request" in request.headers:
             return HTMLResponse(_test_result_html(False, msg, hint))
-        return JSONResponse({"ok": False, "message": msg, "hint": hint}, status_code=500)
+        return JSONResponse(
+            {"ok": False, "message": msg, "hint": hint}, status_code=500
+        )
     try:
-        _write_project_step(project, "asana", {"project": saved.get("project", ""), "has_token": saved.get("has_token", False)})
+        _write_project_step(
+            project,
+            "asana",
+            {
+                "project": saved.get("project", ""),
+                "has_token": saved.get("has_token", False),
+            },
+        )
     except Exception:  # noqa: BLE001, S110
         pass
     message = "Asana settings saved."
@@ -3389,17 +3761,30 @@ async def save_setup_monday(request: Request) -> Any:
         form = await request.form()
         project = str(form.get("project", project)).strip() or "default"
         board = str(form.get("board", form.get("MONDAY_BOARD", "") or "") or "")
-        api_token = str(form.get("api_token", form.get("MONDAY_API_TOKEN", "") or "") or "")
+        api_token = str(
+            form.get("api_token", form.get("MONDAY_API_TOKEN", "") or "") or ""
+        )
     try:
-        saved = secrets_mod.save_monday_config(Config().ensure_data_dir(), board=board, api_token=api_token)
+        saved = secrets_mod.save_monday_config(
+            Config().ensure_data_dir(), board=board, api_token=api_token
+        )
     except Exception:  # noqa: BLE001
         msg = "Monday settings could not be saved."
         hint = "Check the data directory is writable, then save again."
         if "hx-request" in request.headers:
             return HTMLResponse(_test_result_html(False, msg, hint))
-        return JSONResponse({"ok": False, "message": msg, "hint": hint}, status_code=500)
+        return JSONResponse(
+            {"ok": False, "message": msg, "hint": hint}, status_code=500
+        )
     try:
-        _write_project_step(project, "monday", {"board": saved.get("board", ""), "has_token": saved.get("has_token", False)})
+        _write_project_step(
+            project,
+            "monday",
+            {
+                "board": saved.get("board", ""),
+                "has_token": saved.get("has_token", False),
+            },
+        )
     except Exception:  # noqa: BLE001, S110
         pass
     message = "Monday settings saved."
@@ -3517,7 +3902,9 @@ async def setup_complete(request: Request) -> Any:
     if SETUP_DONE:
         if "hx-request" in request.headers:
             return HTMLResponse(
-                _test_result_html(True, "Setup is already complete. Nothing else to do.")
+                _test_result_html(
+                    True, "Setup is already complete. Nothing else to do."
+                )
             )
         return JSONResponse({"ok": False, "message": "Setup already complete"})
     token = ""
@@ -3713,9 +4100,7 @@ async def upload_plan_photo(request: Request) -> Any:
         )
     except Exception:  # noqa: BLE001
         current_provider = "meta"
-    photo = plan_from_photo(
-        data if data else b"", provider=current_provider
-    )
+    photo = plan_from_photo(data if data else b"", provider=current_provider)
     proposal = propose_sprint(photo.get("readings") or photo.get("notes_text", ""))
     LAST_PLAN["readings"] = photo.get("readings", [])
     LAST_PLAN["masks"] = photo.get("masks", [])
@@ -4565,10 +4950,10 @@ def _kickoff_result_html(
             "<tr>"
             f"<td>{title}</td>"
             f"<td>{html.escape(str(draft.get('type', '')))}</td>"
-            f"<td><select name=\"owner-{index}\" "
+            f'<td><select name="owner-{index}" '
             f'aria-label="Owner for {title}">{"".join(options)}</select></td>'
             f"<td>{html.escape(str(est) if est is not None else '-')}</td>"
-            f"<td>{reason}<br><span class=\"muted\">Confidence: {conf}</span>"
+            f'<td>{reason}<br><span class="muted">Confidence: {conf}</span>'
             f"{warn}</td>"
             "</tr>"
         )
@@ -4577,17 +4962,15 @@ def _kickoff_result_html(
         '<th scope="col">Title</th><th scope="col">Type</th>'
         '<th scope="col">Owner</th><th scope="col">Est (h)</th>'
         '<th scope="col">Reason</th>'
-        "</tr></thead><tbody>"
-        + "".join(rows)
-        + "</tbody></table>"
+        "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
     )
     parts.append(
         '<form hx-post="/api/kickoff/approve" hx-target="#kickoff-approve-result" '
         'hx-swap="innerHTML">'
         '<label class="toggle"><input type="checkbox" name="notify" '
         'value="on" checked>Notify new owners</label>'
-        "<div class=\"form-actions\">"
-        "<button type=\"submit\">Approve and create these tasks</button>"
+        '<div class="form-actions">'
+        '<button type="submit">Approve and create these tasks</button>'
         "</div>"
         '<div id="kickoff-approve-result" class="result" aria-live="polite">'
         "</div></form>"
@@ -4603,7 +4986,8 @@ def kickoff_page(request: Request) -> HTMLResponse:
     proposal = LAST_KICKOFF.get("proposal", [])
     if proposal:
         ctx["kickoff_html"] = _kickoff_result_html(
-            proposal, LAST_KICKOFF.get("has_history", False),
+            proposal,
+            LAST_KICKOFF.get("has_history", False),
             _roster_entries(project),
             LAST_KICKOFF.get("assumptions_count", 0),
         )
@@ -4643,7 +5027,11 @@ async def propose_kickoff_route(request: Request) -> Any:
     try:
         writes = WriteService(_db_path())
         proposed_assumptions = raid_mod.propose_assumptions_from_text(
-            _db_path(), backend, project, text, writes=writes,
+            _db_path(),
+            backend,
+            project,
+            text,
+            writes=writes,
         )
     except Exception:  # noqa: BLE001
         proposed_assumptions = []
@@ -4670,16 +5058,23 @@ async def propose_kickoff_route(request: Request) -> Any:
     LAST_KICKOFF["assumptions_count"] = len(proposed_assumptions)
     try:
         store_mod.save_kickoff_proposal(
-            _db_path(), backend, external_id, project,
+            _db_path(),
+            backend,
+            external_id,
+            project,
             {"items": items, "has_history": result.get("has_history", False)},
         )
     except Exception:  # noqa: BLE001, S110
         pass
     if "hx-request" in request.headers:
-        return HTMLResponse(_kickoff_result_html(
-            items, result.get("has_history", False), roster,
-            len(proposed_assumptions),
-        ))
+        return HTMLResponse(
+            _kickoff_result_html(
+                items,
+                result.get("has_history", False),
+                roster,
+                len(proposed_assumptions),
+            )
+        )
     return {
         "ok": True,
         "items": items,
@@ -4721,18 +5116,22 @@ async def approve_kickoff_route(request: Request) -> Any:
         )
     dry_run, _cap = _effective_safety()
     created = approve_kickoff(
-        proposal, adapter, db=_db_path(), dry_run=dry_run,
+        proposal,
+        adapter,
+        db=_db_path(),
+        dry_run=dry_run,
         evidence_quote="Approved from the kickoff card.",
     )
-    done = [
-        {"id": str(item.id), "title": str(item.title)} for item in created
-    ]
+    done = [{"id": str(item.id), "title": str(item.title)} for item in created]
     LAST_KICKOFF["approved"] = done
     try:
         store_mod.save_kickoff_proposal(
-            _db_path(), _project_backend(project),
+            _db_path(),
+            _project_backend(project),
             LAST_KICKOFF.get("external_id", "console"),
-            project, {"items": proposal}, status="approved",
+            project,
+            {"items": proposal},
+            status="approved",
         )
     except Exception:  # noqa: BLE001, S110
         pass
@@ -4742,9 +5141,7 @@ async def approve_kickoff_route(request: Request) -> Any:
             from pam_pm.adapters.chat.slack import SlackAdapter
 
             if os.environ.get("SLACK_BOT_TOKEN", "").strip():
-                notified = len(notify_owners(
-                    SlackAdapter(), created, proposal
-                ))
+                notified = len(notify_owners(SlackAdapter(), created, proposal))
         except Exception:  # noqa: BLE001
             notified = 0
     message = f"Created {len(done)} tasks."
@@ -4807,8 +5204,7 @@ def _add_task_card_html(
     for label in names:
         sel = " selected" if label == owner else ""
         options.append(
-            f'<option value="{html.escape(label)}"{sel}>'
-            f"{html.escape(label)}</option>"
+            f'<option value="{html.escape(label)}"{sel}>{html.escape(label)}</option>'
         )
     if owner and owner not in names:
         options.append(
@@ -4840,7 +5236,7 @@ def _add_task_card_html(
         f'<select id="add-task-owner" name="owner">{"".join(options)}</select>'
         f'<blockquote class="evidence">{quote}</blockquote>'
         '<div class="form-actions">'
-        "<button type=\"submit\">Approve and create task</button>"
+        '<button type="submit">Approve and create task</button>'
         "</div>"
         '<div id="add-task-approve-result" class="result" aria-live="polite">'
         "</div></form>"
@@ -4920,9 +5316,7 @@ async def approve_add_task_route(request: Request) -> Any:
         )
     dry_run, _ = _effective_safety()
     try:
-        created = approve_add_task(
-            draft, adapter, db=_db_path(), dry_run=dry_run
-        )
+        created = approve_add_task(draft, adapter, db=_db_path(), dry_run=dry_run)
     except Exception as exc:  # noqa: BLE001
         msg = f"Approve failed: {exc}"
         if "hx-request" in request.headers:
@@ -4976,7 +5370,7 @@ def _triage_result_html(findings: list[dict[str, Any]], dry_run: bool) -> str:
         fix = html.escape(str(finding.get("fix_label", "")))
         item_id = html.escape(str(finding.get("item_id", "")))
         parts.append(
-            '<article>'
+            "<article>"
             f"<h3>{title}</h3>"
             f'<p class="muted">{kind} &middot; item {item_id} &middot; {detail}</p>'
             f"<p>Proposed fix: {fix}</p>"
@@ -5026,9 +5420,7 @@ def triage_run_route(request: Request) -> Any:
         logger.warning("triage scan failed: %s", exc)
         msg = "The triage scan could not be read."
         if "hx-request" in request.headers:
-            return HTMLResponse(
-                _test_result_html(False, msg, "Try again in a moment.")
-            )
+            return HTMLResponse(_test_result_html(False, msg, "Try again in a moment."))
         return JSONResponse({"ok": False, "message": msg}, status_code=502)
     LAST_TRIAGE["findings"] = findings
     LAST_TRIAGE["message"] = triage_mod.format_board_triage_message(findings)
@@ -5224,7 +5616,9 @@ async def raid_create(request: Request) -> Any:
     except Exception as exc:  # noqa: BLE001
         return _board_error_response(exc)
     event = _record_raid_write(
-        project, "raid_create", str(item["external_id"]),
+        project,
+        "raid_create",
+        str(item["external_id"]),
         str(item["evidence_quote"] or title)[:500],
         f"RAID {kind} added: {title[:200]}",
     )
@@ -5238,8 +5632,15 @@ async def raid_edit(request: Request, external_id: str) -> Any:
     payload = await _board_payload(request)
     fields: dict[str, Any] = {}
     for key in (
-        "title", "owner", "severity", "status", "due_date",
-        "evidence_quote", "evidence_date", "kind", "project",
+        "title",
+        "owner",
+        "severity",
+        "status",
+        "due_date",
+        "evidence_quote",
+        "evidence_date",
+        "kind",
+        "project",
     ):
         if key in payload and payload[key] is not None:
             fields[key] = payload[key]
@@ -5249,15 +5650,18 @@ async def raid_edit(request: Request, external_id: str) -> Any:
         return JSONResponse(
             {"ok": False, "message": "Nothing changed."}, status_code=400
         )
-    updated = raid_mod.update_item(db=_db_path(), backend=backend,
-                                   external_id=external_id, fields=fields)
+    updated = raid_mod.update_item(
+        db=_db_path(), backend=backend, external_id=external_id, fields=fields
+    )
     if updated is None:
         return JSONResponse(
             {"ok": False, "message": f"Entry {external_id} was not found."},
             status_code=404,
         )
     event = _record_raid_write(
-        project, "raid_update", external_id,
+        project,
+        "raid_update",
+        external_id,
         str(updated["evidence_quote"] or updated["title"])[:500],
         f"RAID {updated['kind']} updated: {str(updated['title'])[:200]}",
     )
@@ -5279,9 +5683,7 @@ def raid_accept(request: Request, external_id: str) -> Any:
             {"ok": False, "message": "Only proposed entries can be accepted."},
             status_code=400,
         )
-    updated = raid_mod.update_item(
-        _db_path(), backend, external_id, {"status": "open"}
-    )
+    updated = raid_mod.update_item(_db_path(), backend, external_id, {"status": "open"})
     if updated is None:
         return JSONResponse(
             {"ok": False, "message": f"Entry {external_id} was not found."},
@@ -5293,7 +5695,9 @@ def raid_accept(request: Request, external_id: str) -> Any:
         except Exception:  # noqa: BLE001, S110
             pass
     event = _record_raid_write(
-        project, "raid_accept", external_id,
+        project,
+        "raid_accept",
+        external_id,
         str(updated["evidence_quote"] or updated["title"])[:500],
         f"RAID {updated['kind']} accepted: {str(updated['title'])[:200]}",
     )
@@ -5324,7 +5728,9 @@ def raid_close(request: Request, external_id: str) -> Any:
             status_code=404,
         )
     event = _record_raid_write(
-        project, "raid_close", external_id,
+        project,
+        "raid_close",
+        external_id,
         str(updated["evidence_quote"] or updated["title"])[:500],
         f"RAID {updated['kind']} closed: {str(updated['title'])[:200]}",
     )
@@ -5348,7 +5754,9 @@ def raid_delete(request: Request, external_id: str) -> Any:
             status_code=404,
         )
     event = _record_raid_write(
-        project, "raid_delete", external_id,
+        project,
+        "raid_delete",
+        external_id,
         str(current["evidence_quote"] or current["title"])[:500],
         f"RAID {current['kind']} deleted: {str(current['title'])[:200]}",
     )
@@ -5371,12 +5779,16 @@ def raid_export(request: Request) -> Any:
     if fmt in ("md", "markdown"):
         body = raid_mod.export_markdown(items, for_lead=True)
         return Response(
-            body, media_type="text/markdown",
-            headers={"Content-Disposition": f'attachment; filename="raid-{project}.md"'},
+            body,
+            media_type="text/markdown",
+            headers={
+                "Content-Disposition": f'attachment; filename="raid-{project}.md"'
+            },
         )
     body = raid_mod.export_csv(items, for_lead=True)
     return Response(
-        body, media_type="text/csv",
+        body,
+        media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="raid-{project}.csv"'},
     )
 
@@ -5412,9 +5824,10 @@ def _notes_approval_html(
     if decisions:
         items = "".join(
             f"<li>{html.escape(str(d.get('text', '')))} "
-            f"<span class=\"muted\">Evidence: "
+            f'<span class="muted">Evidence: '
             f"{html.escape(str(d.get('evidence_quote', '')))}</span></li>"
-            for d in decisions if isinstance(d, dict)
+            for d in decisions
+            if isinstance(d, dict)
         )
         parts.append(f"<ul>{items}</ul>")
     else:
@@ -5448,8 +5861,8 @@ def _notes_approval_html(
                 )
             rows.append(
                 "<tr>"
-                f"<td>{title}<br><span class=\"muted\">Evidence: {quote}</span></td>"
-                f"<td><select name=\"owner-{index}\" "
+                f'<td>{title}<br><span class="muted">Evidence: {quote}</span></td>'
+                f'<td><select name="owner-{index}" '
                 f'aria-label="Owner for {title}">{"".join(options)}</select></td>'
                 f"<td>{due}</td>"
                 f"<td>{html.escape(str(conf))}</td>"
@@ -5470,7 +5883,8 @@ def _notes_approval_html(
             f"<li>{html.escape(str(m.get('note_title', '')))} matches "
             f"{html.escape(str(m.get('item_id', '')))}. "
             f"{html.escape(str(m.get('reason', '')))}</li>"
-            for m in matches if isinstance(m, dict)
+            for m in matches
+            if isinstance(m, dict)
         )
         parts.append(f"<ul>{items}</ul>")
     else:
@@ -5481,7 +5895,8 @@ def _notes_approval_html(
         items = "".join(
             f"<li>[{html.escape(str(r.get('kind', 'risk')))}] "
             f"{html.escape(str(r.get('title', '')))}</li>"
-            for r in raid if isinstance(r, dict)
+            for r in raid
+            if isinstance(r, dict)
         )
         parts.append(f"<ul>{items}</ul>")
     else:
@@ -5495,8 +5910,8 @@ def _notes_approval_html(
         'value="on">Post notes to Slack channel</label>'
         '<label>Channel <input type="text" name="channel" placeholder="#standup"></label>'
         '<p class="muted">Board writes are proposed first and logged with an evidence quote.</p>'
-        "<div class=\"form-actions\">"
-        "<button type=\"submit\">Approve and create action items</button>"
+        '<div class="form-actions">'
+        '<button type="submit">Approve and create action items</button>'
         "</div>"
         '<div id="notes-approve-result" class="result" aria-live="polite"></div>'
         "</form>"
@@ -5551,7 +5966,7 @@ def _listen_proposals_html(
     if not proposals:
         return (
             '<section class="card"><h2>Proposed tasks</h2>'
-            "<p class=\"muted\">No tasks proposed yet.</p></section>"
+            '<p class="muted">No tasks proposed yet.</p></section>'
         )
     names = [str(e.get("name", "")) for e in roster if str(e.get("name", ""))]
     cards: list[str] = []
@@ -5586,25 +6001,23 @@ def _listen_proposals_html(
             f"<label>Owner "
             f'<select name="owner-{index}" '
             f'aria-label="Owner for proposal {index + 1}">'
-            f'{"".join(options)}</select></label>'
+            f"{''.join(options)}</select></label>"
             f"<label>Estimate (hours) "
             f'<input type="number" name="estimate-{index}" '
             f'value="{hours:g}" min="0" max="80" step="0.5"></label>'
-            f"<p class=\"muted\">Evidence: {html.escape(quote)}</p>"
+            f'<p class="muted">Evidence: {html.escape(quote)}</p>'
             "</article>"
         )
     sid = html.escape(session_id)
     proj = html.escape(project)
     return (
         '<section class="card"><h2>Proposed tasks</h2>'
-        "<p class=\"muted\">Edit title, owner, and estimate inline. "
+        '<p class="muted">Edit title, owner, and estimate inline. '
         "Nothing is posted until you approve.</p>"
         f'<form hx-post="/api/meetings/{sid}/proposals/approve'
         f'?project={proj}" hx-target="#listen-proposals-result" '
-        'hx-swap="innerHTML">'
-        + "".join(cards) +
-        '<div class="form-actions">'
-        "<button type=\"submit\">Approve selected</button>"
+        'hx-swap="innerHTML">' + "".join(cards) + '<div class="form-actions">'
+        '<button type="submit">Approve selected</button>'
         "</div></form>"
         '<div class="form-actions">'
         f'<button hx-post="/api/meetings/{sid}/proposals/approve'
@@ -5653,9 +6066,14 @@ def meeting_detail_page(request: Request, session_id: str) -> HTMLResponse:
         detail = None
     if detail is None:
         return templates.TemplateResponse(  # type: ignore[return-value]
-            request, "meeting.html",
-            {**ctx, "session": {"session_id": session_id, "status": "missing"},
-             "segments": [], "notes_html": ""},
+            request,
+            "meeting.html",
+            {
+                **ctx,
+                "session": {"session_id": session_id, "status": "missing"},
+                "segments": [],
+                "notes_html": "",
+            },
         )
     notes = detail.get("notes") or {}
     payload = notes.get("payload", {}) if isinstance(notes, dict) else {}
@@ -5664,11 +6082,13 @@ def meeting_detail_page(request: Request, session_id: str) -> HTMLResponse:
         notes_html = _notes_approval_html(
             payload, _roster_entries(project), session_id, project
         )
-    ctx.update({
-        "session": detail.get("session", {}),
-        "segments": detail.get("segments", []),
-        "notes_html": notes_html,
-    })
+    ctx.update(
+        {
+            "session": detail.get("session", {}),
+            "segments": detail.get("segments", []),
+            "notes_html": notes_html,
+        }
+    )
     return templates.TemplateResponse(request, "meeting.html", ctx)  # type: ignore[return-value]
 
 
@@ -5688,7 +6108,9 @@ def meeting_detail_api(request: Request, session_id: str) -> Any:
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"ok": False, "message": str(exc)[:300]}, status_code=500)
     if detail is None:
-        return JSONResponse({"ok": False, "message": "Meeting not found."}, status_code=404)
+        return JSONResponse(
+            {"ok": False, "message": "Meeting not found."}, status_code=404
+        )
     return {"ok": True, **detail}
 
 
@@ -5702,14 +6124,18 @@ async def meeting_notes_route(request: Request, session_id: str) -> Any:
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"ok": False, "message": str(exc)[:300]}, status_code=500)
     if detail is None:
-        return JSONResponse({"ok": False, "message": "Meeting not found."}, status_code=404)
+        return JSONResponse(
+            {"ok": False, "message": "Meeting not found."}, status_code=404
+        )
     transcript = str(detail.get("transcript", "") or "")
     existing = _listen_board_items(project)
     roster = _roster_entries(project)
     context = notes_mod.build_project_context(existing, roster)
     result = notes_mod.extract_notes(
-        transcript, project_context=context,
-        existing_items=existing, roster=roster,
+        transcript,
+        project_context=context,
+        existing_items=existing,
+        roster=roster,
     )
     try:
         store_mod.save_listen_notes(_db_path(), session_id, project, result)
@@ -5750,7 +6176,10 @@ async def meeting_approve_route(request: Request, session_id: str) -> Any:
         return JSONResponse({"ok": False, "message": msg}, status_code=500)
     dry_run, _cap = _effective_safety()
     created = notes_mod.create_action_items(
-        adapter, actions, db=_db_path(), dry_run=dry_run,
+        adapter,
+        actions,
+        db=_db_path(),
+        dry_run=dry_run,
     )
     try:
         store_mod.set_listen_notes_status(_db_path(), session_id, "approved")
@@ -5774,7 +6203,9 @@ async def meeting_approve_route(request: Request, session_id: str) -> Any:
 
                 if os.environ.get("SLACK_BOT_TOKEN", "").strip():
                     markdown = str(saved["payload"].get("markdown", "") or "")[:3000]
-                    posted = SlackAdapter().send_dm(channel, markdown or "Meeting notes.")
+                    posted = SlackAdapter().send_dm(
+                        channel, markdown or "Meeting notes."
+                    )
             except Exception:  # noqa: BLE001
                 posted = ""
     message = f"Created {len(created)} action items."
@@ -5784,7 +6215,12 @@ async def meeting_approve_route(request: Request, session_id: str) -> Any:
         message += " Posted notes to Slack."
     if "hx-request" in request.headers:
         return HTMLResponse(_test_result_html(True, message))
-    return {"ok": True, "created": len(created), "notified": notified, "posted": bool(posted)}
+    return {
+        "ok": True,
+        "created": len(created),
+        "notified": notified,
+        "posted": bool(posted),
+    }
 
 
 @app.post("/api/meetings/{session_id}/finish")
@@ -5799,14 +6235,18 @@ async def meeting_finish_route(request: Request, session_id: str) -> Any:
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"ok": False, "message": str(exc)[:300]}, status_code=500)
     if detail is None:
-        return JSONResponse({"ok": False, "message": "Meeting not found."}, status_code=404)
+        return JSONResponse(
+            {"ok": False, "message": "Meeting not found."}, status_code=404
+        )
     transcript = str(detail.get("transcript", "") or "")
     existing = _listen_board_items(project)
     roster = _roster_entries(project)
     context = notes_mod.build_project_context(existing, roster)
     result = notes_mod.extract_notes(
-        transcript, project_context=context,
-        existing_items=existing, roster=roster,
+        transcript,
+        project_context=context,
+        existing_items=existing,
+        roster=roster,
     )
     try:
         store_mod.save_listen_notes(_db_path(), session_id, project, result)
@@ -5842,13 +6282,19 @@ def meeting_proposals_api(request: Request, session_id: str) -> Any:
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"ok": False, "message": str(exc)[:300]}, status_code=500)
     if saved is None:
-        return JSONResponse({"ok": False, "message": "No proposals yet."}, status_code=404)
+        return JSONResponse(
+            {"ok": False, "message": "No proposals yet."}, status_code=404
+        )
     return {"ok": True, **saved}
 
 
 def _proposal_edits(payload: dict[str, Any], proposals: list[dict[str, Any]]) -> None:
     for index, draft in enumerate(proposals):
-        title_key, owner_key, est_key = f"title-{index}", f"owner-{index}", f"estimate-{index}"
+        title_key, owner_key, est_key = (
+            f"title-{index}",
+            f"owner-{index}",
+            f"estimate-{index}",
+        )
         if title_key in payload:
             title = str(payload[title_key]).strip()
             if title:
@@ -5870,7 +6316,9 @@ def _proposal_edits(payload: dict[str, Any], proposals: list[dict[str, Any]]) ->
                     proposals[pos]["owner"] = str(edit["owner"]).strip() or None
                 if "estimate" in edit:
                     try:
-                        proposals[pos]["estimate"] = max(0.0, min(80.0, float(edit["estimate"])))
+                        proposals[pos]["estimate"] = max(
+                            0.0, min(80.0, float(edit["estimate"]))
+                        )
                     except (TypeError, ValueError):
                         pass
 
@@ -5885,7 +6333,12 @@ def _proposal_selection(payload: dict[str, Any], count: int) -> list[int]:
             except (TypeError, ValueError):
                 continue
     for index in range(count):
-        if str(payload.get(f"selected-{index}", "")).lower() in ("on", "1", "true", "yes"):
+        if str(payload.get(f"selected-{index}", "")).lower() in (
+            "on",
+            "1",
+            "true",
+            "yes",
+        ):
             picked.append(index)
     return sorted({i for i in picked if 0 <= i < count})
 
@@ -5899,7 +6352,11 @@ async def meeting_proposals_approve_route(request: Request, session_id: str) -> 
         saved = store_mod.get_listen_proposals(_db_path(), session_id)
     except Exception:  # noqa: BLE001
         saved = None
-    if saved is None or saved.get("status") == "discarded" or not saved.get("proposals"):
+    if (
+        saved is None
+        or saved.get("status") == "discarded"
+        or not saved.get("proposals")
+    ):
         msg = "No proposals to approve. Finish the meeting first."
         if "hx-request" in request.headers:
             return HTMLResponse(_test_result_html(False, msg))
@@ -5910,7 +6367,11 @@ async def meeting_proposals_approve_route(request: Request, session_id: str) -> 
     want_all = request.query_params.get("all", "").lower() in ("1", "true", "on", "yes")
     if not want_all:
         want_all = str(payload.get("all", "")).lower() in ("1", "true", "on", "yes")
-    selected = list(range(len(proposals))) if want_all else _proposal_selection(payload, len(proposals))
+    selected = (
+        list(range(len(proposals)))
+        if want_all
+        else _proposal_selection(payload, len(proposals))
+    )
     if not selected:
         msg = "Select at least one proposal."
         if "hx-request" in request.headers:
@@ -5930,18 +6391,31 @@ async def meeting_proposals_approve_route(request: Request, session_id: str) -> 
     title = str(((detail or {}).get("session", {}) or {}).get("title", "") or "")
     dry_run, _cap = _effective_safety()
     created = pipeline_mod.approve_listen_proposals(
-        adapter, proposals, selected, session_id, transcript,
-        db=_db_path(), dry_run=dry_run, meeting_title=title,
+        adapter,
+        proposals,
+        selected,
+        session_id,
+        transcript,
+        db=_db_path(),
+        dry_run=dry_run,
+        meeting_title=title,
     )
     status = "approved" if len(selected) == len(proposals) else "partial"
     try:
-        store_mod.save_listen_proposals(_db_path(), session_id, project, proposals, status=status)
+        store_mod.save_listen_proposals(
+            _db_path(), session_id, project, proposals, status=status
+        )
     except Exception:  # noqa: BLE001, S110
         pass
     message = f"Created {len(created)} of {len(proposals)} proposed tasks."
     if "hx-request" in request.headers:
         return HTMLResponse(_test_result_html(True, message))
-    return {"ok": True, "created": len(created), "total": len(proposals), "status": status}
+    return {
+        "ok": True,
+        "created": len(created),
+        "total": len(proposals),
+        "status": status,
+    }
 
 
 @app.post("/api/meetings/{session_id}/proposals/discard")
@@ -5957,7 +6431,9 @@ async def meeting_proposals_discard_route(request: Request, session_id: str) -> 
             return HTMLResponse(_test_result_html(False, msg))
         return JSONResponse({"ok": False, "message": msg}, status_code=404)
     try:
-        store_mod.save_listen_proposals(_db_path(), session_id, project, [], status="discarded")
+        store_mod.save_listen_proposals(
+            _db_path(), session_id, project, [], status="discarded"
+        )
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"ok": False, "message": str(exc)[:300]}, status_code=500)
     if "hx-request" in request.headers:
@@ -5966,17 +6442,23 @@ async def meeting_proposals_discard_route(request: Request, session_id: str) -> 
 
 
 @app.post("/api/meetings/{session_id}/proposals/{index}")
-async def meeting_proposal_edit_route(request: Request, session_id: str, index: int) -> Any:
+async def meeting_proposal_edit_route(
+    request: Request, session_id: str, index: int
+) -> Any:
     project = _board_project(request)
     try:
         saved = store_mod.get_listen_proposals(_db_path(), session_id)
     except Exception:  # noqa: BLE001
         saved = None
     if saved is None or saved.get("status") == "discarded":
-        return JSONResponse({"ok": False, "message": "No proposals to edit."}, status_code=400)
+        return JSONResponse(
+            {"ok": False, "message": "No proposals to edit."}, status_code=400
+        )
     proposals = [dict(p) for p in saved.get("proposals", [])]
     if index < 0 or index >= len(proposals):
-        return JSONResponse({"ok": False, "message": "Unknown proposal."}, status_code=404)
+        return JSONResponse(
+            {"ok": False, "message": "Unknown proposal."}, status_code=404
+        )
     payload = await _board_payload(request)
     draft = proposals[index]
     if str(payload.get("title", "")).strip():
@@ -5990,7 +6472,11 @@ async def meeting_proposal_edit_route(request: Request, session_id: str, index: 
             pass
     try:
         store_mod.save_listen_proposals(
-            _db_path(), session_id, project, proposals, status=str(saved.get("status", "proposed"))
+            _db_path(),
+            session_id,
+            project,
+            proposals,
+            status=str(saved.get("status", "proposed")),
         )
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"ok": False, "message": str(exc)[:300]}, status_code=500)
@@ -6004,7 +6490,9 @@ def meeting_delete_api(session_id: str) -> Any:
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"ok": False, "message": str(exc)[:300]}, status_code=500)
     if not found:
-        return JSONResponse({"ok": False, "message": "Meeting not found."}, status_code=404)
+        return JSONResponse(
+            {"ok": False, "message": "Meeting not found."}, status_code=404
+        )
     return {"ok": True}
 
 
@@ -6053,10 +6541,14 @@ async def listen_socket(websocket: WebSocket) -> None:
         await client.connect()
     except Exception as exc:  # noqa: BLE001
         try:
-            await websocket.send_text(json.dumps({
-                "type": "error",
-                "message": "Could not reach transcription. Check the Meta key and try again.",
-            }))
+            await websocket.send_text(
+                json.dumps(
+                    {
+                        "type": "error",
+                        "message": "Could not reach transcription. Check the Meta key and try again.",
+                    }
+                )
+            )
         except Exception:  # noqa: BLE001, S110
             pass
         logger.warning("listen realtime connect failed: %s", exc)
@@ -6066,9 +6558,15 @@ async def listen_socket(websocket: WebSocket) -> None:
             pass
         return
     try:
-        await websocket.send_text(json.dumps({
-            "type": "status", "state": "transcribing", "session_id": session_id,
-        }))
+        await websocket.send_text(
+            json.dumps(
+                {
+                    "type": "status",
+                    "state": "transcribing",
+                    "session_id": session_id,
+                }
+            )
+        )
     except Exception:  # noqa: BLE001, S110
         pass
     stop = False
@@ -6085,18 +6583,27 @@ async def listen_socket(websocket: WebSocket) -> None:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("listen realtime recv failed: %s", exc)
                 try:
-                    await websocket.send_text(json.dumps({
-                        "type": "status", "state": "reconnecting",
-                    }))
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "type": "status",
+                                "state": "reconnecting",
+                            }
+                        )
+                    )
                 except Exception:  # noqa: BLE001, S110
                     pass
                 ok = await client.reconnect_with_resend(max_attempts=3)
                 if not ok:
                     try:
-                        await websocket.send_text(json.dumps({
-                            "type": "error",
-                            "message": "Connection lost. Audio was kept for 30 seconds.",
-                        }))
+                        await websocket.send_text(
+                            json.dumps(
+                                {
+                                    "type": "error",
+                                    "message": "Connection lost. Audio was kept for 30 seconds.",
+                                }
+                            )
+                        )
                     except Exception:  # noqa: BLE001, S110
                         pass
                     break
@@ -6105,22 +6612,31 @@ async def listen_socket(websocket: WebSocket) -> None:
                 break
             if update.kind in ("partial", "final", "speaker"):
                 try:
-                    await websocket.send_text(json.dumps({
-                        "type": update.kind,
-                        "text": update.text,
-                        "turn_id": update.turn_id,
-                        "speaker": update.speaker,
-                        "start_ms": update.start_ms,
-                        "end_ms": update.end_ms,
-                        "session_id": session_id,
-                    }))
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "type": update.kind,
+                                "text": update.text,
+                                "turn_id": update.turn_id,
+                                "speaker": update.speaker,
+                                "start_ms": update.start_ms,
+                                "end_ms": update.end_ms,
+                                "session_id": session_id,
+                            }
+                        )
+                    )
                 except Exception:  # noqa: BLE001
                     break
             elif update.kind == "error" and update.text:
                 try:
-                    await websocket.send_text(json.dumps({
-                        "type": "error", "message": update.text[:300],
-                    }))
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "type": "error",
+                                "message": update.text[:300],
+                            }
+                        )
+                    )
                 except Exception:  # noqa: BLE001, S110
                     pass
 
@@ -6142,10 +6658,14 @@ async def listen_socket(websocket: WebSocket) -> None:
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("listen send audio failed: %s", exc)
                     try:
-                        await websocket.send_text(json.dumps({
-                            "type": "error",
-                            "message": "Audio send failed. Try stopping and starting again.",
-                        }))
+                        await websocket.send_text(
+                            json.dumps(
+                                {
+                                    "type": "error",
+                                    "message": "Audio send failed. Try stopping and starting again.",
+                                }
+                            )
+                        )
                     except Exception:  # noqa: BLE001, S110
                         pass
                 continue
@@ -6172,10 +6692,15 @@ async def listen_socket(websocket: WebSocket) -> None:
                     pass
             if client.is_expired():
                 try:
-                    await websocket.send_text(json.dumps({
-                        "type": "status", "state": "max_length",
-                        "message": "Two hour limit reached. Stopping.",
-                    }))
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "type": "status",
+                                "state": "max_length",
+                                "message": "Two hour limit reached. Stopping.",
+                            }
+                        )
+                    )
                 except Exception:  # noqa: BLE001, S110
                     pass
                 stop = True
@@ -6212,17 +6737,25 @@ def _next_sprint_result_html(proposal: dict[str, Any], dry_run: bool) -> str:
     parts: list[str] = ['<section class="card" id="next-sprint-card">']
     if not entries:
         parts.append("<h2>Next sprint: nothing proposed</h2>")
-        parts.append('<p class="muted">No carryover, retro actions, or backlog items found.</p>')
-        parts.append('<p class="muted">Add backlog items on the Board, then choose Propose next sprint.</p>')
+        parts.append(
+            '<p class="muted">No carryover, retro actions, or backlog items found.</p>'
+        )
+        parts.append(
+            '<p class="muted">Add backlog items on the Board, then choose Propose next sprint.</p>'
+        )
     else:
         word = "item" if len(entries) == 1 else "items"
         parts.append(f"<h2>Next sprint: {len(entries)} {word} proposed</h2>")
         if dry_run:
             parts.append('<p class="pill">Dry run is on. Approve proposes first.</p>')
         else:
-            parts.append('<p class="pill">Dry run is off. Approve creates the sprint.</p>')
+            parts.append(
+                '<p class="pill">Dry run is off. Approve creates the sprint.</p>'
+            )
         if (proposal or {}).get("has_history") is False:
-            parts.append('<p class="pill">No history yet, plan uses capacity and estimates.</p>')
+            parts.append(
+                '<p class="pill">No history yet, plan uses capacity and estimates.</p>'
+            )
         for entry in entries:
             title = html.escape(str(entry.get("title", "")))
             owner = html.escape(str(entry.get("owner", "") or "Unassigned"))
@@ -6254,8 +6787,8 @@ def _next_sprint_result_html(proposal: dict[str, Any], dry_run: bool) -> str:
                 'hx-swap="innerHTML">'
                 '<label for="ns-name">Sprint name</label>'
                 '<input id="ns-name" name="name" value="Sprint 2">'
-                "<div class=\"form-actions\">"
-                "<button type=\"submit\">Approve and create sprint</button>"
+                '<div class="form-actions">'
+                '<button type="submit">Approve and create sprint</button>'
                 "</div>"
                 '<div id="next-sprint-result" class="result" aria-live="polite"></div>'
                 "</form>"
@@ -6311,11 +6844,18 @@ def next_sprint_run_route(request: Request) -> Any:
         return JSONResponse({"ok": False, "message": msg}, status_code=502)
     LAST_NEXT_SPRINT["proposal"] = proposal
     LAST_NEXT_SPRINT["project"] = project
-    router_mod.log_route(router_mod.CAP_NEXT_SPRINT, router_mod.text_model(), "proposal built")
+    router_mod.log_route(
+        router_mod.CAP_NEXT_SPRINT, router_mod.text_model(), "proposal built"
+    )
     dry_run, _ = _effective_safety()
     if "hx-request" in request.headers:
         return HTMLResponse(_next_sprint_result_html(proposal, dry_run))
-    return {"ok": True, "project": project, "count": len(proposal["items"]), "proposal": proposal}
+    return {
+        "ok": True,
+        "project": project,
+        "count": len(proposal["items"]),
+        "proposal": proposal,
+    }
 
 
 @app.post("/api/next-sprint/approve")
@@ -6330,7 +6870,9 @@ async def next_sprint_approve_route(request: Request) -> Any:
             return HTMLResponse(_test_result_html(False, msg))
         return JSONResponse({"ok": False, "message": msg}, status_code=404)
     form = await request.form()
-    name = str(form.get("name", "") or request.query_params.get("name", "") or "Next sprint").strip()
+    name = str(
+        form.get("name", "") or request.query_params.get("name", "") or "Next sprint"
+    ).strip()
     adapter = get_board_adapter(project)
     if adapter is None:
         msg = "The board is not configured yet."
@@ -6341,17 +6883,26 @@ async def next_sprint_approve_route(request: Request) -> Any:
     writes = WriteService(_db_path(), dry_run=dry_run)
     try:
         result = ns_mod.approve_next_sprint(
-            adapter, proposal, name, writes=writes, db=_db_path(),
-            dry_run=dry_run, evidence_quote="Approved from the next sprint card.",
+            adapter,
+            proposal,
+            name,
+            writes=writes,
+            db=_db_path(),
+            dry_run=dry_run,
+            evidence_quote="Approved from the next sprint card.",
         )
     except Exception as exc:  # noqa: BLE001
         if "hx-request" in request.headers:
             return HTMLResponse(_test_result_html(False, f"Approve failed: {exc}"))
-        return JSONResponse({"ok": False, "message": f"Approve failed: {exc}"}, status_code=502)
+        return JSONResponse(
+            {"ok": False, "message": f"Approve failed: {exc}"}, status_code=502
+        )
     if "hx-request" in request.headers:
         if result.get("applied"):
             return HTMLResponse(_test_result_html(True, f"Created {name}."))
-        return HTMLResponse(_test_result_html(True, "Proposed. Dry run is on, so nothing changed."))
+        return HTMLResponse(
+            _test_result_html(True, "Proposed. Dry run is on, so nothing changed.")
+        )
     return {"ok": True, "applied": result.get("applied"), "name": name}
 
 
@@ -6490,9 +7041,7 @@ async def mid_sprint_run_route(request: Request) -> Any:
     roster = _roster_entries(project)
     sprint = _mid_sprint_sprint(adapter)
     try:
-        proposal = ms_mod.propose_adjustment(
-            adapter, roster, sprint or None, goal=goal
-        )
+        proposal = ms_mod.propose_adjustment(adapter, roster, sprint or None, goal=goal)
     except Exception as exc:  # noqa: BLE001
         logger.warning("mid-sprint propose failed: %s", exc)
         msg = "The sprint could not be checked."
@@ -6582,9 +7131,7 @@ async def login_submit(request: Request) -> Any:
             return JSONResponse(
                 {"ok": False, "message": msg, "hint": hint}, status_code=400
             )
-        return HTMLResponse(
-            _login_page_html("setup", f"{msg} {hint}"), status_code=400
-        )
+        return HTMLResponse(_login_page_html("setup", f"{msg} {hint}"), status_code=400)
     key = _client_ip(request)
     if not auth_mod.login_allowed(key):
         return _rate_limited_response(request, key, as_json=as_json)
@@ -6631,9 +7178,7 @@ async def auth_setup(request: Request) -> Any:
         auth_mod.record_login_failure(key)
         return JSONResponse({"ok": False, "message": str(exc)}, status_code=400)
     auth_mod.record_login_success(key)
-    return _session_cookie_response(
-        request, auth_mod.create_session(), as_json=as_json
-    )
+    return _session_cookie_response(request, auth_mod.create_session(), as_json=as_json)
 
 
 @app.post("/api/auth/logout")
