@@ -417,8 +417,15 @@ def _handle_slack_text_message(
     from pam_pm.agents import interviewer as interviewer_mod
 
     try:
+        resolved = interviewer_mod.resolve_display_name(chat, user) if user else None
         outcome = interviewer_mod.resume_interview(
-            person, text, chat, board, model_client, db=db, message_id=marker
+            resolved or person,
+            text,
+            chat,
+            board,
+            model_client,
+            db=db,
+            message_id=marker,
         )
     except Exception:  # noqa: BLE001
         logger.info("slack resume failed, keeping local result")

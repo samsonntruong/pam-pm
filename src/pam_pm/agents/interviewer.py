@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from typing import Any
 
 from pam_pm.agents.prompts.builder import build_messages
 from pam_pm.core.schemas import InterviewResult
+
+logger = logging.getLogger(__name__)
 
 MAX_TURNS = 6
 
@@ -461,18 +464,144 @@ def _save_interview_state(
         return
 
 
-def _load_open_state(db: Any, person_id: str) -> dict[str, Any] | None:
-    """Return the newest open interview state for a person, or None."""
+_DISPLAY_NAME_CACHE: dict[str, str] = {}
+
+_ID_LIKE_RE = re.compile(r"^[UW][A-Z0-9]{5,}$")
+
+
+def _parse_slack_user_name(user: Any) -> str:
+    """Return the best display name from a Slack users_info user object."""
+    if not isinstance(user, dict):
+        return ""
+    profile = user.get("profile")
+    if not isinstance(profile, dict):
+        profile = {}
+    for key in ("display_name", "real_name"):
+        text = str(profile.get(key, "") or "").strip()
+        if text:
+            return text
+    for key in ("real_name", "name"):
+        text = str(user.get(key, "") or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _resolve_display_name(chat: Any, user_id: str) -> str | None:
+    """Map a Slack user ID to a roster display name, cached.
+
+    Tries the chat adapter's resolve helpers first, then Slack
+    users_info for ID-like values. Returns None when unresolvable.
+    """
+    want = str(user_id or "").strip()
+    if not want:
+        return None
+    cached = _DISPLAY_NAME_CACHE.get(want)
+    if cached:
+        return cached
+    if chat is None:
+        return None
+    try:
+        for helper in (
+            "display_name_for_user",
+            "resolve_display_name",
+            "user_display_name",
+            "name_for_user",
+        ):
+            fn = getattr(chat, helper, None)
+            if not callable(fn):
+                continue
+            try:
+                name = str(fn(want) or "").strip()
+            except Exception as exc:  # noqa: BLE001
+                logger.info("display name helper %s failed for %s: %s", helper, want, exc)
+                continue
+            if name and name != want:
+                _DISPLAY_NAME_CACHE[want] = name
+                return name
+        cache = getattr(chat, "_display_cache", None)
+        if isinstance(cache, dict):
+            name = str(cache.get(want, "") or "").strip()
+            if name:
+                _DISPLAY_NAME_CACHE[want] = name
+                return name
+        if not _ID_LIKE_RE.match(want.upper()):
+            return None
+        client = None
+        direct = getattr(chat, "_client", None)
+        if direct is not None and not callable(direct):
+            client = direct
+        if client is None:
+            direct = getattr(chat, "client", None)
+            if direct is not None and not callable(direct):
+                client = direct
+        if client is None:
+            factory = getattr(chat, "_client_or_raise", None)
+            if callable(factory):
+                try:
+                    client = factory()
+                except Exception:  # noqa: BLE001
+                    client = None
+        users_info = getattr(client, "users_info", None) if client is not None else None
+        if not callable(users_info):
+            return None
+        try:
+            resp = users_info(user=want)
+        except TypeError:
+            try:
+                resp = users_info(want)
+            except Exception:  # noqa: BLE001
+                return None
+        except Exception:  # noqa: BLE001
+            return None
+        data = getattr(resp, "data", resp)
+        if isinstance(data, dict):
+            name = _parse_slack_user_name(data.get("user", {}))
+            if name:
+                _DISPLAY_NAME_CACHE[want] = name
+                return name
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def resolve_display_name(chat: Any, user_id: str) -> str | None:
+    """Public alias for router and adapter use."""
+    return _resolve_display_name(chat, user_id)
+
+
+def _candidate_identities(chat: Any, person_id: str) -> list[str]:
+    """Return lookup identities: raw value plus any resolved display name."""
+    want = str(person_id or "")
+    candidates = [want]
+    if want:
+        resolved = _resolve_display_name(chat, want)
+        if resolved and resolved not in candidates:
+            candidates.append(resolved)
+    return candidates
+
+
+def _load_open_state(
+    db: Any, person_id: str, chat: Any = None
+) -> dict[str, Any] | None:
+    """Return the newest open interview state for a person, or None.
+
+    Matches stored state on either the raw identity (Slack user ID
+    or roster name) or the display name resolved from it, so inbound
+    events carrying a user ID find state stored under the roster name.
+    """
     if db is None:
         return None
     try:
         from pam_pm.core import recovery as recovery_mod
 
-        want = str(person_id or "")
+        wants = _candidate_identities(chat, person_id)
+        lowered = {str(w).lower() for w in wants}
         matches = [
             conv
             for conv in recovery_mod.list_open_conversations(db)
-            if str(conv.get("person", "") or "") == want
+            if str(conv.get("person", "") or "") in wants
+            or str(conv.get("person", "") or "").lower() in lowered
         ]
     except Exception:  # noqa: BLE001
         return None
@@ -547,13 +676,17 @@ def resume_interview(
 
     if not answer:
         return {"kind": "ignored", "replied": False, "person": person_id}
-    state = _load_open_state(db, person_id)
+    state = _load_open_state(db, person_id, chat)
     if state is None:
         if marker and db is not None:
             try:
                 from pam_pm.core import recovery as recovery_mod
 
-                latest = recovery_mod.load_latest_for_person(db, person_id)
+                latest = None
+                for candidate in _candidate_identities(chat, person_id):
+                    latest = recovery_mod.load_latest_for_person(db, candidate)
+                    if latest is not None:
+                        break
             except Exception:  # noqa: BLE001
                 latest = None
             seen = str((latest or {}).get("last_seen", "") or "")
