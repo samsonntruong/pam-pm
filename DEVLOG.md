@@ -67,6 +67,7 @@ Build log for Pam. Three lines per entry.
 | Muse Code | Team share mode | LAN toggle, forced password, invite box, 370 pass |
 | Muse Code | CI green plus listen pipeline | Playwright guard, healthz, auto proposals with approval, 376 pass |
 | Muse Code | Acceptance sweep | 10 of 10 PASS, fresh install to security, 376 pass |
+| Muse Code | Model routing verification | One router, SAM fallback logged, Slack audio reply, 381 pass |
 
 ## Entries
 
