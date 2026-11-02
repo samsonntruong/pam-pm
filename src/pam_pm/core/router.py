@@ -167,6 +167,8 @@ def handle_slack_file(
     event_sink: Any = None,
     caption: str = "",
     model_client: Any = None,
+    db: Any = None,
+    project: str = "default",
 ) -> dict[str, Any]:
     """Route one Slack file: image to planner, audio to polite decline.
 
@@ -195,10 +197,19 @@ def handle_slack_file(
     readings = photo.get("readings", [])
     log_route(CAP_VISION_READ, text_model(), f"planner path={path}")
     proposal = propose_sprint(readings or photo.get("notes_text", ""))
-    if board is not None:
-        from pam_pm.agents.planner import approve_proposal as _approve
+    proposal_id = ""
+    if db is not None and proposal:
+        try:
+            from pam_pm.core import store as store_mod
 
-        _ = _approve
+            proposal_id = store_mod.save_plan_proposal(
+                db, proposal, project=project, channel=channel
+            )
+        except Exception:  # noqa: BLE001
+            proposal_id = ""
+            logger.info("plan proposal store failed, buttons carry no id")
+    approve_value = f"approve:{proposal_id}" if proposal_id else "approve"
+    cancel_value = f"cancel:{proposal_id}" if proposal_id else "cancel"
     lines = [f"Found {len(readings)} notes in the photo (path: {path})."]
     context = str(caption or "").strip()
     if context:
@@ -209,8 +220,8 @@ def handle_slack_file(
         channel,
         "\n".join(lines),
         [
-            {"id": "plan_approve", "label": "Approve", "value": "approve"},
-            {"id": "plan_cancel", "label": "Cancel", "value": "cancel"},
+            {"id": "plan_approve", "label": "Approve", "value": approve_value},
+            {"id": "plan_cancel", "label": "Cancel", "value": cancel_value},
         ],
     )
     detail = f"path={path} readings={len(readings)} proposal={len(proposal)}"
@@ -242,6 +253,7 @@ def handle_slack_file(
         "path": path,
         "readings": readings,
         "proposal": proposal,
+        "proposal_id": proposal_id,
         "message_id": str(message_id),
         "event": event,
         "caption": str(caption or ""),
@@ -312,6 +324,10 @@ def handle_slack_event(
             "challenge": str(payload.get("challenge", "") or ""),
             "replied": False,
         }
+    if str(payload.get("type", "") or "") == "block_actions":
+        return handle_slack_interaction(
+            payload, chat=chat, board=board, db=db, event_sink=event_sink
+        )
     inner = payload.get("event")
     if not isinstance(inner, dict):
         inner = payload
@@ -385,10 +401,148 @@ def handle_slack_event(
         event_sink=event_sink,
         caption=caption,
         model_client=model_client,
+        db=db,
     )
     result["file_id"] = file_id
     result["channel"] = channel
     return result
+
+
+PLAN_APPROVE_IDS = frozenset({"plan_approve", "approve"})
+PLAN_CANCEL_IDS = frozenset({"plan_cancel", "cancel"})
+
+UNKNOWN_PROPOSAL_REPLY = (
+    "Sorry, I could not find that proposal. It may have expired or "
+    "been handled already. Please send the photo again for a fresh proposal."
+)
+
+
+def _parse_action_value(value: str) -> tuple[str, str]:
+    """Split a button value into (verb, proposal_id)."""
+    text = str(value or "").strip()
+    if ":" in text:
+        verb, pid = text.split(":", 1)
+        return verb.strip().lower(), pid.strip()
+    return text.lower(), ""
+
+
+def handle_slack_interaction(
+    payload: dict[str, Any],
+    *,
+    chat: Any,
+    board: Any = None,
+    db: Any = None,
+    event_sink: Any = None,
+) -> dict[str, Any]:
+    """Apply or discard a pending plan proposal from a block_actions click.
+
+    Approve creates the items through the normal approve_proposal write
+    path and confirms in the DM. Cancel discards the proposal and
+    confirms. Unknown or expired proposal ids get a polite reply.
+    """
+    actions = payload.get("actions")
+    if not isinstance(actions, list) or not actions:
+        logger.info("slack interaction ignored: no actions")
+        return {"kind": "ignored", "replied": False}
+    user_obj = payload.get("user") if isinstance(payload.get("user"), dict) else {}
+    channel_obj = (
+        payload.get("channel") if isinstance(payload.get("channel"), dict) else {}
+    )
+    target = str(user_obj.get("id", "") or "").strip() or str(
+        channel_obj.get("id", "") or ""
+    ).strip()
+    outcomes: list[dict[str, Any]] = []
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        action_id = str(action.get("action_id", "") or "").strip()
+        verb, proposal_id = _parse_action_value(action.get("value", ""))
+        is_approve = action_id in PLAN_APPROVE_IDS or verb == "approve"
+        is_cancel = action_id in PLAN_CANCEL_IDS or verb == "cancel"
+        logger.info(
+            "slack interaction received: action=%s proposal=%s",
+            action_id or verb or "unknown",
+            proposal_id or "none",
+        )
+        if not is_approve and not is_cancel:
+            outcomes.append({"action": action_id, "kind": "ignored"})
+            continue
+        saved = None
+        if proposal_id and db is not None:
+            try:
+                from pam_pm.core import store as store_mod
+
+                saved = store_mod.get_plan_proposal(db, proposal_id)
+            except Exception:  # noqa: BLE001
+                saved = None
+        if saved is None or saved.get("status") != "pending":
+            if chat is not None and target:
+                chat.send_dm(target, UNKNOWN_PROPOSAL_REPLY)
+            outcomes.append({"action": action_id, "kind": "unknown_proposal"})
+            logger.info("slack interaction outcome: kind=unknown_proposal")
+            continue
+        if is_cancel:
+            try:
+                from pam_pm.core import store as store_mod
+
+                store_mod.set_plan_proposal_status(db, proposal_id, "discarded")
+            except Exception:  # noqa: BLE001
+                logger.info("plan proposal discard store failed")
+            if chat is not None and target:
+                chat.send_dm(
+                    target,
+                    "Discarded that proposal. Nothing was created on the board.",
+                )
+            outcomes.append({"action": action_id, "kind": "cancelled"})
+            logger.info("slack interaction outcome: kind=cancelled")
+            continue
+        if board is None:
+            if chat is not None and target:
+                chat.send_dm(target, UNKNOWN_PROPOSAL_REPLY)
+            outcomes.append({"action": action_id, "kind": "unknown_proposal"})
+            continue
+        from pam_pm.agents.planner import approve_proposal
+
+        created = approve_proposal(
+            saved.get("proposal", []),
+            board,
+            db=db,
+            dry_run=False,
+            evidence_quote="Approved from Slack sticky-note proposal.",
+        )
+        try:
+            from pam_pm.core import store as store_mod
+
+            store_mod.set_plan_proposal_status(db, proposal_id, "approved")
+        except Exception:  # noqa: BLE001
+            logger.info("plan proposal approve store failed")
+        count = len(created)
+        word = "item" if count == 1 else "items"
+        if chat is not None and target:
+            chat.send_dm(
+                target, f"Approved. Created {count} {word} on the board."
+            )
+        if event_sink is not None:
+            try:
+                event_sink(
+                    {
+                        "operation": "plan_approve",
+                        "item_id": "",
+                        "evidence_quote": (
+                            f"Slack Approve applied proposal {proposal_id}."
+                        ),
+                        "status": "applied",
+                        "detail": f"created {count} {word} from proposal {proposal_id}",
+                    }
+                )
+            except Exception:  # noqa: BLE001
+                logger.info("plan approve event sink failed")
+        outcomes.append(
+            {"action": action_id, "kind": "approved", "created": count}
+        )
+        logger.info("slack interaction outcome: kind=approved created=%d", count)
+    replied = any(o.get("kind") in ("approved", "cancelled", "unknown_proposal") for o in outcomes)
+    return {"kind": "block_actions", "replied": replied, "outcomes": outcomes}
 
 
 def _handle_slack_text_message(

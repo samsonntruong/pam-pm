@@ -150,7 +150,7 @@ class SocketModeInbound:
             "slack socket envelope received: type=%s", req_type or "unknown"
         )
         out: dict[str, Any] = {}
-        if req_type == "events_api" and isinstance(payload, dict):
+        if req_type in ("events_api", "interactive") and isinstance(payload, dict):
             out = payload
             try:
                 self._on_envelope(payload)

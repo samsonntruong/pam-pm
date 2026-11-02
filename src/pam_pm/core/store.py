@@ -860,6 +860,82 @@ def list_meetings(
     return out
 
 
+PLAN_PROPOSAL_KIND = "plan"
+
+
+def save_plan_proposal(
+    db: DbLike,
+    proposal: list,
+    *,
+    project: str = "default",
+    channel: str = "",
+) -> str:
+    """Store a sticky-note plan proposal as pending, returning its id."""
+    body = {
+        "proposal": [dict(d) for d in (proposal or []) if isinstance(d, dict)],
+        "channel": str(channel or ""),
+        "project": (project or "default").strip() or "default",
+    }
+    with _connect(db) as conn:
+        _ensure_tables(conn)
+        cur = conn.execute(
+            "INSERT INTO proposals (project, kind, payload_json, status,"
+            " created_at, updated_at)"
+            " VALUES (?, ?, ?, 'pending', datetime('now'), datetime('now'))",
+            (body["project"], PLAN_PROPOSAL_KIND, json.dumps(body)),
+        )
+        conn.commit()
+        return str(cur.lastrowid or 0)
+
+
+def get_plan_proposal(db: DbLike, proposal_id: str) -> dict | None:
+    """Fetch one plan proposal by id, or None when missing."""
+    try:
+        want = int(str(proposal_id or "").strip())
+    except (TypeError, ValueError):
+        return None
+    with _connect(db) as conn:
+        _ensure_tables(conn)
+        row = conn.execute(
+            "SELECT id, project, payload_json, status FROM proposals"
+            " WHERE id = ? AND kind = ?",
+            (want, PLAN_PROPOSAL_KIND),
+        ).fetchone()
+    if row is None:
+        return None
+    try:
+        payload = json.loads(row[2] or "{}")
+    except ValueError:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    drafts = payload.get("proposal", [])
+    return {
+        "id": str(row[0]),
+        "project": str(row[1] or "default"),
+        "proposal": [d for d in drafts if isinstance(d, dict)],
+        "channel": str(payload.get("channel", "") or ""),
+        "status": str(row[3] or "pending"),
+    }
+
+
+def set_plan_proposal_status(db: DbLike, proposal_id: str, status: str) -> bool:
+    """Set a plan proposal status, returning True when a row changed."""
+    try:
+        want = int(str(proposal_id or "").strip())
+    except (TypeError, ValueError):
+        return False
+    with _connect(db) as conn:
+        _ensure_tables(conn)
+        cur = conn.execute(
+            "UPDATE proposals SET status = ?, updated_at = datetime('now')"
+            " WHERE id = ? AND kind = ?",
+            (str(status), want, PLAN_PROPOSAL_KIND),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
 def list_listen_sessions(
     db: DbLike, project: str | None = None
 ) -> list[dict[str, str]]:

@@ -420,6 +420,29 @@ def _remember_slack_event(event_id: str) -> bool:
     return True
 
 
+def _slack_action_event_id(envelope: dict[str, Any]) -> str:
+    """Return the dedupe id for a block_actions envelope, or blank."""
+    if not isinstance(envelope, dict):
+        return ""
+    if str(envelope.get("type", "") or "") != "block_actions":
+        return ""
+    trigger = str(envelope.get("trigger_id", "") or "").strip()
+    if trigger:
+        return f"slack-action:{trigger}"
+    container = envelope.get("container") or {}
+    msg_ts = str(container.get("message_ts", "") or "").strip() if isinstance(
+        container, dict
+    ) else ""
+    actions = envelope.get("actions") or []
+    first = actions[0] if isinstance(actions, list) and actions else {}
+    action_ts = str(first.get("action_ts", "") or "").strip() if isinstance(
+        first, dict
+    ) else ""
+    if msg_ts and action_ts:
+        return f"slack-action:{msg_ts}:{action_ts}"
+    return ""
+
+
 def _slack_poller_event_id(envelope: dict[str, Any]) -> str:
     """Return the poller style dedupe id for a webhook envelope, or blank."""
     inner = envelope.get("event")
