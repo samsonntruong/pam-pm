@@ -430,6 +430,18 @@ def _handle_slack_text_message(
     except Exception:  # noqa: BLE001
         logger.info("slack resume failed, keeping local result")
         return {"kind": "ignored", "replied": False}
+    raw_kind = str(outcome.get("kind", "") or "")
+    if raw_kind == "finished":
+        resume_kind = "finished"
+    elif raw_kind == "reply":
+        resume_kind = "follow-up sent"
+    elif raw_kind == "no_open_state":
+        resume_kind = "no_open_state"
+    elif "error" in raw_kind:
+        resume_kind = "model_error"
+    else:
+        resume_kind = raw_kind or "unknown"
+    logger.info("slack resume outcome: kind=%s", resume_kind)
     kinds = {
         "reply": "interview_reply",
         "finished": "interview_finished",

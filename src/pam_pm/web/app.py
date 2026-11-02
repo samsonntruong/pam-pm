@@ -518,8 +518,12 @@ def poll_slack_once(project: str = "default") -> list[Any]:
         source = getattr(poller, "source", None)
         adapter_poll = getattr(source, "poll_once", None)
         if callable(adapter_poll):
-            return list(adapter_poll())
-        return list(poller.poll_once())
+            found = list(adapter_poll())
+        else:
+            found = list(poller.poll_once())
+        if found:
+            logger.info("slack poll found %d inbound messages", len(found))
+        return found
     except Exception:  # noqa: BLE001
         logger.info("slack poll_once failed, will retry next interval")
         return []
@@ -550,6 +554,11 @@ def start_slack_polling(project: str = "default") -> Any | None:
         return poller
     if _SLACK_POLL_TASK is None or _SLACK_POLL_TASK.done():
         _SLACK_POLL_TASK = loop.create_task(_slack_poll_loop(project))
+        try:
+            interval = _effective_poll_interval()
+        except Exception:  # noqa: BLE001
+            interval = 60
+        logger.info("slack poller loop started: interval=%ss", interval)
     return poller
 
 
@@ -665,6 +674,7 @@ def start_slack_socket(
         return _SLACK_SOCKET
     token = str(app_token).strip() if app_token is not None else slack_app_token()
     if not token:
+        logger.info("slack socket skipped: reason=no app token")
         return None
     try:
         from pam_pm.adapters.chat.slack_socket import SocketModeInbound
@@ -688,8 +698,9 @@ def start_slack_socket(
     _SLACK_SOCKET = inbound
     try:
         inbound.start()
+        logger.info("slack socket connected: project=%s", name)
     except Exception:  # noqa: BLE001
-        logger.info("slack socket startup skipped")
+        logger.info("slack socket skipped: reason=start failed")
     return inbound
 
 

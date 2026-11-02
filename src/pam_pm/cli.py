@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import secrets
 import webbrowser
@@ -19,7 +20,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
     p_start = sub.add_parser("start", help="Start the local web console")
     p_start.add_argument("--host", default=HOST, help="Bind host (default 127.0.0.1)")
-    p_start.add_argument("--port", type=int, default=PORT, help="Bind port (default 8765)")
+    p_start.add_argument(
+        "--port", type=int, default=PORT, help="Bind port (default 8765)"
+    )
     p_start.add_argument(
         "--no-browser", action="store_true", help="Do not open a browser"
     )
@@ -27,9 +30,13 @@ def build_parser() -> argparse.ArgumentParser:
         "desktop", help="Open Pam in a desktop window with a tray icon"
     )
     p_desktop.add_argument("--host", default=HOST, help="Bind host (default 127.0.0.1)")
-    p_desktop.add_argument("--port", type=int, default=PORT, help="Bind port (default 8765)")
+    p_desktop.add_argument(
+        "--port", type=int, default=PORT, help="Bind port (default 8765)"
+    )
     sub.add_parser("doctor", help="Check meta, slack, ado, cache, autostart, uptime")
-    p_auto = sub.add_parser("autostart", help="Start Pam at sign-in and restart it if it stops")
+    p_auto = sub.add_parser(
+        "autostart", help="Start Pam at sign-in and restart it if it stops"
+    )
     p_auto.add_argument("action", choices=["on", "off", "status"])
     sub.add_parser("review", help="Print the sprint review markdown")
     return parser
@@ -85,6 +92,7 @@ def cmd_start(args: argparse.Namespace) -> None:
             webbrowser.open(url)
         except Exception as exc:  # noqa: BLE001
             print(f"Browser open skipped: {exc}")
+    configure_server_logging()
     try:
         import uvicorn
     except ImportError:
@@ -278,3 +286,11 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
+
+
+def configure_server_logging() -> None:
+    """Configure console logging for server runs at INFO level."""
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
+    logging.getLogger().setLevel(logging.INFO)
