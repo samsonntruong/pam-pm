@@ -1,4 +1,4 @@
-"""Slack Socket Mode inbound: primary path with the poller as fallback.
+"""Slack Socket Mode inbound: fast path beside the always-on poller.
 
 Opens one outbound websocket with the saved app token (xapp), so live
 inbound arrives with no inbound ports. Message payloads route to the
@@ -146,6 +146,9 @@ class SocketModeInbound:
         Returns the events_api payload dict, or {} for other types.
         """
         req_type, envelope_id, payload = _request_parts(request)
+        logger.info(
+            "slack socket envelope received: type=%s", req_type or "unknown"
+        )
         out: dict[str, Any] = {}
         if req_type == "events_api" and isinstance(payload, dict):
             out = payload
@@ -180,8 +183,12 @@ class SocketModeInbound:
                 if isinstance(listeners, list):
                     listeners.append(self.handle_request)
                 client.connect()
-            except Exception:  # noqa: BLE001
-                logger.info("slack socket connect failed, retrying")
+            except Exception as exc:  # noqa: BLE001
+                logger.info(
+                    "slack socket connect failed: attempt=%d reason=%s",
+                    attempt,
+                    exc,
+                )
                 self._sleep(backoff_delay(attempt))
                 attempt += 1
                 continue
@@ -203,6 +210,11 @@ class SocketModeInbound:
                         self._client = None
             if self._stopped.is_set():
                 break
+            logger.info(
+                "slack socket dropped: attempt=%d reason=connection lost, "
+                "reconnecting",
+                attempt,
+            )
             self._sleep(backoff_delay(attempt))
             attempt += 1
 

@@ -109,7 +109,7 @@ def test_socket_event_reaches_resume(
         assert inbound.wait_until_live(timeout=5)
         assert web_app.slack_socket_healthy() is True
         assert _wait_for(
-            lambda: "slack socket live, poller on backup" in caplog.text
+            lambda: "slack socket live, poller still active" in caplog.text
         )
 
     envelope = _envelope()
@@ -149,7 +149,7 @@ def test_socket_dedupe_shared_with_poller(monkeypatch: pytest.MonkeyPatch) -> No
     assert client.acks == []
 
 
-def test_poller_stands_down_while_socket_healthy_and_resumes(
+def test_poller_always_active_while_socket_live(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     polls: list[str] = []
@@ -175,13 +175,62 @@ def test_poller_stands_down_while_socket_healthy_and_resumes(
     assert web_app.slack_socket_healthy() is True
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(web_app._slack_poll_loop())
-    assert polls == []
+    assert polls == ["default"]
 
     monkeypatch.setattr(web_app, "_SLACK_SOCKET", _Down())
     assert web_app.slack_socket_healthy() is False
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(web_app._slack_poll_loop())
-    assert polls == ["default"]
+    assert polls == ["default", "default"]
+
+
+def test_socket_and_poller_share_dedupe_no_double_processing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _pin_resume(monkeypatch)
+    first = web_app._route_socket_envelope(_envelope(), "default")
+    assert first.get("replied") is True
+    assert len(calls) == 1
+    assert web_app._remember_slack_event("slack:D123:114.1") is False
+
+    web_app._remember_slack_event("slack:D456:991.2")
+    dup = web_app._route_socket_envelope(
+        _envelope(event_id="Ev456", channel="D456", ts="991.2"), "default"
+    )
+    assert dup.get("duplicate") is True
+    assert len(calls) == 1
+
+
+def test_socket_envelope_receipt_and_routing_logged(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    _pin_resume(monkeypatch)
+    received: list[dict[str, Any]] = []
+    inbound = SocketModeInbound(
+        "xapp-test", lambda payload: received.append(payload)
+    )
+    client = FakeSocketClient()
+    with caplog.at_level("INFO"):
+        inbound.handle_request(
+            client,
+            {"type": "events_api", "envelope_id": "env-9", "payload": _envelope()},
+        )
+        inbound.handle_request(
+            client, {"type": "disconnect", "envelope_id": "env-10"}
+        )
+    assert "slack socket envelope received: type=events_api" in caplog.text
+    assert "slack socket envelope received: type=disconnect" in caplog.text
+    assert len(received) == 1
+    assert client.acks == [{"envelope_id": "env-9"}, {"envelope_id": "env-10"}]
+
+    with caplog.at_level("INFO", logger="pam_pm.web.app"):
+        result = web_app._route_socket_envelope(_envelope(), "default")
+    assert result.get("replied") is True
+    assert "decision=resume" in caplog.text
+    with caplog.at_level("INFO", logger="pam_pm.web.app"):
+        again = web_app._route_socket_envelope(_envelope(), "default")
+    assert again.get("duplicate") is True
+    assert "decision=ignored" in caplog.text
 
 
 def test_socket_reconnects_after_drop() -> None:

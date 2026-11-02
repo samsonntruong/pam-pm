@@ -530,11 +530,15 @@ def poll_slack_once(project: str = "default") -> list[Any]:
 
 
 async def _slack_poll_loop(project: str = "default") -> None:
-    """Poll Slack DMs forever; stand down while the socket is healthy."""
+    """Poll Slack DMs forever on the normal cadence.
+
+    The poller never stands down, even while the socket is live.
+    Socket Mode is the fast path; the poller always runs beside it
+    and shared _remember_slack_event dedupe prevents double handling.
+    """
     while True:
         try:
-            if not slack_socket_healthy():
-                await asyncio.to_thread(poll_slack_once, project)
+            await asyncio.to_thread(poll_slack_once, project)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001
@@ -609,11 +613,11 @@ def get_slack_socket() -> Any | None:
 
 
 def _on_socket_status(live: bool) -> None:
-    """Log socket transitions; the poll loop reads health each tick."""
+    """Log socket transitions; the poller always runs beside the socket."""
     if live:
-        logger.info("slack socket live, poller on backup")
+        logger.info("slack socket live, poller still active")
     else:
-        logger.info("slack socket down, poller resumed")
+        logger.info("slack socket down, poller still active")
 
 
 def _route_socket_envelope(
@@ -623,22 +627,55 @@ def _route_socket_envelope(
 
     Shares _SEEN_SLACK_EVENT_IDS with the webhook and poller so a
     message handled on one path never fires again on another.
+    Logs one routing line per envelope (type only, never content).
     """
     if not isinstance(envelope, dict):
+        logger.info(
+            "slack socket envelope routed: type=unknown decision=ignored "
+            "reason=not-dict"
+        )
         return {}
-    if str(envelope.get("type", "") or "") == "url_verification":
+    outer = str(envelope.get("type", "") or "").strip() or "unknown"
+    inner = envelope.get("event")
+    inner_type = (
+        str(inner.get("type", "") or "").strip()
+        if isinstance(inner, dict)
+        else ""
+    )
+    etype = f"{outer}/{inner_type}" if inner_type else outer
+    if outer == "url_verification":
+        logger.info(
+            "slack socket envelope routed: type=%s decision=ignored "
+            "reason=url-verification",
+            etype,
+        )
         return {}
     event_id = str(envelope.get("event_id", "") or "").strip()
     if event_id and event_id in _SEEN_SLACK_EVENT_IDS:
+        logger.info(
+            "slack socket envelope routed: type=%s decision=ignored "
+            "reason=duplicate",
+            etype,
+        )
         return {"ok": True, "duplicate": True}
     try:
         poller_id = _slack_poller_event_id(envelope)
     except Exception:  # noqa: BLE001
         poller_id = ""
     if poller_id and poller_id in _SEEN_SLACK_EVENT_IDS:
+        logger.info(
+            "slack socket envelope routed: type=%s decision=ignored "
+            "reason=duplicate",
+            etype,
+        )
         return {"ok": True, "duplicate": True}
     chat = get_chat_adapter(project)
     if chat is None:
+        logger.info(
+            "slack socket envelope routed: type=%s decision=ignored "
+            "reason=no-chat",
+            etype,
+        )
         return {}
     try:
         result = router_mod.handle_slack_event(
@@ -650,12 +687,20 @@ def _route_socket_envelope(
             event_sink=bus.publish,
         )
     except Exception:  # noqa: BLE001
-        logger.info("slack socket resume failed, keeping local result")
+        logger.info(
+            "slack socket envelope routed: type=%s decision=ignored "
+            "reason=resume-failed",
+            etype,
+        )
         return {}
     if event_id:
         _remember_slack_event(event_id)
     if poller_id:
         _remember_slack_event(poller_id)
+    logger.info(
+        "slack socket envelope routed: type=%s decision=resume",
+        etype,
+    )
     return result if isinstance(result, dict) else {}
 
 
@@ -719,7 +764,7 @@ def stop_slack_socket() -> None:
 
 @app.on_event("startup")
 async def _startup_slack_poll() -> None:
-    """Start Socket Mode when configured, with the poller as backup."""
+    """Start Socket Mode when configured; the poller always runs too."""
     try:
         start_slack_socket()
     except Exception:  # noqa: BLE001
