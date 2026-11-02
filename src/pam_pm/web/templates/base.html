@@ -44,7 +44,6 @@
         {% if project_backend_label %}<span class="muted backend-kind">{{ project_backend_label }}</span>{% endif %}
       </div>
       <a class="btn btn-small" href="/listen?project={{ project }}">Listen</a>
-      <button type="button" id="theme-toggle" aria-pressed="true">Light theme</button>
     </div>
   </header>
   <div class="layout">
@@ -95,32 +94,6 @@
       url.searchParams.set("project", value);
       window.location.href = url.toString();
     }
-  </script>
-  <script>
-    (function () {
-      var btn = document.getElementById("theme-toggle");
-      if (!btn) return;
-      function stored() {
-        try { return localStorage.getItem("pam-theme") || ""; }
-        catch (err) { return ""; }
-      }
-      function paint(name) {
-        var root = document.documentElement;
-        name = name === "light" ? "light" : "dark";
-        root.setAttribute("data-theme", name);
-        var dark = name === "dark";
-        btn.textContent = dark ? "Light theme" : "Dark theme";
-        btn.setAttribute("aria-pressed", dark ? "true" : "false");
-      }
-      paint(stored());
-      btn.addEventListener("click", function () {
-        var dark = btn.getAttribute("aria-pressed") === "true";
-        var next = dark ? "light" : "dark";
-        try { localStorage.setItem("pam-theme", next); }
-        catch (err) { /* private mode keeps the default theme */ }
-        paint(next);
-      });
-    })();
   </script>
   <script>
     (function () {

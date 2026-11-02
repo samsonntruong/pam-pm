@@ -63,12 +63,13 @@ jobs:
       - name: Docker compose build and health check
         run: |
           cp .env.example .env
+          echo "PAM_CONSOLE_PASSWORD=testpassword123" >> .env
           docker compose build
           docker compose up -d
           ok=0
           for i in $(seq 1 30); do
             sleep 3
-            if curl -sf -o /dev/null http://127.0.0.1:8765; then ok=1; break; fi
+            if curl -sf -o /dev/null http://127.0.0.1:8765/healthz; then ok=1; break; fi
           done
           docker compose logs --tail=20
           docker compose down

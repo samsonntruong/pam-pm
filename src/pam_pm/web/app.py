@@ -695,7 +695,7 @@ def _setup_token_denied(request: Request) -> Any:
     return JSONResponse({"ok": False, "message": msg, "hint": hint})
 
 
-AUTH_EXEMPT_PATHS = frozenset({"/", "/health", "/login"})
+AUTH_EXEMPT_PATHS = frozenset({"/", "/health", "/healthz", "/login"})
 AUTH_EXEMPT_PREFIXES = ("/static", "/api/auth")
 
 
@@ -738,7 +738,7 @@ async def _console_auth_guard(request: Request, call_next: Any) -> Any:
     container hosts can probe the app.
     """
     path = request.url.path
-    if path not in ("/", "/health") and not auth_mod.host_allowed(
+    if path not in ("/", "/health", "/healthz") and not auth_mod.host_allowed(
         request.headers.get("host", ""), _auth_allowed_host()
     ):
         return JSONResponse(
@@ -1480,6 +1480,12 @@ def health() -> dict[str, str]:
 @app.get("/health")
 def health_alias() -> dict[str, str]:
     """Health check alias."""
+    return {"status": "ok"}
+
+
+@app.get("/healthz")
+def healthz() -> dict[str, str]:
+    """Docker and K8s health endpoint. Public, no auth, no token, no data."""
     return {"status": "ok"}
 
 

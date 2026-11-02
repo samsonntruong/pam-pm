@@ -26,6 +26,7 @@ Pam is roadmap and is not part of this build.
   `/` and `/health` which stay open for container health probes.
 - Pam refuses to bind to a non-loopback address unless a password is
   stored, and prints a plain-English error telling you how to set one.
+- This includes any 0.0.0.0 bind including Docker.
 - To change the password, log in and re-submit a new one to
   `/api/auth/setup`, or delete `console_auth.json` from the data directory
   and set a fresh password on next start.

@@ -4,6 +4,22 @@
 <h1>Settings</h1>
 <p class="muted">Team, safety, and cost for project {{ project }}. Changes save here and apply right away.</p>
 
+<section class="card" id="settings-theme">
+  <h2>Theme</h2>
+  <p class="muted">Dark is the default. Your choice is saved on this computer and applied before the page paints.</p>
+  <form id="theme-form">
+    <label class="toggle">
+      <input type="radio" name="theme" value="dark" checked>
+      Dark
+    </label>
+    <label class="toggle">
+      <input type="radio" name="theme" value="light">
+      Light
+    </label>
+  </form>
+  <div id="theme-result" class="result" aria-live="polite"></div>
+</section>
+
 <section class="card" id="settings-roster">
   <h2>Team</h2>
   <p class="muted">Teammates get the morning message. Skills can be any words, such as design or testing. Capacity is hours per sprint.</p>
@@ -169,4 +185,39 @@
   <h2>Console access</h2>
   <p class="muted">Pam runs on this computer only. There is no sign in page. The setup token works once. Keep it private and do not paste it into chat.</p>
 </section>
+{% endblock %}
+{% block scripts %}
+<script>
+(function () {
+  var KEY = "pam-theme";
+  var form = document.getElementById("theme-form");
+  if (!form) return;
+  function stored() {
+    try { return localStorage.getItem(KEY) || "dark"; }
+    catch (err) { return "dark"; }
+  }
+  function paint(name) {
+    name = name === "light" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", name);
+    var radios = form.querySelectorAll('input[name="theme"]');
+    radios.forEach(function (r) { r.checked = (r.value === name); });
+  }
+  paint(stored());
+  form.addEventListener("change", function () {
+    var pick = form.querySelector('input[name="theme"]:checked');
+    var next = pick ? pick.value : "dark";
+    try { localStorage.setItem(KEY, next); }
+    catch (err) { /* private mode keeps the default theme */ }
+    paint(next);
+    var out = document.getElementById("theme-result");
+    if (out) {
+      out.innerHTML = "";
+      var pill = document.createElement("span");
+      pill.className = "pill pill-ok";
+      pill.textContent = next === "light" ? "Light theme saved." : "Dark theme saved.";
+      out.appendChild(pill);
+    }
+  });
+})();
+</script>
 {% endblock %}
