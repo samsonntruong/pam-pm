@@ -17,6 +17,56 @@ MAX_TURNS = 6
 
 VAGUE_PHRASES = ("almost done", "soon", "working on it")
 
+PLACEHOLDER_EVIDENCE_MARKERS = ("placeholder", "lorem", "todo")
+
+_SYNTHETIC_PREFIXES = ("Reminder:", "Extract ")
+
+
+def _has_user_turn(conversation: list[dict[str, Any]]) -> bool:
+    """Return True when conversation holds one real non-empty user turn."""
+    for turn in conversation or []:
+        if not isinstance(turn, dict):
+            continue
+        if turn.get("role") != "user":
+            continue
+        content = turn.get("content", "")
+        text = content if isinstance(content, str) else str(content or "")
+        if not text.strip():
+            continue
+        if text.startswith(_SYNTHETIC_PREFIXES):
+            continue
+        return True
+    return False
+
+
+def _is_bad_evidence(quote: Any) -> bool:
+    """Return True for empty or obvious placeholder evidence quotes."""
+    if quote is None:
+        return True
+    text = quote if isinstance(quote, str) else str(quote)
+    stripped = text.strip()
+    if not stripped:
+        return True
+    lowered = stripped.lower()
+    return any(marker in lowered for marker in PLACEHOLDER_EVIDENCE_MARKERS)
+
+
+def _finish_args_evidence_is_bad(args: Any) -> bool:
+    """Check raw finish args evidence before coercion backfill."""
+    if isinstance(args, str):
+        if not args.strip():
+            return True
+        try:
+            data = json.loads(args)
+        except ValueError:
+            return True
+        if not isinstance(data, dict):
+            return True
+        return _is_bad_evidence(data.get("evidence_quote", ""))
+    if isinstance(args, dict):
+        return _is_bad_evidence(args.get("evidence_quote", ""))
+    return True
+
 _REMAINING_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|h)\b", re.IGNORECASE)
 _ETA_DATE_RE = re.compile(r"20\d{2}-\d{2}-\d{2}")
 _ETA_DAY_RE = re.compile(
@@ -280,10 +330,12 @@ def _coerce_result(args: Any, conversation: list[dict[str, Any]]) -> InterviewRe
         data = {}
     result = InterviewResult.model_validate(data)
     update: dict[str, Any] = {}
-    if not result.evidence_quote.strip():
+    if _is_bad_evidence(result.evidence_quote):
         last = _last_user_text(conversation)
-        if last:
+        if last and not _is_bad_evidence(last):
             update["evidence_quote"] = _clean_quote(last, 500)
+        else:
+            update["evidence_quote"] = ""
     if not result.status.strip():
         last = _last_user_text(conversation)
         update["status"] = _clean_quote(last or "unknown", 200)
@@ -342,10 +394,12 @@ def _parse_text_json(
     except Exception:  # noqa: BLE001
         return None
     update: dict[str, Any] = {}
-    if not result.evidence_quote.strip():
+    if _is_bad_evidence(result.evidence_quote):
         last = _last_user_text(conversation)
-        if last:
+        if last and not _is_bad_evidence(last):
             update["evidence_quote"] = _clean_quote(last, 500)
+        else:
+            update["evidence_quote"] = ""
     if update:
         result = result.model_copy(update=update)
     return result
@@ -354,6 +408,8 @@ def _parse_text_json(
 def _build_fallback_result(conversation: list[dict[str, Any]]) -> InterviewResult:
     last = _last_user_text(conversation) or ""
     quote = _clean_quote(last, 500)
+    if quote and _is_bad_evidence(quote):
+        quote = ""
     remaining: float | None = None
     eta: str | None = None
     for turn in reversed(conversation):
@@ -403,13 +459,16 @@ def write_interview_result(
     posts the outcome as a comment. Same call shapes on Pam board
     and ADO, so both backends behave the same way.
     """
+    evidence = result.evidence_quote
+    if _is_bad_evidence(evidence):
+        evidence = ""
     updated = board.update_item(
         item_id,
         {
             "state": result.status[:80] if result.status else "",
             "remaining": result.remaining,
             "eta": result.eta,
-            "evidence_quote": result.evidence_quote,
+            "evidence_quote": evidence,
         },
     )
     comment = None
@@ -887,22 +946,41 @@ class Interviewer:
                 text, tool_calls = _parse_model_result(raw)
                 finish_args = _find_finish(tool_calls)
                 if finish_args is not None:
-                    try:
-                        candidate = _coerce_result(finish_args, conversation)
-                    except Exception:  # noqa: BLE001
-                        candidate = None
-                    if candidate is not None:
-                        last_user = _last_user_text(conversation)
-                        needs_pushback = (
-                            last_user is not None
-                            and is_vague(last_user)
-                            and (candidate.remaining is None or candidate.eta is None)
+                    if not _has_user_turn(conversation):
+                        logger.info(
+                            "ignoring finish with no user turns for %s", item_id
                         )
-                        if not needs_pushback:
-                            results[item_id] = candidate
-                            _safe_board_update(board, item_id, candidate)
-                            break
-                        text = ""
+                    else:
+                        try:
+                            candidate = _coerce_result(finish_args, conversation)
+                        except Exception:  # noqa: BLE001
+                            candidate = None
+                        if candidate is not None:
+                            last_user = _last_user_text(conversation)
+                            vague_pushback = (
+                                last_user is not None
+                                and is_vague(last_user)
+                                and (
+                                    candidate.remaining is None
+                                    or candidate.eta is None
+                                )
+                            )
+                            missing_evidence = _is_bad_evidence(
+                                candidate.evidence_quote
+                            )
+                            original_bad = _finish_args_evidence_is_bad(
+                                finish_args
+                            )
+                            needs_pushback = (
+                                vague_pushback
+                                or missing_evidence
+                                or original_bad
+                            )
+                            if not needs_pushback:
+                                results[item_id] = candidate
+                                _safe_board_update(board, item_id, candidate)
+                                break
+                            text = ""
                 if turns >= self.max_turns:
                     break
                 question = _one_question(text or _default_question(item))
@@ -945,6 +1023,8 @@ class Interviewer:
                 continue
             if awaiting and db is not None:
                 continue
+            if not _has_user_turn(conversation):
+                continue
             done = False
             try:
                 reminder_conv = conversation + [
@@ -969,9 +1049,14 @@ class Interviewer:
                 if retry_args is not None:
                     try:
                         candidate = _coerce_result(retry_args, conversation)
-                        results[item_id] = candidate
-                        _safe_board_update(board, item_id, candidate)
-                        done = True
+                        if _is_bad_evidence(
+                            candidate.evidence_quote
+                        ) or _finish_args_evidence_is_bad(retry_args):
+                            done = False
+                        else:
+                            results[item_id] = candidate
+                            _safe_board_update(board, item_id, candidate)
+                            done = True
                     except Exception:  # noqa: BLE001
                         done = False
             except Exception:  # noqa: BLE001
@@ -1005,16 +1090,21 @@ class Interviewer:
                 if fallback_args is not None:
                     try:
                         candidate = _coerce_result(fallback_args, conversation)
-                        results[item_id] = candidate
-                        _safe_board_update(board, item_id, candidate)
-                        _save_interview_state(
-                            db,
-                            person_id,
-                            item_id,
-                            conversation,
-                            status="finished",
-                        )
-                        continue
+                        if _is_bad_evidence(
+                            candidate.evidence_quote
+                        ) or _finish_args_evidence_is_bad(fallback_args):
+                            pass
+                        else:
+                            results[item_id] = candidate
+                            _safe_board_update(board, item_id, candidate)
+                            _save_interview_state(
+                                db,
+                                person_id,
+                                item_id,
+                                conversation,
+                                status="finished",
+                            )
+                            continue
                     except Exception:  # noqa: BLE001, S110
                         pass
                 parsed = _parse_text_json(text_fallback, conversation)
@@ -1057,6 +1147,8 @@ class Interviewer:
             if single_id in results:
                 return results[single_id]
             if db is not None:
+                return {}
+            if not _has_user_turn(conversation):
                 return {}
             fallback_single = _build_fallback_result(conversation)
             _safe_board_update(board, single_id, fallback_single)
