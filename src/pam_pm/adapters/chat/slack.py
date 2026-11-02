@@ -133,9 +133,12 @@ class SlackAdapter(ChatAdapter):
 
     def _resolve_user_id(self, client: Any, name: str) -> str | None:
         """Resolve a display name to a Slack user ID via users.list."""
-        key = name.strip().lower()
-        if not key:
+        stripped = name.strip()
+        if not stripped:
             return None
+        if self._looks_like_user_id(stripped):
+            return stripped
+        key = stripped.lower()
         cached = self._user_cache.get(key)
         if cached:
             return cached
@@ -195,7 +198,28 @@ class SlackAdapter(ChatAdapter):
     ) -> list[ChatMessage]:
         client = self._client_or_raise()
         try:
-            kwargs: dict[str, Any] = {"channel": user_id, "limit": 50}
+            resolved = self._resolve_user_id(client, user_id)
+            if not resolved:
+                logger.error(
+                    "slack read_replies skipped: could not resolve '%s' to a Slack user ID",
+                    user_id,
+                )
+                return []
+            opened = self._unwrap(client.conversations_open(users=resolved))
+            channel_id = ""
+            if isinstance(opened, dict):
+                channel = opened.get("channel", {})
+                if isinstance(channel, dict):
+                    channel_id = str(channel.get("id", "") or "")
+                elif isinstance(channel, str):
+                    channel_id = channel
+            if not channel_id:
+                logger.error(
+                    "slack read_replies skipped: could not open DM for '%s'",
+                    user_id,
+                )
+                return []
+            kwargs: dict[str, Any] = {"channel": channel_id, "limit": 50}
             if since:
                 kwargs["oldest"] = since
             resp = self._unwrap(client.conversations_history(**kwargs))
@@ -210,7 +234,7 @@ class SlackAdapter(ChatAdapter):
                 out.append(
                     ChatMessage(
                         id=ts,
-                        user_id=user_id,
+                        user_id=resolved,
                         text=str(item.get("text", "")),
                         ts=ts,
                         inbound=True,
