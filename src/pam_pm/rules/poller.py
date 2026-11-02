@@ -10,6 +10,33 @@ from typing import Any
 
 POLL_INTERVAL = 60
 
+POLL_INTERVAL_KEY = "settings.poll_interval"
+
+
+def effective_poll_interval(db: Any = None) -> int:
+    """Return the poll interval in seconds, default 60.
+
+    A console saved value wins, then Config, then POLL_INTERVAL.
+    """
+    if db is not None:
+        try:
+            from pam_pm.core import recovery as recovery_mod
+
+            raw = recovery_mod.kv_get(db, POLL_INTERVAL_KEY)
+            if str(raw or "").strip():
+                return max(1, int(str(raw).strip()))
+        except (TypeError, ValueError):
+            pass
+        except Exception:  # noqa: BLE001, S110
+            pass
+    try:
+        from pam_pm.core.config import Config
+
+        return max(1, int(Config().poll_interval))
+    except Exception:  # noqa: BLE001
+        return POLL_INTERVAL
+
+
 POLLER_DDL = """CREATE TABLE IF NOT EXISTS poller_state (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL DEFAULT ''
@@ -69,12 +96,16 @@ class ADOPoller:
         db: str | Path | sqlite3.Connection,
         *,
         project: str = "default",
-        interval: int = POLL_INTERVAL,
+        interval: int | None = None,
     ) -> None:
         self.board = board
         self._db = db
         self.project = project
-        self.interval = interval
+        self._interval_override = interval
+        if interval is None:
+            self.interval = effective_poll_interval(db)
+        else:
+            self.interval = interval
         self._key = f"watermark:{project}"
 
     def _connect(self) -> sqlite3.Connection:
@@ -148,6 +179,8 @@ class ADOPoller:
             rounds += 1
             if max_rounds is not None and rounds >= max_rounds:
                 break
+            if self._interval_override is None:
+                self.interval = effective_poll_interval(self._db)
             if sleep and self.interval > 0:
                 time.sleep(self.interval)
 

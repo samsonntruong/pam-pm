@@ -314,19 +314,51 @@ def _build_fallback_result(
     )
 
 
+def format_checkin_comment(result: InterviewResult) -> str:
+    """Render one interview result as a board comment line."""
+    head = f"Check-in: {result.status}".strip()
+    parts = [head] if head else []
+    if result.remaining is not None:
+        parts.append(f"Remaining {result.remaining}h")
+    if result.eta:
+        parts.append(f"ETA {result.eta}")
+    if result.evidence_quote:
+        parts.append(f'Evidence: "{result.evidence_quote[:200]}"')
+    return ". ".join(parts) + "."
+
+
+def write_interview_result(
+    board: Any, item_id: str, result: InterviewResult
+) -> dict[str, Any]:
+    """Write one interview result to the board.
+
+    Updates RemainingWork through the canonical remaining field and
+    posts the outcome as a comment. Same call shapes on Pam board
+    and ADO, so both backends behave the same way.
+    """
+    updated = board.update_item(
+        item_id,
+        {
+            "state": result.status[:80] if result.status else "",
+            "remaining": result.remaining,
+            "eta": result.eta,
+            "evidence_quote": result.evidence_quote,
+        },
+    )
+    comment = None
+    add_comment = getattr(board, "add_comment", None)
+    if callable(add_comment):
+        comment = add_comment(
+            item_id, format_checkin_comment(result), author="Pam"
+        )
+    return {"updated": updated, "comment": comment}
+
+
 def _safe_board_update(board: Any, item_id: str, result: InterviewResult) -> None:
     if board is None:
         return
     try:
-        board.update_item(
-            item_id,
-            {
-                "state": result.status[:80] if result.status else "",
-                "remaining": result.remaining,
-                "eta": result.eta,
-                "evidence_quote": result.evidence_quote,
-            },
-        )
+        write_interview_result(board, item_id, result)
     except Exception:  # noqa: BLE001
         return
 

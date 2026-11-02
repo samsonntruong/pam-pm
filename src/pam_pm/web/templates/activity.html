@@ -5,6 +5,20 @@
 <p class="muted">New changes appear here as they happen. Each change shows its evidence note, the exact words it came from.</p>
 <p><span id="stream-status" class="pill" role="status">Updates: connecting</span></p>
 
+<section class="card" id="test-checkin">
+  <h2>Test check-in</h2>
+  <p class="muted">Send one morning check-in to a teammate now. Uses the real morning flow.</p>
+  <form hx-post="/api/checkin/test?project={{ project }}" hx-target="#test-checkin-result" hx-swap="innerHTML" class="inline-form">
+    <label>Teammate
+      <input type="text" name="person" value="{% if checkin_people %}{{ checkin_people[0] }}{% endif %}" placeholder="Ana" autocomplete="off">
+    </label>
+    <div class="form-actions">
+      <button type="submit">Send test check-in</button>
+    </div>
+    <div id="test-checkin-result" class="result" aria-live="polite"></div>
+  </form>
+</section>
+
 <div id="events">
   {% if events %}
   {% set verbs = {"create": "Created item", "create_item": "Created item", "update": "Updated item", "update_state": "Changed status on item", "move": "Moved item", "add_link": "Linked item", "set_sprint": "Set sprint on item", "create_sprint": "Created sprint", "close_sprint": "Closed sprint", "comment": "Commented on item", "raid_create": "Added RAID entry", "raid_add": "Added RAID entry", "raid_update": "Updated RAID entry", "raid_accept": "Accepted RAID entry", "raid_close": "Closed RAID entry", "raid_delete": "Deleted RAID entry", "raid_propose_risk": "Proposed risk", "raid_propose_assumption": "Proposed assumption", "raid_propose_issue": "Proposed issue", "raid_propose_dependency": "Proposed dependency"} %}

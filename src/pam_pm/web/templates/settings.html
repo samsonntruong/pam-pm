@@ -171,6 +171,19 @@
   </form>
 </section>
 
+<section class="card" id="settings-polling">
+  <h2>Board polling</h2>
+  <p class="muted">How often Pam checks the board for changes. Lower values update faster during demos.</p>
+  <form hx-post="/api/settings/poll-interval" hx-target="#poll-result" hx-swap="innerHTML">
+    <label for="poll-interval">Poll interval (seconds)</label>
+    <input id="poll-interval" type="number" name="poll_interval" value="{{ poll_interval }}" min="1" step="1" inputmode="numeric">
+    <div class="form-actions">
+      <button type="submit">Save poll interval</button>
+    </div>
+    <div id="poll-result" class="result" aria-live="polite"></div>
+  </form>
+</section>
+
 <section class="card" id="settings-cost">
   <h2>Model cost</h2>
   {% if cost.calls %}

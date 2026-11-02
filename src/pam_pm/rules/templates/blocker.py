@@ -281,6 +281,19 @@ def blocker_intake(
             }
         )
     blocking_owner_id = _owner_of(blocking) or owner
+    reporter_dm: str | None = None
+    if blocking_owner_id:
+        try:
+            reporter_dm = str(
+                chat.send_dm(
+                    reporter,
+                    f"Linked '{_item_title(blocked)}' as blocked by "
+                    f"'{_item_title(blocking)}'. I am about to ask "
+                    f"{blocking_owner_id} for an ETA.",
+                )
+            )
+        except Exception:  # noqa: BLE001
+            reporter_dm = None
     eta_dm: str | None = None
     if blocking_owner_id:
         try:
@@ -321,6 +334,7 @@ def blocker_intake(
         "blocking_item": blocking,
         "link": link,
         "evidence_quote": evidence,
+        "reporter_dm": reporter_dm,
         "eta_dm": eta_dm,
         "raid_issue": raid_issue,
     }

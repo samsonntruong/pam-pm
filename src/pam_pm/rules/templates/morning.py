@@ -244,6 +244,52 @@ def morning_checkin(
     return out
 
 
+def test_checkin(
+    person: str,
+    chat: Any,
+    board: Any,
+    model: Any,
+    *,
+    project: Any = None,
+    writes: WriteService | None = None,
+    db: Any = None,
+    dry_run: bool = True,
+    interviewer: Interviewer | None = None,
+    limit: int = 200,
+    backend: str = "azure_devops",
+) -> dict[str, Any]:
+    """Run one morning check-in to a single chosen teammate.
+
+    Same path as morning_checkin with the roster narrowed to one
+    person, so the console test button exercises the real flow.
+    """
+    label = str(person or "").strip()
+    if not label:
+        return {}
+    if isinstance(project, dict):
+        scoped: Any = dict(project)
+        scoped["roster"] = [label]
+    elif isinstance(project, str) and project.strip():
+        scoped = {"project": project.strip(), "roster": [label]}
+    else:
+        scoped = {"roster": [label]}
+    return morning_checkin(
+        scoped,
+        chat,
+        board,
+        model,
+        writes=writes,
+        db=db,
+        dry_run=dry_run,
+        interviewer=interviewer,
+        limit=limit,
+        backend=backend,
+    )
+
+
+run_test_checkin = test_checkin
+
+
 def run_morning_checkin(
     project: Any = None,
     chat: Any = None,

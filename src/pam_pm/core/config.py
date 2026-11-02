@@ -118,6 +118,7 @@ class Config:
         backend: str | None = None,
         allowed_host: str | None = None,
         share_on_lan: bool | None = None,
+        poll_interval: int | None = None,
     ) -> None:
         want_tier = model_tier or tier or os.environ.get("META_TIER", "")
         want_tier = (want_tier or "standard").strip().lower()
@@ -203,6 +204,19 @@ class Config:
             self.share_on_lan = False
         else:
             self.share_on_lan = False
+        env_poll = os.environ.get("PAM_POLL_INTERVAL", "").strip()
+        if poll_interval is not None:
+            try:
+                self.poll_interval = max(1, int(poll_interval))
+            except (TypeError, ValueError):
+                self.poll_interval = 60
+        elif env_poll:
+            try:
+                self.poll_interval = max(1, int(env_poll))
+            except ValueError:
+                self.poll_interval = 60
+        else:
+            self.poll_interval = 60
 
     @property
     def model_tier(self) -> str:
