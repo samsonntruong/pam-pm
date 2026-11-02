@@ -166,6 +166,7 @@ def handle_slack_file(
     provider: str = "meta",
     event_sink: Any = None,
     caption: str = "",
+    model_client: Any = None,
 ) -> dict[str, Any]:
     """Route one Slack file: image to planner, audio to polite decline.
 
@@ -185,8 +186,10 @@ def handle_slack_file(
     log_route(CAP_VISION_SEGMENT, vision_segment_model(), f"file_id={file_id}")
     data = bytes(file_bytes) if file_bytes is not None else bytes(chat.download_file(file_id))
     from pam_pm.agents.planner import propose_sprint
-    from pam_pm.models.vision import plan_from_photo
+    from pam_pm.models.vision import VisionClient, plan_from_photo
 
+    if vision is None and model_client is not None:
+        vision = VisionClient(model_client=model_client, provider=want)
     photo = plan_from_photo(data, vision=vision, segmenter=segmenter, provider=want)
     path = str(photo.get("path", "fallback"))
     readings = photo.get("readings", [])
@@ -381,6 +384,7 @@ def handle_slack_event(
         provider=provider,
         event_sink=event_sink,
         caption=caption,
+        model_client=model_client,
     )
     result["file_id"] = file_id
     result["channel"] = channel

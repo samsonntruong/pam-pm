@@ -74,6 +74,23 @@ def test_plan_from_photo_never_crashes_on_missing_sam(caplog):
     assert "vision path used: fallback" in caplog.text
 
 
+class _FakeModelClient:
+    def __init__(self, text="Alpha\nBeta"):
+        self.text = text
+        self.calls = 0
+
+    def chat(self, messages, **kwargs):
+        self.calls += 1
+        return {"text": self.text}
+
+
+def test_plan_from_photo_with_wired_fake_client_returns_readings():
+    vision = VisionClient(model_client=_FakeModelClient("Alpha\nBeta"))
+    photo = plan_from_photo(PHOTO_FIXTURE, vision=vision)
+    assert photo["readings"] == ["Alpha", "Beta"]
+    assert photo["path"] == "fallback"
+
+
 def test_sam_path_used_when_crops_exist():
     vision = FakeVision()
 

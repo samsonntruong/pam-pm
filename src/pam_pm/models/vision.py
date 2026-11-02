@@ -118,6 +118,10 @@ class VisionClient:
         if image is None:
             return ""
         if self.model_client is None:
+            logger.warning(
+                "vision read_full without model_client: "
+                "wire VisionClient(model_client=...) from the live Meta ModelClient"
+            )
             return ""
         try:
             return self._read_image(image)

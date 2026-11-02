@@ -55,7 +55,7 @@ from pam_pm.core.config import (
 )
 from pam_pm.core.cost import CALLS_TABLE_DDL
 from pam_pm.core.writes import WriteService
-from pam_pm.models.vision import plan_from_photo
+from pam_pm.models.vision import VisionClient, plan_from_photo
 
 _SLACK_POLLER: Any = None
 _SLACK_POLL_TASK: Any = None
@@ -4782,7 +4782,13 @@ async def upload_plan_photo(request: Request) -> Any:
         )
     except Exception:  # noqa: BLE001
         current_provider = "meta"
-    photo = plan_from_photo(data if data else b"", provider=current_provider)
+    project = _safe_project(request.query_params.get("project", "default"))
+    vision_client = VisionClient(
+        model_client=_resume_model_client(project), provider=current_provider
+    )
+    photo = plan_from_photo(
+        data if data else b"", vision=vision_client, provider=current_provider
+    )
     proposal = propose_sprint(photo.get("readings") or photo.get("notes_text", ""))
     LAST_PLAN["readings"] = photo.get("readings", [])
     LAST_PLAN["masks"] = photo.get("masks", [])
