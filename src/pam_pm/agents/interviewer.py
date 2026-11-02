@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any
 
 from pam_pm.agents.prompts.builder import build_messages
@@ -65,9 +66,7 @@ def _normalize_items(items: Any) -> list[dict[str, str]]:
                 item_id = title or f"item-{len(norm) + 1}"
             norm.append({"id": item_id, "title": title, "state": state})
         else:
-            item_id = str(
-                getattr(entry, "id", getattr(entry, "item_id", "")) or ""
-            )
+            item_id = str(getattr(entry, "id", getattr(entry, "item_id", "")) or "")
             title = str(getattr(entry, "title", item_id or "item") or "")
             state = str(getattr(entry, "state", "") or "")
             if not item_id:
@@ -133,11 +132,77 @@ def _default_question(item: dict[str, str]) -> str:
     return f"What is the status of {item['title']}?"
 
 
+def _coerce_ts(value: Any) -> float | None:
+    """Coerce a timestamp-like value to float, else None.
+
+    Plain reply text and non-numeric ids return None so callers
+    keep the no-timestamp accept behavior.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return float(stripped)
+        except ValueError:
+            return None
+    return None
+
+
+def _reply_ts(reply: Any) -> float | None:
+    """Extract a numeric timestamp from a reply, else None."""
+    if isinstance(reply, str):
+        return None
+    if isinstance(reply, dict):
+        for key in ("ts", "timestamp", "created", "created_at"):
+            if reply.get(key) is not None:
+                coerced = _coerce_ts(reply.get(key))
+                if coerced is not None:
+                    return coerced
+        return None
+    if isinstance(reply, (tuple, list)) and len(reply) == 2:
+        return _coerce_ts(reply[0])
+    for attr in ("ts", "timestamp", "created", "created_at"):
+        coerced = _coerce_ts(getattr(reply, attr, None))
+        if coerced is not None:
+            return coerced
+    return None
+
+
+def _reply_text(reply: Any) -> str:
+    if isinstance(reply, str):
+        return reply
+    if isinstance(reply, dict):
+        return str(reply.get("text", ""))
+    if isinstance(reply, (tuple, list)) and len(reply) == 2:
+        return str(reply[1])
+    return str(getattr(reply, "text", reply) or "")
+
+
+def _is_stale(ts: float | None, after_ts: float | None) -> bool:
+    return after_ts is not None and ts is not None and ts <= after_ts
+
+
 def _next_answer(
-    chat: Any, person_id: str, buffer: list[str]
+    chat: Any,
+    person_id: str,
+    buffer: list[Any],
+    after_ts: float | None = None,
 ) -> str | None:
-    if buffer:
-        return buffer.pop(0)
+    while buffer:
+        entry = buffer.pop(0)
+        if _is_stale(_reply_ts(entry), after_ts):
+            continue
+        return _reply_text(entry)
     try:
         replies = chat.read_replies(person_id)
     except TypeError:
@@ -149,20 +214,21 @@ def _next_answer(
         return None
     if not replies:
         return None
-    texts: list[str] = []
+    fresh: list[tuple[float | None, str]] = []
     for reply in replies:
-        if isinstance(reply, str):
-            texts.append(reply)
-        elif isinstance(reply, dict):
-            texts.append(str(reply.get("text", "")))
-        else:
-            texts.append(str(getattr(reply, "text", reply) or ""))
-    texts = [text for text in texts if text is not None]
-    if not texts:
+        ts = _reply_ts(reply)
+        if _is_stale(ts, after_ts):
+            continue
+        text = _reply_text(reply)
+        if text is None:
+            continue
+        fresh.append((ts, text))
+    if not fresh:
         return None
-    if len(texts) > 1:
-        buffer.extend(texts[1:])
-    return texts[0]
+    if len(fresh) > 1:
+        for ts, text in fresh[1:]:
+            buffer.append((ts, text))
+    return fresh[0][1]
 
 
 def _parse_model_result(data: Any) -> tuple[str, list[tuple[str, Any]]]:
@@ -282,9 +348,7 @@ def _parse_text_json(
     return result
 
 
-def _build_fallback_result(
-    conversation: list[dict[str, Any]]
-) -> InterviewResult:
+def _build_fallback_result(conversation: list[dict[str, Any]]) -> InterviewResult:
     last = _last_user_text(conversation) or ""
     quote = _clean_quote(last, 500)
     remaining: float | None = None
@@ -348,9 +412,7 @@ def write_interview_result(
     comment = None
     add_comment = getattr(board, "add_comment", None)
     if callable(add_comment):
-        comment = add_comment(
-            item_id, format_checkin_comment(result), author="Pam"
-        )
+        comment = add_comment(item_id, format_checkin_comment(result), author="Pam")
     return {"updated": updated, "comment": comment}
 
 
@@ -425,13 +487,9 @@ def _call_model_once(
     conversation: list[dict[str, Any]],
     volatile: dict[str, Any],
 ) -> Any:
-    payload = build_messages(
-        "interviewer", project_context, conversation, volatile
-    )
+    payload = build_messages("interviewer", project_context, conversation, volatile)
     try:
-        return model_client.chat(
-            payload["messages"], tools=payload["tools"]
-        )
+        return model_client.chat(payload["messages"], tools=payload["tools"])
     except TypeError:
         return model_client.chat(payload["messages"], payload["tools"])
 
@@ -449,9 +507,7 @@ def _capture_resume_memory(
             for turn in conversation
             if turn.get("role") == "user"
             and str(turn.get("content", "")).strip()
-            and not str(turn.get("content", "")).startswith(
-                ("Reminder:", "Extract ")
-            )
+            and not str(turn.get("content", "")).startswith(("Reminder:", "Extract "))
         ]
         memory_mod.capture_interview(db, person_id, said, source="interview")
     except Exception:  # noqa: BLE001
@@ -536,9 +592,7 @@ def resume_interview(
         "phase": "resume",
     }
     try:
-        raw = _call_model_once(
-            model_client, project_context, conversation, volatile
-        )
+        raw = _call_model_once(model_client, project_context, conversation, volatile)
     except Exception:  # noqa: BLE001
         _save_interview_state(db, person_id, item_id, conversation, marker)
         return {
@@ -564,7 +618,11 @@ def resume_interview(
             if not needs_pushback:
                 _safe_board_update(board, item_id, candidate)
                 _save_interview_state(
-                    db, person_id, item_id, conversation, marker,
+                    db,
+                    person_id,
+                    item_id,
+                    conversation,
+                    marker,
                     status=FINISHED_STATUS,
                 )
                 _capture_resume_memory(db, person_id, conversation)
@@ -583,7 +641,11 @@ def resume_interview(
         result = _build_fallback_result(conversation)
         _safe_board_update(board, item_id, result)
         _save_interview_state(
-            db, person_id, item_id, conversation, marker,
+            db,
+            person_id,
+            item_id,
+            conversation,
+            marker,
             status=FINISHED_STATUS,
         )
         _capture_resume_memory(db, person_id, conversation)
@@ -600,8 +662,10 @@ def resume_interview(
     item = {"id": item_id, "title": item_id, "state": ""}
     question = _one_question(text or _default_question(item))
     last_user = _last_user_text(conversation)
-    if last_user is not None and is_vague(last_user) and not (
-        _has_remaining(question) and _has_eta(question)
+    if (
+        last_user is not None
+        and is_vague(last_user)
+        and not (_has_remaining(question) and _has_eta(question))
     ):
         quote = _clean_quote(last_user)
         question = _one_question(
@@ -659,7 +723,8 @@ class Interviewer:
             return {}
         project_context = _project_context(norm_items)
         conversation: list[dict[str, Any]] = []
-        reply_buffer: list[str] = []
+        reply_buffer: list[Any] = []
+        question_ts: float | None = None
         turns = 0
         model_calls = 0
 
@@ -668,9 +733,7 @@ class Interviewer:
             payload = build_messages("interviewer", project_context, conv, volatile)
             model_calls += 1
             try:
-                return model_client.chat(
-                    payload["messages"], tools=payload["tools"]
-                )
+                return model_client.chat(payload["messages"], tools=payload["tools"])
             except TypeError:
                 return model_client.chat(payload["messages"], payload["tools"])
 
@@ -700,10 +763,7 @@ class Interviewer:
                         needs_pushback = (
                             last_user is not None
                             and is_vague(last_user)
-                            and (
-                                candidate.remaining is None
-                                or candidate.eta is None
-                            )
+                            and (candidate.remaining is None or candidate.eta is None)
                         )
                         if not needs_pushback:
                             results[item_id] = candidate
@@ -714,22 +774,32 @@ class Interviewer:
                     break
                 question = _one_question(text or _default_question(item))
                 last_user = _last_user_text(conversation)
-                if last_user is not None and is_vague(last_user) and not (
-                    _has_remaining(question) and _has_eta(question)
+                if (
+                    last_user is not None
+                    and is_vague(last_user)
+                    and not (_has_remaining(question) and _has_eta(question))
                 ):
                     quote = _clean_quote(last_user)
                     question = _one_question(
-                            f'You said "{quote}". '
-                            "What work remains and what is your ETA?"
-                        )
+                        f'You said "{quote}". What work remains and what is your ETA?'
+                    )
                 try:
-                    chat.send_dm(person_id, question)
+                    sent_ts: Any = chat.send_dm(person_id, question)
                 except Exception:  # noqa: BLE001
                     break
+                if isinstance(sent_ts, dict):
+                    sent_ts = sent_ts.get("ts", sent_ts.get("message_id"))
+                elif not isinstance(sent_ts, (str, int, float)):
+                    sent_ts = getattr(
+                        sent_ts, "ts", getattr(sent_ts, "message_id", None)
+                    )
+                question_ts = _coerce_ts(sent_ts)
+                if question_ts is None:
+                    question_ts = time.time()
                 turns += 1
                 conversation.append({"role": "assistant", "content": question})
                 _save_interview_state(db, person_id, item_id, conversation)
-                answer = _next_answer(chat, person_id, reply_buffer)
+                answer = _next_answer(chat, person_id, reply_buffer, question_ts)
                 if answer is None or not str(answer).strip():
                     awaiting = True
                     break
@@ -805,7 +875,10 @@ class Interviewer:
                         results[item_id] = candidate
                         _safe_board_update(board, item_id, candidate)
                         _save_interview_state(
-                            db, person_id, item_id, conversation,
+                            db,
+                            person_id,
+                            item_id,
+                            conversation,
                             status="finished",
                         )
                         continue
@@ -843,9 +916,7 @@ class Interviewer:
                         ("Reminder:", "Extract ")
                     )
                 ]
-                memory_mod.capture_interview(
-                    db, person_id, said, source="interview"
-                )
+                memory_mod.capture_interview(db, person_id, said, source="interview")
             except Exception:  # noqa: BLE001, S110
                 pass
         if len(norm_items) == 1:
