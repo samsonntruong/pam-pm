@@ -160,6 +160,38 @@ def test_interviewer_receives_reply_via_read_replies(tmp_path) -> None:
     assert adapter.read_replies("U123MAYA") == []
 
 
+def test_poll_once_inits_lazy_client(tmp_path) -> None:
+    fake = FakeWebClient(
+        [{"id": "D123", "user": "U123MAYA"}],
+        {"D123": [{"ts": "117.1", "user": "U123MAYA", "text": "lazy hello"}]},
+    )
+
+    class LazyAdapter:
+        def __init__(self) -> None:
+            self._client: Any | None = None
+
+        def _client_or_raise(self) -> Any:
+            if self._client is None:
+                self._client = fake
+            return self._client
+
+        def tracked_dm_targets(self) -> list[str]:
+            return []
+
+    adapter = LazyAdapter()
+    assert adapter._client is None
+    poller = SlackPoller(
+        source=adapter,
+        db=str(tmp_path / "slack_poll_lazy.db"),
+        bus=FakeBus(),
+        interval=60,
+    )
+    found = poller.poll_once()
+    assert adapter._client is fake
+    assert [item.text for item in found] == ["lazy hello"]
+    assert poller.get_watermark("D123") == "117.1"
+
+
 def test_webhook_and_poller_share_dedupe(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
     monkeypatch.setattr(web_app, "slack_configured", lambda: False)
