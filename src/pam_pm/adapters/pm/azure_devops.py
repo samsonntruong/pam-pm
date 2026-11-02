@@ -331,6 +331,12 @@ class ADOAdapter(PMAdapter):
                 out[key] = resolved
                 if warn:
                     warnings.append(warn)
+            elif key in ("tags", "System.Tags", "/fields/System.Tags"):
+                val = out[key]
+                if isinstance(val, (list, tuple)):
+                    out[key] = "; ".join(
+                        str(v).strip() for v in val if str(v).strip()
+                    )
         return out, warnings
 
     def close_item(self, item_id: str) -> WorkItem:
