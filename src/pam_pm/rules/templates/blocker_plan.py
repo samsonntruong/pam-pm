@@ -366,20 +366,21 @@ def compute_eta(
 
     Hours spread over weekday working days only, from work_start
     (inclusive) to work_end (exclusive). Times outside the window
-    roll forward to the next working start.
+    roll forward to the next working start. Unknown hours default
+    to 9 to 5.
     """
     try:
-        work_start = int(getattr(scheduler, "work_start", 8))
+        work_start = int(getattr(scheduler, "work_start", 9))
     except (TypeError, ValueError):
-        work_start = 8
+        work_start = 9
     try:
-        work_end = int(getattr(scheduler, "work_end", 18))
+        work_end = int(getattr(scheduler, "work_end", 17))
     except (TypeError, ValueError):
-        work_end = 18
+        work_end = 17
     work_start = min(max(work_start, 0), 23)
     work_end = min(max(work_end, 1), 24)
     if work_end <= work_start:
-        work_start, work_end = 8, 18
+        work_start, work_end = 9, 17
     zone = _zone(tz)
     cur = now
     if cur.tzinfo is None:

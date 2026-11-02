@@ -157,6 +157,13 @@ def test_compute_eta_same_day_and_multiday() -> None:
     assert eta4 == "2026-11-04"
 
 
+def test_compute_eta_defaults_to_nine_to_five_when_hours_unknown() -> None:
+    monday_8am = datetime(2026, 11, 2, 8, 0, tzinfo=UTC)
+    eta, finish = compute_eta(1.0, monday_8am, None)
+    assert eta == "2026-11-02"
+    assert (finish.hour, finish.minute) == (10, 0)
+
+
 def test_plan_prefix_stable_across_owners_and_times() -> None:
     item = {"id": "42", "title": "Fix export bug"}
     conv = [{"role": "user", "content": "Redis cache stampede on login"}]
