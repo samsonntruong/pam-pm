@@ -759,7 +759,14 @@ class ADOAdapter(PMAdapter):
             f"?api-version={COMMENTS_VERSION}"
         )
         data = self._request("GET", url)
-        values = data.get("value", []) if isinstance(data, dict) else []
+        if isinstance(data, dict):
+            values = data.get("comments")
+            if values is None:
+                values = data.get("value", [])
+        else:
+            values = []
+        if not isinstance(values, list):
+            values = []
         return [
             self._to_comment(item_id, entry)
             for entry in values
