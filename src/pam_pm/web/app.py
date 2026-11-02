@@ -57,6 +57,9 @@ from pam_pm.core.cost import CALLS_TABLE_DDL
 from pam_pm.core.writes import WriteService
 from pam_pm.models.vision import plan_from_photo
 
+_SLACK_POLLER: Any = None
+_SLACK_POLL_TASK: Any = None
+
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -413,6 +416,143 @@ def _remember_slack_event(event_id: str) -> bool:
         for old in list(_SEEN_SLACK_EVENT_IDS)[:500]:
             _SEEN_SLACK_EVENT_IDS.discard(old)
     return True
+
+
+def _slack_poller_event_id(envelope: dict[str, Any]) -> str:
+    """Return the poller style dedupe id for a webhook envelope, or blank."""
+    inner = envelope.get("event")
+    if not isinstance(inner, dict):
+        inner = envelope if isinstance(envelope, dict) else {}
+    if str(inner.get("type", "") or "") != "message":
+        return ""
+    channel = str(inner.get("channel", "") or "").strip()
+    ts = str(inner.get("ts", "") or inner.get("event_ts", "") or "").strip()
+    if not channel or not ts:
+        return ""
+    return f"slack:{channel}:{ts}"
+
+
+def slack_configured() -> bool:
+    """Return True when a Slack bot token is available."""
+    try:
+        tokens = secrets_mod.effective_slack_tokens()
+    except Exception:  # noqa: BLE001
+        tokens = {"bot_token": os.environ.get("SLACK_BOT_TOKEN", "")}
+    return bool(str(tokens.get("bot_token", "") or "").strip())
+
+
+def get_slack_poller(
+    project: str = "default", chat: Any = None, db: Any = None
+) -> Any | None:
+    """Return the shared Slack DM poller, creating it when configured.
+
+    The poller shares _remember_slack_event with the webhook route so
+    a message handled on one path never fires again on the other. An
+    explicitly passed chat (tests) skips the configured check.
+    """
+    global _SLACK_POLLER
+    if _SLACK_POLLER is not None:
+        return _SLACK_POLLER
+    use_chat = chat if chat is not None else get_chat_adapter(project)
+    if use_chat is None:
+        return None
+    if chat is None and not slack_configured():
+        return None
+    try:
+        from pam_pm.adapters.chat.slack_poll import SlackPoller
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        poller = SlackPoller(
+            source=use_chat,
+            db=db if db is not None else _db_path(),
+            bus=bus,
+            seen_hook=_remember_slack_event,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        attach = getattr(use_chat, "attach_poller", None)
+        if callable(attach):
+            attach(poller)
+    except Exception:  # noqa: BLE001
+        logger.info("slack poller attach skipped")
+    _SLACK_POLLER = poller
+    return poller
+
+
+def poll_slack_once(project: str = "default") -> list[Any]:
+    """Poll Slack DMs once through the attached adapter poller."""
+    poller = get_slack_poller(project)
+    if poller is None:
+        return []
+    try:
+        source = getattr(poller, "source", None)
+        adapter_poll = getattr(source, "poll_once", None)
+        if callable(adapter_poll):
+            return list(adapter_poll())
+        return list(poller.poll_once())
+    except Exception:  # noqa: BLE001
+        logger.info("slack poll_once failed, will retry next interval")
+        return []
+
+
+async def _slack_poll_loop(project: str = "default") -> None:
+    """Poll Slack DMs forever on the shared poll interval."""
+    while True:
+        try:
+            await asyncio.to_thread(poll_slack_once, project)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.info("slack poll loop failed, will retry")
+        await asyncio.sleep(max(5, _effective_poll_interval()))
+
+
+def start_slack_polling(project: str = "default") -> Any | None:
+    """Start the Slack DM poller and its background loop when configured."""
+    global _SLACK_POLL_TASK
+    poller = get_slack_poller(project)
+    if poller is None:
+        return None
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return poller
+    if _SLACK_POLL_TASK is None or _SLACK_POLL_TASK.done():
+        _SLACK_POLL_TASK = loop.create_task(_slack_poll_loop(project))
+    return poller
+
+
+def stop_slack_polling() -> None:
+    """Stop the Slack background loop and drop the shared poller."""
+    global _SLACK_POLL_TASK, _SLACK_POLLER
+    task = _SLACK_POLL_TASK
+    _SLACK_POLL_TASK = None
+    _SLACK_POLLER = None
+    if task is not None:
+        try:
+            task.cancel()
+        except Exception:  # noqa: BLE001
+            logger.info("slack poll task cancel skipped")
+
+
+@app.on_event("startup")
+async def _startup_slack_poll() -> None:
+    """Start Slack DM polling when Slack is configured."""
+    try:
+        start_slack_polling()
+    except Exception:  # noqa: BLE001
+        logger.info("slack poll startup skipped")
+
+
+@app.on_event("shutdown")
+async def _shutdown_slack_poll() -> None:
+    """Stop the Slack DM poller."""
+    try:
+        stop_slack_polling()
+    except Exception:  # noqa: BLE001
+        logger.info("slack poll shutdown skipped")
 
 
 _DEMO_BOARD: SQLiteBoard | None = None
@@ -3383,6 +3523,14 @@ async def slack_events_route(request: Request) -> Any:
     if event_id and event_id in _SEEN_SLACK_EVENT_IDS:
         logger.info("slack event duplicate ignored: event_id=%s", event_id)
         return {"ok": True, "duplicate": True}
+    poller_event_id = ""
+    try:
+        poller_event_id = _slack_poller_event_id(envelope)
+    except Exception:  # noqa: BLE001
+        poller_event_id = ""
+    if poller_event_id and poller_event_id in _SEEN_SLACK_EVENT_IDS:
+        logger.info("slack event duplicate ignored: poller_id=%s", poller_event_id)
+        return {"ok": True, "duplicate": True}
     chat = get_chat_adapter(project)
     if chat is None:
         return JSONResponse(
@@ -3401,6 +3549,8 @@ async def slack_events_route(request: Request) -> Any:
         )
     if event_id:
         _remember_slack_event(event_id)
+    if poller_event_id:
+        _remember_slack_event(poller_event_id)
     return {
         "ok": True,
         "kind": str(result.get("kind", "") or ""),
