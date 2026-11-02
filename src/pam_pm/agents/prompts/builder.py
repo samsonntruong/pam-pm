@@ -11,10 +11,18 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from pam_pm.agents.prompts.system import BLOCKER_SYSTEM, INTERVIEWER_SYSTEM
+from pam_pm.agents.prompts.system import (
+    BLOCKER_PLAN_SYSTEM,
+    BLOCKER_SYSTEM,
+    INTERVIEWER_SYSTEM,
+)
 from pam_pm.agents.prompts.tools import FINISH_INTERVIEW
 
-SYSTEM_PROMPTS = {"blocker": BLOCKER_SYSTEM, "interviewer": INTERVIEWER_SYSTEM}
+SYSTEM_PROMPTS = {
+    "blocker": BLOCKER_SYSTEM,
+    "blocker_plan": BLOCKER_PLAN_SYSTEM,
+    "interviewer": INTERVIEWER_SYSTEM,
+}
 
 # Shared default prompt. All parallel interviewers use the exact same system
 # prompt and tools; per-person detail lives in the messages, never here.

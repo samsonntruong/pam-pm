@@ -60,6 +60,10 @@ LINK_RELS = {
     "Dependency-Reverse",
     "System.LinkTypes.Dependency-Forward",
     "System.LinkTypes.Dependency-Reverse",
+    "Hierarchy-Forward",
+    "Hierarchy-Reverse",
+    "System.LinkTypes.Hierarchy-Forward",
+    "System.LinkTypes.Hierarchy-Reverse",
 }
 
 

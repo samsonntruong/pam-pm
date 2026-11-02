@@ -35,12 +35,18 @@ STATE_MAP = {
 
 DEPENDENCY_FORWARD = "System.LinkTypes.Dependency-Forward"
 DEPENDENCY_REVERSE = "System.LinkTypes.Dependency-Reverse"
+HIERARCHY_FORWARD = "System.LinkTypes.Hierarchy-Forward"
+HIERARCHY_REVERSE = "System.LinkTypes.Hierarchy-Reverse"
 
 _REL_ALIASES = {
     "Dependency-Forward": DEPENDENCY_FORWARD,
     "Dependency-Reverse": DEPENDENCY_REVERSE,
     DEPENDENCY_FORWARD: DEPENDENCY_FORWARD,
     DEPENDENCY_REVERSE: DEPENDENCY_REVERSE,
+    "Hierarchy-Forward": HIERARCHY_FORWARD,
+    "Hierarchy-Reverse": HIERARCHY_REVERSE,
+    HIERARCHY_FORWARD: HIERARCHY_FORWARD,
+    HIERARCHY_REVERSE: HIERARCHY_REVERSE,
 }
 
 FIELD_MAP = {
@@ -401,7 +407,12 @@ class ADOAdapter(PMAdapter):
             if not isinstance(entry, dict):
                 continue
             rel = str(entry.get("rel", ""))
-            if rel not in (DEPENDENCY_FORWARD, DEPENDENCY_REVERSE):
+            if rel not in (
+                DEPENDENCY_FORWARD,
+                DEPENDENCY_REVERSE,
+                HIERARCHY_FORWARD,
+                HIERARCHY_REVERSE,
+            ):
                 continue
             other = str(entry.get("url", "")).rstrip("/").rsplit("/", 1)[-1]
             if not other:
