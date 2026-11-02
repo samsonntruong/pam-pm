@@ -933,8 +933,11 @@ def _load_open_state(
         matches = [
             conv
             for conv in recovery_mod.list_open_conversations(db)
-            if str(conv.get("person", "") or "") in wants
-            or str(conv.get("person", "") or "").lower() in lowered
+            if not str(conv.get("thread_key", "") or "").startswith("blocker:")
+            and (
+                str(conv.get("person", "") or "") in wants
+                or str(conv.get("person", "") or "").lower() in lowered
+            )
         ]
     except Exception:  # noqa: BLE001
         return None
@@ -1078,6 +1081,414 @@ def _find_open_item_for(board: Any, candidates: list[str]) -> Any | None:
         if not closed:
             return item
     return None
+
+
+_BLOCKER_STOPWORDS = frozenset(
+    {
+        "i", "im", "m", "blocked", "blocker", "blockers", "blocking",
+        "cant", "cannot", "can", "not", "no", "the", "a", "an", "on",
+        "in", "is", "are", "was", "were", "be", "to", "for", "of",
+        "and", "or", "so", "it", "its", "this", "that", "with", "by",
+        "from", "as", "at", "my", "me", "we", "our", "you", "your",
+        "they", "their", "he", "she", "his", "her", "but", "if",
+        "then", "than", "too", "very", "just", "still", "already",
+        "finish", "finishing", "work", "working", "done", "get",
+        "got", "need", "needs", "s", "t", "d",
+    }
+)
+
+_BLOCKER_CONFIRM_PHRASES = (
+    "yes", "yeah", "yep", "confirm", "confirmed", "correct",
+    "right", "ok", "okay", "looks good", "sounds good",
+    "go ahead", "do it", "approved", "approve", "lgtm",
+)
+
+_BLOCKER_HEDGE_WORDS = ("but", "however", "instead", "change", "not yet", "wait")
+
+
+def _blocker_tokens(text: str) -> set[str]:
+    words = re.findall(r"[a-z0-9]+", (text or "").lower())
+    return {w for w in words if w not in _BLOCKER_STOPWORDS and len(w) > 1}
+
+
+def _title_score(title: str, report_tokens: set[str]) -> int:
+    if not report_tokens:
+        return 0
+    title_tokens = _blocker_tokens(title)
+    if not title_tokens:
+        return 0
+    return len(title_tokens & report_tokens)
+
+
+def _match_blocked_item(
+    report: str, candidates: list[str], board: Any, db: Any = None
+) -> Any | None:
+    if board is None:
+        return None
+    try:
+        items = list(board.list_items(limit=200) or [])
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        from pam_pm.adapters.pm.base import is_closed as _is_closed
+    except Exception:  # noqa: BLE001
+        _is_closed = None
+    wants = {str(e) for e in candidates if str(e)}
+    lowered = {str(e).lower() for e in candidates if str(e)}
+    mine: list[Any] = []
+    for item in items:
+        owner = _blocker_item_owner(item)
+        if owner not in wants and owner.lower() not in lowered:
+            continue
+        state = _blocker_item_state(item)
+        try:
+            closed = bool(_is_closed(state)) if _is_closed is not None else False
+        except Exception:  # noqa: BLE001
+            closed = False
+        if not closed:
+            mine.append(item)
+    if not mine:
+        return None
+    tokens = _blocker_tokens(report)
+    best: Any | None = None
+    best_score = 0
+    for item in mine:
+        score = _title_score(_blocker_item_title(item), tokens)
+        if score > best_score:
+            best_score = score
+            best = item
+    if best is not None and best_score > 0:
+        return best
+    if db is not None:
+        try:
+            from pam_pm.core import recovery as recovery_mod
+
+            for cand in candidates:
+                latest = recovery_mod.load_latest_for_person(db, cand)
+                if not latest:
+                    continue
+                want_id = str(latest.get("item_id", "") or "")
+                for item in mine:
+                    if want_id and _blocker_item_id(item) == want_id:
+                        return item
+        except Exception:  # noqa: BLE001, S110
+            pass
+    return mine[0]
+
+
+def _match_blocking_item(
+    report: str, board: Any, blocked_id: str, reporter_candidates: list[str]
+) -> Any | None:
+    if board is None:
+        return None
+    try:
+        items = list(board.list_items(limit=200) or [])
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        from pam_pm.adapters.pm.base import is_closed as _is_closed
+    except Exception:  # noqa: BLE001
+        _is_closed = None
+    wants = {str(e) for e in reporter_candidates if str(e)}
+    lowered = {str(e).lower() for e in reporter_candidates if str(e)}
+    tokens = _blocker_tokens(report)
+    best_other: Any | None = None
+    best_other_score = 0
+    best_mine: Any | None = None
+    best_mine_score = 0
+    for item in items:
+        item_id = _blocker_item_id(item)
+        if blocked_id and item_id == blocked_id:
+            continue
+        state = _blocker_item_state(item)
+        try:
+            closed = bool(_is_closed(state)) if _is_closed is not None else False
+        except Exception:  # noqa: BLE001
+            closed = False
+        if closed:
+            continue
+        score = _title_score(_blocker_item_title(item), tokens)
+        if score <= 0:
+            continue
+        owner = _blocker_item_owner(item)
+        is_mine = owner in wants or owner.lower() in lowered
+        if is_mine:
+            if score > best_mine_score:
+                best_mine_score = score
+                best_mine = item
+        else:
+            if score > best_other_score:
+                best_other_score = score
+                best_other = item
+    if best_other is not None:
+        return best_other
+    return best_mine
+
+
+def _has_checkin_history(db: Any, candidates: list[str]) -> bool:
+    if db is None:
+        return False
+    try:
+        from pam_pm.core import recovery as recovery_mod
+
+        for cand in candidates:
+            if recovery_mod.load_latest_for_person(db, cand) is not None:
+                return True
+        wants = {str(e) for e in candidates if str(e)}
+        lowered = {str(e).lower() for e in candidates if str(e)}
+        for conv in recovery_mod.list_open_conversations(db):
+            person = str(conv.get("person", "") or "")
+            if person in wants or person.lower() in lowered:
+                return True
+    except Exception:  # noqa: BLE001
+        return False
+    return False
+
+
+def _pending_blocker_key(person_id: str) -> str:
+    from pam_pm.core import recovery as recovery_mod
+
+    return recovery_mod.thread_key(str(person_id), "pending", kind="blocker")
+
+
+def _load_pending_blocker(
+    db: Any, person_id: str, chat: Any = None
+) -> dict[str, Any] | None:
+    if db is None:
+        return None
+    try:
+        from pam_pm.core import recovery as recovery_mod
+
+        for cand in _candidate_identities(chat, person_id):
+            key = recovery_mod.thread_key(str(cand), "pending", kind="blocker")
+            conv = recovery_mod.load_conversation(db, key)
+            if conv is None or str(conv.get("status", "")) != "open":
+                continue
+            turns = conv.get("turns", []) or []
+            for turn in turns:
+                if not isinstance(turn, dict):
+                    continue
+                content = str(turn.get("content", "") or "")
+                if not content.strip().startswith("{"):
+                    continue
+                try:
+                    data = json.loads(content)
+                except ValueError:
+                    continue
+                if isinstance(data, dict) and data.get("pending_blocker"):
+                    data["_thread_key"] = key
+                    data["_person"] = str(conv.get("person", "") or cand)
+                    return data
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def _save_pending_blocker(
+    db: Any, person_id: str, pending: dict[str, Any]
+) -> None:
+    if db is None:
+        return
+    try:
+        from pam_pm.core import recovery as recovery_mod
+
+        key = _pending_blocker_key(person_id)
+        body = dict(pending)
+        body["pending_blocker"] = True
+        recovery_mod.save_conversation(
+            db, key, str(person_id), str(body.get("blocked_id", "") or "pending"),
+            [{"role": "system", "content": json.dumps(body)}], "", "open",
+        )
+    except Exception:  # noqa: BLE001, S110
+        pass
+
+
+def _clear_pending_blocker(db: Any, person_id: str, chat: Any = None) -> None:
+    if db is None:
+        return
+    try:
+        from pam_pm.core import recovery as recovery_mod
+
+        keys = {_pending_blocker_key(person_id)}
+        for cand in _candidate_identities(chat, person_id):
+            keys.add(recovery_mod.thread_key(str(cand), "pending", kind="blocker"))
+        for key in keys:
+            conv = recovery_mod.load_conversation(db, key)
+            if conv is None:
+                continue
+            recovery_mod.save_conversation(
+                db, key, str(conv.get("person", "") or person_id),
+                str(conv.get("item_id", "") or "pending"),
+                list(conv.get("turns", []) or []), str(conv.get("last_seen", "") or ""),
+                "finished",
+            )
+    except Exception:  # noqa: BLE001, S110
+        pass
+
+
+def _is_blocker_confirmed(text: str) -> bool:
+    lowered = (text or "").lower()
+    if not lowered.strip():
+        return False
+    if not any(p in lowered for p in _BLOCKER_CONFIRM_PHRASES):
+        return False
+    if any(h in lowered for h in ("but", "however", "instead", "not yet", "wait")):
+        return False
+    return not (
+        re.search(r"\bno\b|\bnot\b", lowered) and "not sure" not in lowered
+    )
+
+
+def _handle_blocker_clarify(
+    person_id: str, answer: str, chat: Any, board: Any, db: Any,
+    candidates: list[str],
+) -> dict[str, Any]:
+    report = answer.strip()[:500]
+    blocked = _match_blocked_item(answer, candidates, board, db)
+    blocked_id = _blocker_item_id(blocked) if blocked is not None else ""
+    blocked_title = (
+        _blocker_item_title(blocked) if blocked is not None
+        else f"Blocked work for {person_id}"
+    )
+    blocking = _match_blocking_item(answer, board, blocked_id, candidates)
+    blocking_id = _blocker_item_id(blocking) if blocking is not None else ""
+    blocking_title = (
+        _blocker_item_title(blocking) if blocking is not None
+        else f"Blocking: {answer.strip()[:60]}" if answer.strip()
+        else "Blocking item"
+    )
+    question = (
+        f"Looks like '{blocked_title}' is blocked by '{blocking_title}'. "
+        "Is that right?"
+    )
+    try:
+        mid = str(chat.send_dm(person_id, normalize_followup_spacing(question)) or "")
+    except Exception:  # noqa: BLE001
+        mid = ""
+    _save_pending_blocker(db, person_id, {
+        "blocked_id": blocked_id, "blocked_title": blocked_title,
+        "blocking_id": blocking_id, "blocking_title": blocking_title,
+        "report": report,
+    })
+    return {
+        "kind": "blocker_clarify", "replied": bool(mid), "person": person_id,
+        "item_id": blocked_id, "blocking_item_id": blocking_id,
+        "blocked_title": blocked_title, "blocking_title": blocking_title,
+        "message_id": mid, "question": question,
+    }
+
+
+def _handle_blocker_confirmation(
+    person_id: str, answer: str, chat: Any, board: Any, db: Any,
+    pending: dict[str, Any],
+) -> dict[str, Any]:
+    if not _is_blocker_confirmed(answer):
+        _clear_pending_blocker(db, pending.get("_person", person_id))
+        try:
+            mid = str(chat.send_dm(
+                person_id, normalize_followup_spacing(
+                    "Okay, I will not link this yet. "
+                    "Tell me what is blocked and what blocks it."
+                )) or "")
+        except Exception:  # noqa: BLE001
+            mid = ""
+        return {
+            "kind": "blocker_declined", "replied": bool(mid),
+            "person": person_id, "message_id": mid,
+        }
+    report = str(pending.get("report", "") or answer.strip())[:500] or "blocker intake"
+    blocked_id = str(pending.get("blocked_id", "") or "")
+    blocking_id = str(pending.get("blocking_id", "") or "")
+    blocked_title = str(pending.get("blocked_title", "") or "")
+    blocking_title = str(pending.get("blocking_title", "") or "")
+    if not blocked_id and board is not None:
+        try:
+            created = board.create_item(
+                blocked_title or f"Blocked work for {person_id}",
+                {"assigned_to": person_id},
+            )
+            blocked_id = _blocker_item_id(created)
+            blocked_title = _blocker_item_title(created)
+        except Exception:  # noqa: BLE001
+            blocked_id = ""
+    if not blocking_id and board is not None:
+        try:
+            raw_states = board.list_states() or []
+            states = [str(e) for e in raw_states if str(e)]
+            created = board.create_item(
+                blocking_title or "Blocking item",
+                {"state": states[0] if states else "To Do"},
+            )
+            blocking_id = _blocker_item_id(created)
+            blocking_title = _blocker_item_title(created)
+        except Exception:  # noqa: BLE001
+            blocking_id = ""
+    if board is not None and blocked_id:
+        try:
+            current = board.get_item(blocked_id)
+            fields = current.get("fields", {}) if isinstance(current, dict) else getattr(current, "fields", {})
+            tags = list((fields or {}).get("tags", []) or [])
+            if "blocked" not in [str(t).lower() for t in tags]:
+                tags.append("blocked")
+            board.update_item(blocked_id, {"tags": tags})
+        except Exception:  # noqa: BLE001, S110
+            pass
+        try:
+            add_comment = getattr(board, "add_comment", None)
+            if callable(add_comment):
+                add_comment(blocked_id, f"Blocker reported: {report}", author="Pam")
+        except Exception:  # noqa: BLE001, S110
+            pass
+    link: Any = None
+    if board is not None and blocked_id and blocking_id:
+        try:
+            link = board.add_link(blocking_id, blocked_id, _BLOCKER_LINK_REL)
+        except Exception:  # noqa: BLE001
+            link = None
+    if db is not None and blocked_id:
+        try:
+            from pam_pm.core.writes import WriteService
+
+            service = WriteService(db, dry_run=True)
+            service.propose({
+                "operation": "add_link", "item_id": blocked_id,
+                "evidence_quote": report, "status": "proposed",
+                "detail": f"Predecessor {blocking_id} Successor {blocked_id}",
+            })
+        except Exception:  # noqa: BLE001, S110
+            pass
+    try:
+        link_mid = str(chat.send_dm(
+            person_id, normalize_followup_spacing(
+                f"Linked '{blocked_title}' as blocked by '{blocking_title}'."
+            )) or "")
+    except Exception:  # noqa: BLE001
+        link_mid = ""
+    plan_out: dict[str, Any] = {}
+    if board is not None and blocking_id:
+        try:
+            blocking_item: Any = board.get_item(blocking_id)
+        except Exception:  # noqa: BLE001
+            blocking_item = None
+        owner = _blocker_item_owner(blocking_item) if blocking_item is not None else ""
+        if owner:
+            try:
+                from pam_pm.rules.templates.blocker_plan import blocker_action_plan
+
+                plan_out = blocker_action_plan(
+                    owner, person_id, chat, board, None, db=db,
+                    blocking_item_id=blocking_id, blocked_item_id=blocked_id,
+                )
+            except Exception:  # noqa: BLE001
+                plan_out = {}
+    _clear_pending_blocker(db, pending.get("_person", person_id))
+    return {
+        "kind": "blocker_linked", "replied": True, "person": person_id,
+        "item_id": blocked_id, "blocking_item_id": blocking_id,
+        "blocked_title": blocked_title, "blocking_title": blocking_title,
+        "message_id": link_mid, "link": link, "plan": plan_out,
+        "eta": str(plan_out.get("eta", "") or "") if plan_out else "",
+    }
 
 
 def _handle_blocker_without_state(
@@ -1226,6 +1637,12 @@ def resume_interview(
     person_id = _person_id(person)
     answer = str(answer_text or "").strip()
     marker = str(message_id or "").strip()
+    if answer:
+        early_pending = _load_pending_blocker(db, person_id, chat)
+        if early_pending is not None:
+            return _handle_blocker_confirmation(
+                person_id, answer, chat, board, db, early_pending
+            )
 
     def _send(text: str) -> str:
         try:
@@ -1256,14 +1673,19 @@ def resume_interview(
                     "person": person_id,
                     "item_id": str((latest or {}).get("item_id", "") or ""),
                 }
+        pending = _load_pending_blocker(db, person_id, chat)
+        if pending is not None:
+            return _handle_blocker_confirmation(
+                person_id, answer, chat, board, db, pending
+            )
         if _looks_like_blocker(answer):
+            candidates = _candidate_identities(chat, person_id)
+            if _has_checkin_history(db, candidates):
+                return _handle_blocker_clarify(
+                    person_id, answer, chat, board, db, candidates
+                )
             return _handle_blocker_without_state(
-                person_id,
-                answer,
-                chat,
-                board,
-                db,
-                _candidate_identities(chat, person_id),
+                person_id, answer, chat, board, db, candidates,
             )
         mid = _send(NO_OPEN_STATE_REPLY)
         return {

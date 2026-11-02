@@ -211,10 +211,26 @@ def blocker_intake(
     if blocked_item_id:
         blocked = board.get_item(blocked_item_id)
     else:
+        report_text = " ".join([a for a in (what, who, impact) if a])
+        report_tokens = {
+            w for w in report_text.lower().replace("'", " ").split() if len(w) > 2
+        }
+        owned: list[Any] = []
         for cand in board.list_items(limit=200):
             if _owner_of(cand) == reporter:
+                owned.append(cand)
+        best_score = 0
+        for cand in owned:
+            title_tokens = {
+                w for w in _item_title(cand).lower().replace("'", " ").split()
+                if len(w) > 2
+            }
+            score = len(title_tokens & report_tokens)
+            if score > best_score:
+                best_score = score
                 blocked = cand
-                break
+        if blocked is None and owned:
+            blocked = owned[0]
         if blocked is None:
             blocked = board.create_item(
                 f"Blocked work for {reporter}",
