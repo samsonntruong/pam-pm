@@ -100,9 +100,7 @@ def extract_usage(payload: dict[str, Any]) -> tuple[int, int, int, int]:
     if not isinstance(usage, dict):
         return 0, 0, 0, 0
     prompt = _as_int(usage.get("prompt_tokens", usage.get("input_tokens", 0)))
-    completion = _as_int(
-        usage.get("completion_tokens", usage.get("output_tokens", 0))
-    )
+    completion = _as_int(usage.get("completion_tokens", usage.get("output_tokens", 0)))
     cached = 0
     for key in ("prompt_tokens_details", "input_tokens_details"):
         details = usage.get(key, {})
@@ -136,9 +134,11 @@ def mask_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     parts.append(part)
                     continue
                 one = dict(part)
-                if one.get("type") in ("text", "input_text") and isinstance(
-                    one.get("text"), str
-                ):
+                if one.get("type") in (
+                    "text",
+                    "input_text",
+                    "output_text",
+                ) and isinstance(one.get("text"), str):
                     one["text"] = mask_text(str(one["text"]))
                 parts.append(one)
             item["content"] = parts
@@ -202,9 +202,7 @@ class ModelClient:
         ).strip()
         self._api_key = (
             api_key
-            or _cfg_value(
-                config, "api_key", "meta_api_key", "META_API_KEY"
-            )
+            or _cfg_value(config, "api_key", "meta_api_key", "META_API_KEY")
             or os.environ.get("META_API_KEY", "")
         ).strip()
         cfg_tokens = _cfg_value(config, "max_tokens", "META_MAX_TOKENS")
@@ -258,19 +256,21 @@ class ModelClient:
     ) -> dict[str, Any]:
         items: list[dict[str, Any]] = []
         for msg in messages:
+            role = str(msg.get("role", "user"))
+            text_kind = "output_text" if role == "assistant" else "input_text"
             content = msg.get("content", "")
             parts: list[dict[str, Any]] = []
             if isinstance(content, str):
-                parts.append({"type": "input_text", "text": content})
+                parts.append({"type": text_kind, "text": content})
             elif isinstance(content, list):
                 for part in content:
                     if not isinstance(part, dict):
                         continue
                     kind = part.get("type")
-                    if kind in ("text", "input_text"):
+                    if kind in ("text", "input_text", "output_text"):
                         parts.append(
                             {
-                                "type": "input_text",
+                                "type": text_kind,
                                 "text": str(part.get("text", "")),
                             }
                         )
@@ -281,9 +281,7 @@ class ModelClient:
                             if isinstance(inner, dict)
                             else str(inner)
                         )
-                        parts.append(
-                            {"type": "input_image", "image_url": url}
-                        )
+                        parts.append({"type": "input_image", "image_url": url})
                     elif kind == "input_image":
                         parts.append(
                             {
@@ -291,9 +289,7 @@ class ModelClient:
                                 "image_url": str(part.get("image_url", "")),
                             }
                         )
-            items.append(
-                {"role": str(msg.get("role", "user")), "content": parts}
-            )
+            items.append({"role": str(msg.get("role", "user")), "content": parts})
         payload: dict[str, Any] = {
             "model": self.model,
             "input": items,
@@ -342,9 +338,7 @@ class ModelClient:
         try:
             resp = self._http().post(url, json=payload)
         except httpx.HTTPError as exc:
-            raise ModelClientError(
-                self._redact(f"request failed: {exc}")
-            ) from exc
+            raise ModelClientError(self._redact(f"request failed: {exc}")) from exc
         try:
             data = resp.json()
         except ValueError:
@@ -422,9 +416,7 @@ class ModelClient:
         content = msg.get("content", "")
         if isinstance(content, list):
             text = "".join(
-                str(p.get("text", ""))
-                for p in content
-                if isinstance(p, dict)
+                str(p.get("text", "")) for p in content if isinstance(p, dict)
             )
         else:
             text = str(content or "")
@@ -501,4 +493,6 @@ class ModelClient:
         if system:
             msgs.append({"role": "system", "content": system})
         msgs.append({"role": "user", "content": prompt})
-        return self.chat(msgs, tools=tools, max_tokens=max_tokens, capability=capability)
+        return self.chat(
+            msgs, tools=tools, max_tokens=max_tokens, capability=capability
+        )

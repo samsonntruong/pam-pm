@@ -29,9 +29,7 @@ SYSTEM_PROMPTS = {
 SYSTEM_PROMPT = INTERVIEWER_SYSTEM
 
 # Built once at import with sorted keys and reused byte for byte.
-TOOLS: list[dict[str, Any]] = [
-    json.loads(json.dumps(FINISH_INTERVIEW, sort_keys=True))
-]
+TOOLS: list[dict[str, Any]] = [json.loads(json.dumps(FINISH_INTERVIEW, sort_keys=True))]
 
 VOLATILE_HEADER = "Live context (refreshes every call, never cached):"
 
@@ -45,6 +43,39 @@ def _render_volatile(volatile: Mapping[str, Any] | str) -> str:
     return VOLATILE_HEADER + "\n" + "\n".join(lines)
 
 
+def _normalize_turn(turn: Mapping[str, Any]) -> dict[str, Any]:
+    """Copy one turn, shaping assistant text for the Responses API.
+
+    The Meta Responses API rejects input_text on assistant messages,
+    so assistant text is emitted as output_text parts. All other
+    roles keep their content untouched (plain strings stay strings
+    so prefix stability and chat fallback are unchanged).
+    """
+    item = dict(turn)
+    if str(item.get("role", "")) != "assistant":
+        content = item.get("content")
+        if isinstance(content, list):
+            item["content"] = [dict(p) if isinstance(p, dict) else p for p in content]
+        return item
+    content = item.get("content", "")
+    if isinstance(content, str):
+        item["content"] = [{"type": "output_text", "text": content}]
+        return item
+    if isinstance(content, list):
+        parts: list[Any] = []
+        for part in content:
+            if not isinstance(part, dict):
+                parts.append(part)
+                continue
+            one = dict(part)
+            if one.get("type") in ("text", "input_text"):
+                one["type"] = "output_text"
+            parts.append(one)
+        item["content"] = parts
+        return item
+    return item
+
+
 def build_messages(
     role: str,
     project_context: str,
@@ -54,14 +85,16 @@ def build_messages(
     """Assemble the request payload with a stable prefix.
 
     Unknown roles fall back to the shared SYSTEM_PROMPT. Conversation
-    entries are copied in order and never edited, reordered, or compacted.
+    entries are copied in order and never reordered or compacted.
+    Assistant turns are reshaped to output_text parts for the Meta
+    Responses API; other roles pass through untouched.
     """
     system = SYSTEM_PROMPTS.get(role, SYSTEM_PROMPT)
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system},
         {"role": "user", "content": project_context},
     ]
-    messages.extend(dict(turn) for turn in conversation)
+    messages.extend(_normalize_turn(turn) for turn in conversation)
     if volatile is not None:
         messages.append({"role": "user", "content": _render_volatile(volatile)})
     return {"messages": messages, "tools": TOOLS}
