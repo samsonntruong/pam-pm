@@ -220,6 +220,34 @@ def load_conversation(db: DbLike, key: str) -> dict[str, Any] | None:
     }
 
 
+def load_latest_for_person(db: DbLike, person: str) -> dict[str, Any] | None:
+    _ensure(db)
+    with _connect(db) as conn:
+        row = conn.execute(
+            "SELECT thread_key, person, item_id, turns_json, last_seen, status,"
+            " updated_at FROM conversations WHERE person = ?"
+            " ORDER BY rowid DESC LIMIT 1",
+            (str(person or ""),),
+        ).fetchone()
+    if row is None:
+        return None
+    try:
+        turns = json.loads(row[3] or "[]")
+    except ValueError:
+        turns = []
+    if not isinstance(turns, list):
+        turns = []
+    return {
+        "thread_key": str(row[0]),
+        "person": str(row[1] or ""),
+        "item_id": str(row[2] or ""),
+        "turns": turns,
+        "last_seen": str(row[4] or ""),
+        "status": str(row[5] or ""),
+        "updated_at": str(row[6] or ""),
+    }
+
+
 def list_open_conversations(db: DbLike) -> list[dict[str, Any]]:
     _ensure(db)
     with _connect(db) as conn:

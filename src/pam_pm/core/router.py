@@ -277,6 +277,8 @@ def handle_slack_event(
     segmenter: Any = None,
     provider: str = "meta",
     event_sink: Any = None,
+    db: Any = None,
+    model_client: Any = None,
 ) -> dict[str, Any]:
     """Route a Slack event: file shares flow to the planner automatically.
 
@@ -330,8 +332,14 @@ def handle_slack_event(
         if not channel:
             channel = str(inner.get("user", "") or "")
         if not file_id:
-            logger.info("slack event ignored: message without files")
-            return {"kind": "ignored", "replied": False}
+            return _handle_slack_text_message(
+                payload,
+                inner,
+                chat=chat,
+                board=board,
+                db=db,
+                model_client=model_client,
+            )
     else:
         logger.info("slack event ignored: type=%s", kind or "none")
         return {"kind": "ignored", "replied": False}
@@ -365,6 +373,69 @@ def handle_slack_event(
     result["file_id"] = file_id
     result["channel"] = channel
     return result
+
+
+def _handle_slack_text_message(
+    payload: dict[str, Any],
+    inner: dict[str, Any],
+    *,
+    chat: Any,
+    board: Any,
+    db: Any,
+    model_client: Any,
+) -> dict[str, Any]:
+    """Resume an open interview from a Slack text message, else ignore.
+
+    Bot and system messages are ignored. A user message resumes the
+    newest open interview for that person when a database and a model
+    client are available; without them the message is ignored exactly
+    as before, so file flows and existing callers are unchanged.
+    """
+    subtype = str(inner.get("subtype", "") or "").strip()
+    if subtype in ("bot_message", "message_changed", "message_deleted"):
+        logger.info("slack event ignored: subtype=%s", subtype or "none")
+        return {"kind": "ignored", "replied": False}
+    user = str(inner.get("user", "") or "").strip()
+    if inner.get("bot_id") and not user:
+        logger.info("slack event ignored: bot message")
+        return {"kind": "ignored", "replied": False}
+    text = str(inner.get("text", "") or "")
+    channel = str(inner.get("channel", "") or "").strip()
+    person = user or channel
+    if not text.strip() or not person or chat is None:
+        logger.info("slack event ignored: message without files")
+        return {"kind": "ignored", "replied": False}
+    if db is None or model_client is None:
+        logger.info("slack event ignored: interview resume not configured")
+        return {"kind": "ignored", "replied": False}
+    marker = str(
+        inner.get("ts", "")
+        or inner.get("client_msg_id", "")
+        or payload.get("event_id", "")
+        or ""
+    ).strip()
+    from pam_pm.agents import interviewer as interviewer_mod
+
+    try:
+        outcome = interviewer_mod.resume_interview(
+            person, text, chat, board, model_client, db=db, message_id=marker
+        )
+    except Exception:  # noqa: BLE001
+        logger.info("slack resume failed, keeping local result")
+        return {"kind": "ignored", "replied": False}
+    kinds = {
+        "reply": "interview_reply",
+        "finished": "interview_finished",
+        "no_open_state": "interview_no_state",
+        "duplicate": "interview_duplicate",
+    }
+    return {
+        "kind": kinds.get(str(outcome.get("kind", "") or ""), "interview_resume"),
+        "replied": bool(outcome.get("replied", False)),
+        "person": person,
+        "item_id": str(outcome.get("item_id", "") or ""),
+        "resume": outcome,
+    }
 
 
 def _teams_graph_fields(event: dict[str, Any]) -> dict[str, Any]:

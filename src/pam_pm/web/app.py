@@ -462,12 +462,38 @@ def get_slack_poller(
         from pam_pm.adapters.chat.slack_poll import SlackPoller
     except Exception:  # noqa: BLE001
         return None
+    poll_db = db if db is not None else _db_path()
+
+    def _resume_polled(message: Any) -> None:
+        try:
+            router_mod.handle_slack_event(
+                {
+                    "type": "message",
+                    "channel": str(getattr(message, "user_id", "") or ""),
+                    "user": str(getattr(message, "user_id", "") or ""),
+                    "text": str(getattr(message, "text", "") or ""),
+                    "ts": str(
+                        getattr(message, "ts", "")
+                        or getattr(message, "id", "")
+                        or ""
+                    ),
+                },
+                chat=use_chat,
+                board=get_board_adapter(project),
+                db=poll_db,
+                model_client=_resume_model_client(project),
+                event_sink=bus.publish,
+            )
+        except Exception:  # noqa: BLE001
+            logger.info("slack poll resume failed, keeping local result")
+
     try:
         poller = SlackPoller(
             source=use_chat,
-            db=db if db is not None else _db_path(),
+            db=poll_db,
             bus=bus,
             seen_hook=_remember_slack_event,
+            on_message=_resume_polled,
         )
     except Exception:  # noqa: BLE001
         return None
@@ -3496,6 +3522,22 @@ async def save_setup_slack(request: Request) -> Any:
     return {"ok": True, "project": project, "slack": saved}
 
 
+def _resume_model_client(project: str) -> Any | None:
+    """Return the model client for interview resume, if one is usable."""
+    model = get_model_client(project)
+    if model is not None:
+        return model
+    try:
+        from pam_pm.models.client import ModelClient
+
+        candidate = ModelClient()
+        if candidate.model and candidate.base_url and candidate._api_key:
+            return candidate
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
 @app.post("/api/slack/events")
 async def slack_events_route(request: Request) -> Any:
     """Accept Slack Events API envelopes and route them to the planner.
@@ -3539,7 +3581,12 @@ async def slack_events_route(request: Request) -> Any:
     board = get_board_adapter(project)
     try:
         result = router_mod.handle_slack_event(
-            envelope, chat=chat, board=board, event_sink=bus.publish
+            envelope,
+            chat=chat,
+            board=board,
+            event_sink=bus.publish,
+            db=_db_path(),
+            model_client=_resume_model_client(project),
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("slack event failed: %s", exc)

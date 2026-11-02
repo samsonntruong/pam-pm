@@ -214,9 +214,12 @@ def morning_checkin(
     if roster is None and not by_person:
         return {}
     agent = interviewer or Interviewer()
+    run_db = db
+    if run_db is None and isinstance(project, dict):
+        run_db = project.get("db")
     out: dict[str, Any] = {}
     for person, owned in by_person.items():
-        raw = agent.run(person, owned, chat, board, model)
+        raw = agent.run(person, owned, chat, board, model, db=run_db)
         if isinstance(raw, dict):
             results = dict(raw)
         else:

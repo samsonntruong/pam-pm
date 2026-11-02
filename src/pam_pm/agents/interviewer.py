@@ -363,6 +363,272 @@ def _safe_board_update(board: Any, item_id: str, result: InterviewResult) -> Non
         return
 
 
+FINISHED_STATUS = "finished"
+
+NO_OPEN_STATE_REPLY = (
+    "Thanks for the update. I have no open check-in for you right now, "
+    "so I did not record anything. Your next check-in will pick this up."
+)
+
+
+def _save_interview_state(
+    db: Any,
+    person_id: str,
+    item_id: str,
+    turns: list[dict[str, Any]],
+    last_seen: str = "",
+    status: str = "open",
+) -> None:
+    """Persist interview turns through the durable conversations path."""
+    if db is None:
+        return
+    try:
+        from pam_pm.core import recovery as recovery_mod
+
+        key = recovery_mod.thread_key(str(person_id), str(item_id))
+        recovery_mod.save_conversation(
+            db,
+            key,
+            str(person_id),
+            str(item_id),
+            [dict(turn) for turn in (turns or [])],
+            str(last_seen or ""),
+            str(status or "open"),
+        )
+    except Exception:  # noqa: BLE001
+        return
+
+
+def _load_open_state(db: Any, person_id: str) -> dict[str, Any] | None:
+    """Return the newest open interview state for a person, or None."""
+    if db is None:
+        return None
+    try:
+        from pam_pm.core import recovery as recovery_mod
+
+        want = str(person_id or "")
+        matches = [
+            conv
+            for conv in recovery_mod.list_open_conversations(db)
+            if str(conv.get("person", "") or "") == want
+        ]
+    except Exception:  # noqa: BLE001
+        return None
+    if not matches:
+        return None
+    return matches[-1]
+
+
+def _call_model_once(
+    model_client: Any,
+    project_context: str,
+    conversation: list[dict[str, Any]],
+    volatile: dict[str, Any],
+) -> Any:
+    payload = build_messages(
+        "interviewer", project_context, conversation, volatile
+    )
+    try:
+        return model_client.chat(
+            payload["messages"], tools=payload["tools"]
+        )
+    except TypeError:
+        return model_client.chat(payload["messages"], payload["tools"])
+
+
+def _capture_resume_memory(
+    db: Any, person_id: str, conversation: list[dict[str, Any]]
+) -> None:
+    if db is None:
+        return
+    try:
+        from pam_pm.core import memory as memory_mod
+
+        said = [
+            str(turn.get("content", ""))
+            for turn in conversation
+            if turn.get("role") == "user"
+            and str(turn.get("content", "")).strip()
+            and not str(turn.get("content", "")).startswith(
+                ("Reminder:", "Extract ")
+            )
+        ]
+        memory_mod.capture_interview(db, person_id, said, source="interview")
+    except Exception:  # noqa: BLE001
+        return
+
+
+def resume_interview(
+    person: Any,
+    answer_text: Any,
+    chat: Any,
+    board: Any,
+    model_client: Any,
+    *,
+    db: Any = None,
+    message_id: str = "",
+    max_turns: int = MAX_TURNS,
+) -> dict[str, Any]:
+    """Resume one open interview with a late answer, running one model step.
+
+    Loads the newest open state for the person, appends the answer, and
+    runs one model step over the full stored history. Pushback, vague
+    detection, result coercion, and the board write reuse the same
+    internals as the synchronous run. A follow-up question updates the
+    stored state; a finish writes the board with evidence and closes
+    the state. A repeated message id is a duplicate and stays quiet.
+    With no open state, sends one polite fallback instead of crashing.
+    """
+    person_id = _person_id(person)
+    answer = str(answer_text or "").strip()
+    marker = str(message_id or "").strip()
+
+    def _send(text: str) -> str:
+        try:
+            return str(chat.send_dm(person_id, text) or "")
+        except Exception:  # noqa: BLE001
+            return ""
+
+    if not answer:
+        return {"kind": "ignored", "replied": False, "person": person_id}
+    state = _load_open_state(db, person_id)
+    if state is None:
+        if marker and db is not None:
+            try:
+                from pam_pm.core import recovery as recovery_mod
+
+                latest = recovery_mod.load_latest_for_person(db, person_id)
+            except Exception:  # noqa: BLE001
+                latest = None
+            seen = str((latest or {}).get("last_seen", "") or "")
+            if seen and marker <= seen:
+                return {
+                    "kind": "duplicate",
+                    "replied": False,
+                    "person": person_id,
+                    "item_id": str((latest or {}).get("item_id", "") or ""),
+                }
+        mid = _send(NO_OPEN_STATE_REPLY)
+        return {
+            "kind": "no_open_state",
+            "replied": bool(mid),
+            "person": person_id,
+            "message_id": mid,
+        }
+    item_id = str(state.get("item_id", "") or "item")
+    last_seen = str(state.get("last_seen", "") or "")
+    if marker and last_seen and marker <= last_seen:
+        return {
+            "kind": "duplicate",
+            "replied": False,
+            "person": person_id,
+            "item_id": item_id,
+        }
+    stored = state.get("turns", [])
+    conversation = [dict(turn) for turn in stored if isinstance(turn, dict)]
+    conversation.append({"role": "user", "content": answer})
+    asked = sum(1 for turn in conversation if turn.get("role") == "assistant")
+    project_context = f"Project standup. Items:\n- {item_id}: {item_id} []"
+    volatile = {
+        "item_id": item_id,
+        "person": person_id,
+        "turn": asked,
+        "phase": "resume",
+    }
+    try:
+        raw = _call_model_once(
+            model_client, project_context, conversation, volatile
+        )
+    except Exception:  # noqa: BLE001
+        _save_interview_state(db, person_id, item_id, conversation, marker)
+        return {
+            "kind": "model_error",
+            "replied": False,
+            "person": person_id,
+            "item_id": item_id,
+        }
+    text, tool_calls = _parse_model_result(raw)
+    finish_args = _find_finish(tool_calls)
+    if finish_args is not None:
+        try:
+            candidate = _coerce_result(finish_args, conversation)
+        except Exception:  # noqa: BLE001
+            candidate = None
+        if candidate is not None:
+            last_user = _last_user_text(conversation)
+            needs_pushback = (
+                last_user is not None
+                and is_vague(last_user)
+                and (candidate.remaining is None or candidate.eta is None)
+            )
+            if not needs_pushback:
+                _safe_board_update(board, item_id, candidate)
+                _save_interview_state(
+                    db, person_id, item_id, conversation, marker,
+                    status=FINISHED_STATUS,
+                )
+                _capture_resume_memory(db, person_id, conversation)
+                status = str(candidate.status or "").strip().replace("\n", " ")
+                mid = _send(f"Thanks. I recorded this for {item_id}: {status}")
+                return {
+                    "kind": "finished",
+                    "replied": bool(mid),
+                    "person": person_id,
+                    "item_id": item_id,
+                    "message_id": mid,
+                    "result": candidate,
+                }
+            text = ""
+    if asked >= max_turns:
+        result = _build_fallback_result(conversation)
+        _safe_board_update(board, item_id, result)
+        _save_interview_state(
+            db, person_id, item_id, conversation, marker,
+            status=FINISHED_STATUS,
+        )
+        _capture_resume_memory(db, person_id, conversation)
+        mid = _send(f"Thanks. I recorded this for {item_id}: {result.status}")
+        return {
+            "kind": "finished",
+            "replied": bool(mid),
+            "person": person_id,
+            "item_id": item_id,
+            "message_id": mid,
+            "result": result,
+            "turn_cap": True,
+        }
+    item = {"id": item_id, "title": item_id, "state": ""}
+    question = _one_question(text or _default_question(item))
+    last_user = _last_user_text(conversation)
+    if last_user is not None and is_vague(last_user) and not (
+        _has_remaining(question) and _has_eta(question)
+    ):
+        quote = _clean_quote(last_user)
+        question = _one_question(
+            f'You said "{quote}". What work remains and what is your ETA?'
+        )
+    mid = _send(question)
+    if not mid:
+        _save_interview_state(db, person_id, item_id, conversation, marker)
+        return {
+            "kind": "send_failed",
+            "replied": False,
+            "person": person_id,
+            "item_id": item_id,
+        }
+    conversation.append({"role": "assistant", "content": question})
+    _save_interview_state(db, person_id, item_id, conversation, marker)
+    return {
+        "kind": "reply",
+        "replied": True,
+        "person": person_id,
+        "item_id": item_id,
+        "message_id": mid,
+        "question": question,
+        "turns": len(conversation),
+    }
+
+
 class Interviewer:
     """Short standup interview with pushback and structured result."""
 
@@ -411,6 +677,7 @@ class Interviewer:
         results: dict[str, InterviewResult] = {}
         for item in norm_items:
             item_id = item["id"]
+            awaiting = False
             while turns < self.max_turns and item_id not in results:
                 volatile = {
                     "item_id": item_id,
@@ -461,11 +728,19 @@ class Interviewer:
                     break
                 turns += 1
                 conversation.append({"role": "assistant", "content": question})
+                _save_interview_state(db, person_id, item_id, conversation)
                 answer = _next_answer(chat, person_id, reply_buffer)
                 if answer is None or not str(answer).strip():
+                    awaiting = True
                     break
                 conversation.append({"role": "user", "content": str(answer)})
+                _save_interview_state(db, person_id, item_id, conversation)
             if item_id in results:
+                _save_interview_state(
+                    db, person_id, item_id, conversation, status="finished"
+                )
+                continue
+            if awaiting and db is not None:
                 continue
             done = False
             try:
@@ -499,6 +774,9 @@ class Interviewer:
             except Exception:  # noqa: BLE001
                 done = False
             if done:
+                _save_interview_state(
+                    db, person_id, item_id, conversation, status="finished"
+                )
                 continue
             try:
                 fallback_conv = conversation + [
@@ -526,6 +804,10 @@ class Interviewer:
                         candidate = _coerce_result(fallback_args, conversation)
                         results[item_id] = candidate
                         _safe_board_update(board, item_id, candidate)
+                        _save_interview_state(
+                            db, person_id, item_id, conversation,
+                            status="finished",
+                        )
                         continue
                     except Exception:  # noqa: BLE001, S110
                         pass
@@ -542,6 +824,10 @@ class Interviewer:
                     _safe_board_update(board, item_id, fallback_result)
                 except Exception:  # noqa: BLE001, S112
                     continue
+            if item_id in results:
+                _save_interview_state(
+                    db, person_id, item_id, conversation, status="finished"
+                )
         self.last_turns = turns
         self.last_model_calls = model_calls
         if db is not None:
@@ -566,6 +852,8 @@ class Interviewer:
             single_id = norm_items[0]["id"]
             if single_id in results:
                 return results[single_id]
+            if db is not None:
+                return {}
             fallback_single = _build_fallback_result(conversation)
             _safe_board_update(board, single_id, fallback_single)
             return fallback_single

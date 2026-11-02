@@ -439,12 +439,15 @@ def handle_inbound_message(
     channel_id: str = "",
     provider: str = "meta",
     event_sink: Any = None,
+    db: Any = None,
+    model_client: Any = None,
 ) -> dict[str, Any]:
     """Flow one polled Slack DM through the shared router path.
 
     Queues the message for read_replies so the interviewer and
     blocker intake receive it exactly like a webhook reply, then
-    routes any file attachments through the planner path.
+    routes files through the planner path and text through
+    interview resume.
     """
     queue = getattr(chat, "_queue_inbound", None)
     if callable(queue):
@@ -466,4 +469,6 @@ def handle_inbound_message(
         board=board,
         provider=provider,
         event_sink=event_sink,
+        db=db,
+        model_client=model_client,
     )

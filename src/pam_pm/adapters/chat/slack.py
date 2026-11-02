@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections import deque
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -82,6 +83,9 @@ class SlackAdapter(ChatAdapter):
         self._timeout = timeout
         self._client: Any = None
         self._user_cache: dict[str, str] = {}
+        self._dm_targets: set[str] = set()
+        self._inbound: dict[str, deque[ChatMessage]] = {}
+        self._poller: Any = None
 
     @staticmethod
     def _resolve_token(name: str, explicit: str | None, data_dir: str | Path | None) -> str:
@@ -182,20 +186,72 @@ class SlackAdapter(ChatAdapter):
         )
         return ""
 
+    def tracked_dm_targets(self) -> list[str]:
+        """Return user ids from prior sends, for DM poll fallback."""
+        return sorted(self._dm_targets)
+
+    def _queue_inbound(self, message: ChatMessage) -> None:
+        """Queue one polled inbound message for read_replies."""
+        if isinstance(message, ChatMessage) and message.inbound:
+            self._inbound.setdefault(message.user_id, deque()).append(message)
+
+    def attach_poller(self, poller: Any) -> None:
+        """Attach a Slack DM poller used by poll_once."""
+        self._poller = poller
+
+    def poll_once(self) -> list[ChatMessage]:
+        """Poll DMs once via the attached poller, queueing inbound.
+
+        Returns an empty list without an attached poller.
+        """
+        if self._poller is None:
+            return []
+        found = list(self._poller.poll_once())
+        for message in found:
+            self._queue_inbound(message)
+        return [item for item in found if isinstance(item, ChatMessage)]
+
     def send_dm(self, user_id: str, text: str) -> str:
         client = self._client_or_raise()
         try:
             channel = self._resolve_dm_channel(client, user_id)
             if not channel:
                 return self._skip_unresolved("send_dm", user_id)
+            self._dm_targets.add(channel)
             resp = self._unwrap(client.chat_postMessage(channel=channel, text=text))
             return str(resp.get("ts", "") if isinstance(resp, dict) else "")
         except Exception as exc:
             raise self._fail("send_dm", exc) from exc
 
+    def _drain_inbound(
+        self, user_id: str, since: str | None = None
+    ) -> list[ChatMessage]:
+        """Drain queued polled replies for a user, optionally after ts."""
+        queue = self._inbound.get(user_id or "")
+        out: list[ChatMessage] = []
+        leftovers: deque[ChatMessage] = deque()
+        while queue:
+            message = queue.popleft()
+            if since and message.ts and message.ts <= since:
+                continue
+            if since and not message.ts:
+                leftovers.append(message)
+                continue
+            out.append(message)
+        if leftovers:
+            queue.extendleft(reversed(leftovers))
+        if out:
+            for target in (user_id or "").strip(),:
+                if target:
+                    self._dm_targets.add(target)
+        return out
+
     def read_replies(
         self, user_id: str, since: str | None = None
     ) -> list[ChatMessage]:
+        queued = self._drain_inbound(user_id, since)
+        if self._poller is not None:
+            return queued
         client = self._client_or_raise()
         try:
             resolved = self._resolve_user_id(client, user_id)
@@ -223,7 +279,7 @@ class SlackAdapter(ChatAdapter):
             if since:
                 kwargs["oldest"] = since
             resp = self._unwrap(client.conversations_history(**kwargs))
-            out: list[ChatMessage] = []
+            out: list[ChatMessage] = list(queued)
             msgs = resp.get("messages", []) if isinstance(resp, dict) else []
             for item in msgs or []:
                 if not isinstance(item, dict):
@@ -275,6 +331,7 @@ class SlackAdapter(ChatAdapter):
             channel = self._resolve_dm_channel(client, user_id)
             if not channel:
                 return self._skip_unresolved("send_buttons", user_id)
+            self._dm_targets.add(channel)
             resp = self._unwrap(
                 client.chat_postMessage(channel=channel, text=text, blocks=blocks)
             )
