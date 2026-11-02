@@ -65,6 +65,8 @@ Build log for Pam. Three lines per entry.
 | Muse Code | SaaS sidebar rebuild | Search filter, pinned Manage cluster, tighter rows, 361 pass |
 | Muse Code | CI autostart fix | Autostart never fatal, pinned off in workflows, 361 pass |
 | Muse Code | Team share mode | LAN toggle, forced password, invite box, 370 pass |
+| Muse Code | CI green plus listen pipeline | Playwright guard, healthz, auto proposals with approval, 376 pass |
+| Muse Code | Acceptance sweep | 10 of 10 PASS, fresh install to security, 376 pass |
 
 ## Entries
 
