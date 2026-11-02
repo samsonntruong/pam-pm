@@ -19,13 +19,14 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from pam_pm.core import router as router_mod
 from pam_pm.core import store as store_mod
 from pam_pm.core.masking import mask_text
 
 logger = logging.getLogger(__name__)
 
 REALTIME_URL = "wss://api.meta.ai/v1/asr/realtime"
-TRANSCRIBE_MODEL = "muse-voice-transcribe-1.0"
+TRANSCRIBE_MODEL = router_mod.TRANSCRIBE_MODEL
 
 SAMPLE_RATE = 24000
 CHANNELS = 1
@@ -104,6 +105,10 @@ def build_handshake(
     key = (api_key if api_key is not None else meta_api_key()).strip()
     if not key:
         raise ValueError("META_API_KEY is missing.")
+    try:
+        router_mod.log_route(router_mod.CAP_TRANSCRIBE_REALTIME, model)
+    except Exception:  # noqa: BLE001, S110
+        pass
     want_mode = (mode or "ENDPOINTING").strip().upper()
     if want_mode not in MODES:
         want_mode = "ENDPOINTING"

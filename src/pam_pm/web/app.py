@@ -37,6 +37,7 @@ from pam_pm.core import memory as memory_mod
 from pam_pm.core import provider as provider_mod
 from pam_pm.core import raid as raid_mod
 from pam_pm.core import recovery as recovery_mod
+from pam_pm.core import router as router_mod
 from pam_pm.core import secrets as secrets_mod
 from pam_pm.core import store as store_mod
 from pam_pm.core.config import (
@@ -411,14 +412,36 @@ def _run_review_now(project: str = "default") -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         raid_backend = BACKEND_AZURE_DEVOPS
         raid_db = None
-    result = synthesize_review(
-        SAMPLE_ITEMS,
-        _sample_interviews(),
-        bus.history(),
-        raid_db=raid_db,
-        raid_backend=raid_backend,
-        raid_project=project,
-    )
+    model_client: Any = None
+    try:
+        from pam_pm.models.client import ModelClient
+
+        candidate = ModelClient()
+        if candidate.model and candidate.base_url and candidate._api_key:
+            model_client = candidate
+        else:
+            router_mod.log_route(router_mod.CAP_REVIEW, "", "no Meta creds, local render")
+    except Exception:  # noqa: BLE001
+        model_client = None
+    try:
+        result = synthesize_review(
+            SAMPLE_ITEMS,
+            _sample_interviews(),
+            bus.history(),
+            model_client=model_client,
+            raid_db=raid_db,
+            raid_backend=raid_backend,
+            raid_project=project,
+        )
+    except Exception:  # noqa: BLE001
+        result = synthesize_review(
+            SAMPLE_ITEMS,
+            _sample_interviews(),
+            bus.history(),
+            raid_db=raid_db,
+            raid_backend=raid_backend,
+            raid_project=project,
+        )
     LAST_REVIEW["markdown"] = result["review_markdown"]
     LAST_REVIEW["retro_actions"] = result["retro_actions"]
     LAST_REVIEW["low_confidence"] = result["low_confidence"]
@@ -3705,6 +3728,30 @@ async def upload_plan_photo(request: Request) -> Any:
         len(photo.get("readings", [])),
         len(proposal),
     )
+    try:
+        router_mod.log_route(
+            router_mod.CAP_PLAN,
+            str(photo.get("model", "") or router_mod.text_model()),
+            f"planner path={photo.get('path', '')}",
+        )
+        bus.publish(
+            {
+                "operation": "plan_from_photo",
+                "item_id": "",
+                "evidence_quote": (
+                    f"Planner path: {photo.get('path', '')} "
+                    f"({len(photo.get('readings', []))} readings, "
+                    f"{len(proposal)} proposed)."
+                ),
+                "status": "proposed",
+                "detail": (
+                    f"path={photo.get('path', '')} "
+                    f"model={photo.get('model', '') or router_mod.text_model()}"
+                ),
+            }
+        )
+    except Exception:  # noqa: BLE001, S110
+        pass
     if "hx-request" in request.headers:
         return HTMLResponse(_plan_result_html(photo, proposal))
     return {
@@ -6264,6 +6311,7 @@ def next_sprint_run_route(request: Request) -> Any:
         return JSONResponse({"ok": False, "message": msg}, status_code=502)
     LAST_NEXT_SPRINT["proposal"] = proposal
     LAST_NEXT_SPRINT["project"] = project
+    router_mod.log_route(router_mod.CAP_NEXT_SPRINT, router_mod.text_model(), "proposal built")
     dry_run, _ = _effective_safety()
     if "hx-request" in request.headers:
         return HTMLResponse(_next_sprint_result_html(proposal, dry_run))

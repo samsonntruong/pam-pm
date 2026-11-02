@@ -21,6 +21,7 @@ from typing import Any
 import httpx
 
 from pam_pm.core import cost as cost_mod
+from pam_pm.core import router as router_mod
 from pam_pm.core.cost import CallUsage
 from pam_pm.core.masking import mask_text
 
@@ -448,6 +449,8 @@ class ModelClient:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int | None = None,
+        *,
+        capability: str = "text",
     ) -> ChatResult:
         """Send masked messages, returning text, tool calls, and usage."""
         if not self.model:
@@ -478,6 +481,10 @@ class ModelClient:
         if self._db is not None:
             cost_mod.log_call(self._db, usage)
         self.last_usage = usage
+        try:
+            router_mod.log_route(str(capability or "text"), self.model)
+        except Exception:  # noqa: BLE001, S110
+            pass
         return ChatResult(text=text, tool_calls=calls, usage=usage, raw=data)
 
     def complete(
@@ -486,10 +493,12 @@ class ModelClient:
         system: str | None = None,
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int | None = None,
+        *,
+        capability: str = "text",
     ) -> ChatResult:
         """Send one user prompt with an optional system message."""
         msgs: list[dict[str, Any]] = []
         if system:
             msgs.append({"role": "system", "content": system})
         msgs.append({"role": "user", "content": prompt})
-        return self.chat(msgs, tools=tools, max_tokens=max_tokens)
+        return self.chat(msgs, tools=tools, max_tokens=max_tokens, capability=capability)

@@ -304,12 +304,30 @@ def synthesize_review(
     if model_client is not None:
         try:
             raw = model_client.chat(
-                payload["messages"], tools=payload["tools"], max_tokens=tokens
+                payload["messages"],
+                tools=payload["tools"],
+                max_tokens=tokens,
+                capability="review",
             )
         except TypeError:
-            raw = model_client.chat(payload["messages"], payload["tools"])
+            raw = model_client.chat(
+                payload["messages"], tools=payload["tools"], max_tokens=tokens
+            )
         markdown = _model_text(raw).strip()
         model_path = "live"
+        try:
+            from pam_pm.core import router as router_mod
+
+            router_mod.log_route(
+                router_mod.CAP_REVIEW,
+                str(getattr(model_client, "model", "") or router_mod.text_model()),
+            )
+            router_mod.log_route(
+                router_mod.CAP_RETRO,
+                str(getattr(model_client, "model", "") or router_mod.text_model()),
+            )
+        except Exception:  # noqa: BLE001, S110
+            pass
     if not markdown:
         markdown = _render_review_markdown(summary, events, actions)
         model_path = "local"

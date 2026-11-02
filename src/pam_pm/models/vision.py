@@ -7,6 +7,8 @@ import logging
 from collections.abc import Sequence
 from typing import Any
 
+from pam_pm.core import router as router_mod
+
 logger = logging.getLogger(__name__)
 
 SAM_MODULE_CANDIDATES = ("sam3", "segment_anything_3", "sam_3")
@@ -147,32 +149,45 @@ def plan_from_photo(
     client = vision or VisionClient(provider=want)
     if getattr(client, "provider", "meta") != "meta":
         want = str(getattr(client, "provider", want))
+    segment_model = router_mod.vision_segment_model()
+    read_model = router_mod.text_model()
     if want != "meta":
         text = client.read_full(image_bytes) if image_bytes else ""
         readings = [ln.strip() for ln in str(text).splitlines() if ln.strip()]
         logger.info("vision path used: fallback (custom provider, whole image)")
+        router_mod.log_route(router_mod.CAP_VISION_READ, read_model, "planner path=fallback")
         return {
             "readings": readings,
             "masks": [],
             "path": PATH_FALLBACK,
             "notes_text": "\n".join(readings),
+            "model": read_model,
         }
+    router_mod.log_route(router_mod.CAP_VISION_SEGMENT, segment_model, "planner segment attempt")
     if segmenter is not None:
         crops: Sequence[Any] | None = None
         try:
             crops = segmenter(image_bytes)
         except Exception as exc:  # noqa: BLE001
             logger.info("vision path used: fallback (SAM segment failed: %s)", exc)
+            router_mod.log_route(
+                router_mod.CAP_VISION_READ, read_model, "planner path=fallback sam_failed"
+            )
             crops = None
         if crops:
             readings = client.read_crops(list(crops))
             logger.info("vision path used: sam (%d crops)", len(readings))
+            router_mod.log_route(
+                router_mod.CAP_VISION_READ, read_model, f"planner path=sam crops={len(readings)}"
+            )
             notes = [text for text in readings if text.strip()]
             return {
                 "readings": readings,
                 "masks": list(range(len(readings))),
                 "path": PATH_SAM,
                 "notes_text": "\n".join(notes),
+                "model": read_model,
+                "segment_model": segment_model,
             }
         if crops is not None:
             logger.info("vision path used: fallback (SAM returned no crops)")
@@ -181,19 +196,26 @@ def plan_from_photo(
         if found:
             readings = client.read_crops(found)
             logger.info("vision path used: sam (%d crops)", len(readings))
+            router_mod.log_route(
+                router_mod.CAP_VISION_READ, read_model, f"planner path=sam crops={len(readings)}"
+            )
             notes = [text for text in readings if text.strip()]
             return {
                 "readings": readings,
                 "masks": list(range(len(readings))),
                 "path": PATH_SAM,
                 "notes_text": "\n".join(notes),
+                "model": read_model,
+                "segment_model": segment_model,
             }
     text = client.read_full(image_bytes) if image_bytes else ""
     readings = [line.strip() for line in str(text).splitlines() if line.strip()]
     logger.info("vision path used: fallback (full image read)")
+    router_mod.log_route(router_mod.CAP_VISION_READ, read_model, "planner path=fallback")
     return {
         "readings": readings,
         "masks": [],
         "path": PATH_FALLBACK,
         "notes_text": "\n".join(readings),
+        "model": read_model,
     }
