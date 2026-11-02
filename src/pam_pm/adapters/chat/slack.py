@@ -124,6 +124,13 @@ class SlackAdapter(ChatAdapter):
     def _looks_like_user_id(value: str) -> bool:
         return bool(_USER_ID_RE.match(value.strip()))
 
+    @staticmethod
+    def _unwrap(resp: Any) -> Any:
+        data = getattr(resp, "data", None)
+        if isinstance(data, dict):
+            return data
+        return resp
+
     def _resolve_user_id(self, client: Any, name: str) -> str | None:
         """Resolve a display name to a Slack user ID via users.list."""
         key = name.strip().lower()
@@ -133,7 +140,7 @@ class SlackAdapter(ChatAdapter):
         if cached:
             return cached
         try:
-            resp = client.users_list()
+            resp = self._unwrap(client.users_list())
         except Exception:  # noqa: BLE001
             return None
         members = resp.get("members", []) if isinstance(resp, dict) else []
@@ -178,8 +185,8 @@ class SlackAdapter(ChatAdapter):
             channel = self._resolve_dm_channel(client, user_id)
             if not channel:
                 return self._skip_unresolved("send_dm", user_id)
-            resp = client.chat_postMessage(channel=channel, text=text)
-            return str(resp.get("ts", ""))
+            resp = self._unwrap(client.chat_postMessage(channel=channel, text=text))
+            return str(resp.get("ts", "") if isinstance(resp, dict) else "")
         except Exception as exc:
             raise self._fail("send_dm", exc) from exc
 
@@ -191,9 +198,10 @@ class SlackAdapter(ChatAdapter):
             kwargs: dict[str, Any] = {"channel": user_id, "limit": 50}
             if since:
                 kwargs["oldest"] = since
-            resp = client.conversations_history(**kwargs)
+            resp = self._unwrap(client.conversations_history(**kwargs))
             out: list[ChatMessage] = []
-            for item in resp.get("messages", []) or []:
+            msgs = resp.get("messages", []) if isinstance(resp, dict) else []
+            for item in msgs or []:
                 if not isinstance(item, dict):
                     continue
                 if item.get("bot_id") and not item.get("user"):
@@ -243,10 +251,10 @@ class SlackAdapter(ChatAdapter):
             channel = self._resolve_dm_channel(client, user_id)
             if not channel:
                 return self._skip_unresolved("send_buttons", user_id)
-            resp = client.chat_postMessage(
-                channel=channel, text=text, blocks=blocks
+            resp = self._unwrap(
+                client.chat_postMessage(channel=channel, text=text, blocks=blocks)
             )
-            return str(resp.get("ts", ""))
+            return str(resp.get("ts", "") if isinstance(resp, dict) else "")
         except Exception as exc:
             raise self._fail("send_buttons", exc) from exc
 

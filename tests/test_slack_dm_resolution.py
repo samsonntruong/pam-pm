@@ -99,3 +99,39 @@ def test_raw_user_id_posts_without_lookup() -> None:
     assert ts
     assert fake.posts[0]["channel"] == "U123MAYA"
     assert fake.users_list_calls == 0
+
+
+class SlackResponseLike:
+    """Mimics slack_sdk SlackResponse: payload in .data, no .get."""
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self.data = data
+
+
+class FakeSlackSdkClient:
+    """Fake returning SlackResponse-like objects like live WebClient."""
+
+    def __init__(self, members: list[dict[str, Any]]) -> None:
+        self._members = members
+        self.posts: list[dict[str, Any]] = []
+
+    def users_list(self) -> Any:
+        return SlackResponseLike({"members": self._members})
+
+    def chat_postMessage(
+        self, channel: str, text: str, **kwargs: Any
+    ) -> Any:
+        if " " in channel or not channel.startswith(("U", "W")):
+            raise RuntimeError("channel_not_found")
+        self.posts.append({"channel": channel, "text": text})
+        return SlackResponseLike({"ts": f"ts-{len(self.posts)}"})
+
+
+def test_sdk_response_objects_resolve_and_return_ts() -> None:
+    adapter = SlackAdapter(bot_token="test-token")
+    fake = FakeSlackSdkClient(_maya_members())
+    adapter._client = fake
+    ts = adapter.send_dm("Maya Pam", "hello via SDK response")
+    assert ts == "ts-1"
+    assert len(fake.posts) == 1
+    assert fake.posts[0]["channel"] == "U123MAYA"
