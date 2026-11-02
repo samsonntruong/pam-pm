@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from pam_pm.adapters.pm.base import is_closed
+from pam_pm.agents.interviewer import normalize_followup_spacing
 
 
 def close_via_adapter(board: Any, item_id: str) -> Any:
@@ -171,7 +172,7 @@ def on_item_done(
         if not owner:
             continue
         succ_title = _item_title(succ)
-        text = message or (
+        text = normalize_followup_spacing(message) if message else (
             f"'{done_title}' is done. What is the status of '{succ_title}'?"
         )
         try:

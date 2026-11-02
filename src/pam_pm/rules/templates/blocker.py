@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from pam_pm.adapters.pm.base import is_closed
+from pam_pm.agents.interviewer import normalize_followup_spacing
 from pam_pm.core.schemas import BlockerInfo
 from pam_pm.core.writes import WriteService
 
@@ -375,7 +376,10 @@ def on_blocker_closed(
     try:
         return str(
             chat.send_dm(
-                waiter, f"Your blocker '{title}' is cleared. What is your status?"
+                waiter,
+                normalize_followup_spacing(
+                    f"Your blocker '{title}' is cleared. What is your status?"
+                ),
             )
         )
     except Exception:  # noqa: BLE001

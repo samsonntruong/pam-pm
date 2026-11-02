@@ -137,20 +137,44 @@ def _project_context(norm_items: list[dict[str, str]]) -> str:
     return "\n".join(lines)
 
 
+_PUNCT_GLUE_RE = re.compile(r"(?<=[.!?])(?=[^\s])")
+_LOWER_UPPER_GLUE_RE = re.compile(r"(?<=[a-z])(?=[A-Z])")
+
+def normalize_followup_spacing(text: str) -> str:
+    """Ensure one separator where sentences or ack plus question join."""
+    out = (text or "").strip().replace("\n", " ")
+    out = re.sub(r"\s+", " ", out).strip()
+    out = _PUNCT_GLUE_RE.sub(" ", out)
+    out = _LOWER_UPPER_GLUE_RE.sub(" ", out)
+    out = re.sub(r"\s+", " ", out).strip()
+    return out
+
+
+def join_ack_question(ack: str, question: str, sep: str = " ") -> str:
+    """Join ack and question with exactly one space or newline."""
+    left = (ack or "").strip()
+    right = (question or "").strip()
+    if not left:
+        return normalize_followup_spacing(right)
+    if not right:
+        return normalize_followup_spacing(left)
+    joiner = "\n" if sep == "\n" else " "
+    return normalize_followup_spacing(left.rstrip() + joiner + right.lstrip())
+
+
 def _one_question(text: str) -> str:
-    cleaned = (text or "").strip().replace("\n", " ")
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    cleaned = normalize_followup_spacing(text)
     if not cleaned:
         return "What is the current status?"
     if "?" not in cleaned:
         base = cleaned.rstrip(".! ").strip()
         if not base:
             return "What remains and what is your ETA?"
-        return base + " What remains and what is your ETA?"
+        return normalize_followup_spacing(base + " What remains and what is your ETA?")
     first = cleaned.split("?", 1)[0].strip()
     if not first:
         return "What remains and what is your ETA?"
-    return first + "?"
+    return normalize_followup_spacing(first + "?")
 
 
 def _has_remaining(text: str) -> bool:
@@ -825,7 +849,7 @@ def _handle_blocker_without_state(
 
     def _send(text: str) -> str:
         try:
-            return str(chat.send_dm(person_id, text) or "")
+            return str(chat.send_dm(person_id, normalize_followup_spacing(text)) or "")
         except Exception:  # noqa: BLE001
             return ""
 
@@ -955,7 +979,7 @@ def resume_interview(
 
     def _send(text: str) -> str:
         try:
-            return str(chat.send_dm(person_id, text) or "")
+            return str(chat.send_dm(person_id, normalize_followup_spacing(text)) or "")
         except Exception:  # noqa: BLE001
             return ""
 
