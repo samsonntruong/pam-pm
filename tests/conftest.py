@@ -9,9 +9,7 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _isolated_pam_home(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Path:
+def _isolated_pam_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Point PAM_HOME at a fresh tmp dir for every test."""
     home = tmp_path / "pam-home"
     home.mkdir(parents=True, exist_ok=True)
