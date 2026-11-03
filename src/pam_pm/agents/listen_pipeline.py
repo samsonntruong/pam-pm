@@ -68,6 +68,25 @@ def estimate_hours(title: str) -> float:
     return 4.0
 
 
+def _short_title(title: str, limit: int = 80) -> str:
+    """Condense a long evidence sentence to a short card title.
+
+    Short titles pass through. Longer ones use the notes condenser
+    so cards read like "Rate limiting on login endpoint" instead of
+    the full transcript sentence.
+    """
+    text = " ".join(str(title or "").split()).strip()
+    if len(text) <= limit:
+        return text
+    try:
+        from pam_pm.agents.notes import concise_title
+
+        return concise_title(text, limit)[:200]
+    except Exception:  # noqa: BLE001
+        cut = text[:limit].rsplit(" ", 1)[0].strip()
+        return cut or text[:limit].strip()
+
+
 def _known_names(
     people: list[dict[str, Any]] | None, board_owners: list[str] | None
 ) -> set[str]:
@@ -100,6 +119,7 @@ def propose_listen_tasks(
         title = str(action.get("title", "") or "").strip()[:200]
         if not title:
             continue
+        title = _short_title(title)
         quote = str(action.get("evidence_quote", "") or "")[:300] or title[:300]
         raw_owner = str(action.get("owner", "") or "").strip()
         if raw_owner and raw_owner.lower() in known:
@@ -120,7 +140,7 @@ def propose_listen_tasks(
         text = " ".join(str(transcript or "").split())
         if text:
             summary = str(notes.get("summary", "") or "").strip() or text
-            title = summary[:200]
+            title = _short_title(summary[:200])
             proposals.append(
                 {
                     "title": title,

@@ -410,6 +410,8 @@ def handle_slack_event(
 
 PLAN_APPROVE_IDS = frozenset({"plan_approve", "approve"})
 PLAN_CANCEL_IDS = frozenset({"plan_cancel", "cancel"})
+OWNER_ACCEPT_IDS = frozenset({"accept", "listen_accept", "owner_accept"})
+OWNER_FLAG_IDS = frozenset({"flag", "listen_flag", "owner_flag"})
 
 UNKNOWN_PROPOSAL_REPLY = (
     "Sorry, I could not find that proposal. It may have expired or "
@@ -424,6 +426,124 @@ def _parse_action_value(value: str) -> tuple[str, str]:
         verb, pid = text.split(":", 1)
         return verb.strip().lower(), pid.strip()
     return text.lower(), ""
+
+
+def _owner_board_states(board: Any) -> list[str]:
+    try:
+        states = [str(s) for s in board.list_states() if str(s)]
+    except Exception:  # noqa: BLE001
+        states = []
+    return states
+
+
+def _lead_target(db: Any) -> str:
+    """Return the lead review target: channel env, else lead DM."""
+    try:
+        from pam_pm.agents import lead as lead_mod
+
+        channel = os.environ.get(lead_mod.REVIEW_CHANNEL_ENV, "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+    if channel:
+        return channel
+    if db is None:
+        return ""
+    try:
+        from pam_pm.core import memory as memory_mod
+
+        for person in memory_mod.list_people(db):
+            if not isinstance(person, dict):
+                continue
+            if "lead" in str(person.get("role", "")).lower():
+                name = str(person.get("name", "")).strip()
+                if name:
+                    return name
+    except Exception:  # noqa: BLE001
+        return ""
+    return ""
+
+
+def _handle_owner_action(
+    chat: Any,
+    board: Any,
+    db: Any,
+    event_sink: Any,
+    target: str,
+    action_id: str,
+    item_id: str,
+    *,
+    flagged: bool,
+) -> dict[str, Any]:
+    """Apply an owner Accept or Flag click on a board item.
+
+    Accept confirms the item by moving it to the active state and
+    replies confirmed. Flag reopens it with a needs-review tag, DMs
+    the lead for review, and replies confirmed. Never raises.
+    """
+    label = str(item_id or "").strip() or "unknown item"
+    verb_name = str(action_id or "").strip() or ("flag" if flagged else "accept")
+    if board is not None and label != "unknown item":
+        states = _owner_board_states(board)
+        try:
+            if flagged:
+                fields: dict[str, Any] = {}
+                if states:
+                    fields["state"] = states[0]
+                tags = ""
+                try:
+                    current = board.get_item(label)
+                    raw = dict(getattr(current, "fields", {}) or {})
+                    tags = str(raw.get("tags", "") or "")
+                except Exception:  # noqa: BLE001, S110
+                    pass
+                have = {p.strip().lower() for p in tags.replace(",", ";").split(";")}
+                if "needs-review" not in have:
+                    if tags.strip():
+                        tags = f"{tags}; needs-review"
+                    else:
+                        tags = "needs-review"
+                fields["tags"] = tags
+                board.update_item(label, fields)
+            elif states:
+                picked = states[1] if len(states) > 1 else states[0]
+                board.update_item(label, {"state": picked})
+        except Exception:  # noqa: BLE001
+            logger.info("owner action board update failed for %s", label)
+    if flagged and chat is not None:
+        lead = _lead_target(db)
+        if lead:
+            try:
+                chat.send_dm(
+                    lead, f"Item {label} was flagged and needs lead review."
+                )
+            except Exception:  # noqa: BLE001
+                logger.info("owner flag lead DM failed for %s", label)
+    if chat is not None and target:
+        try:
+            if flagged:
+                chat.send_dm(target, f"Flagged. Item {label} is back in lead review.")
+            else:
+                chat.send_dm(target, f"Accepted. Item {label} confirmed.")
+        except Exception:  # noqa: BLE001
+            logger.info("owner action reply failed for %s", label)
+    if event_sink is not None:
+        try:
+            event_sink(
+                {
+                    "operation": "owner_flag" if flagged else "owner_accept",
+                    "item_id": label,
+                    "evidence_quote": f"Owner clicked {verb_name} on item {label}.",
+                    "status": "applied",
+                    "detail": f"owner {verb_name} on item {label}",
+                }
+            )
+        except Exception:  # noqa: BLE001
+            logger.info("owner action event sink failed")
+    return {
+        "action": action_id,
+        "kind": "flagged" if flagged else "accepted",
+        "item_id": label,
+    }
 
 
 def handle_slack_interaction(
@@ -459,6 +579,18 @@ def handle_slack_interaction(
         verb, proposal_id = _parse_action_value(action.get("value", ""))
         is_approve = action_id in PLAN_APPROVE_IDS or verb == "approve"
         is_cancel = action_id in PLAN_CANCEL_IDS or verb == "cancel"
+        is_accept = action_id in OWNER_ACCEPT_IDS or verb == "accept"
+        is_flag = action_id in OWNER_FLAG_IDS or verb == "flag"
+        if is_accept or is_flag:
+            raw_value = str(action.get("value", "") or "").strip()
+            item_id = proposal_id or raw_value
+            outcome = _handle_owner_action(
+                chat, board, db, event_sink, target,
+                action_id, item_id, flagged=is_flag,
+            )
+            outcomes.append(outcome)
+            logger.info("slack interaction outcome: kind=%s", outcome.get("kind"))
+            continue
         logger.info(
             "slack interaction received: action=%s proposal=%s",
             action_id or verb or "unknown",
@@ -541,7 +673,10 @@ def handle_slack_interaction(
             {"action": action_id, "kind": "approved", "created": count}
         )
         logger.info("slack interaction outcome: kind=approved created=%d", count)
-    replied = any(o.get("kind") in ("approved", "cancelled", "unknown_proposal") for o in outcomes)
+    replied = any(
+        o.get("kind") in ("approved", "cancelled", "unknown_proposal", "accepted", "flagged")
+        for o in outcomes
+    )
     return {"kind": "block_actions", "replied": replied, "outcomes": outcomes}
 
 

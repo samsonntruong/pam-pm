@@ -54,6 +54,44 @@ def _guess_due(sentence: str) -> str:
         return ""
     return " ".join(match.group(0).split())
 
+_OWNER_WILL_RE = re.compile(r"^[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\s+will\s+", re.IGNORECASE)
+_TEAM_WILL_RE = re.compile(r"^(the\s+team|someone|we)\s+will\s+", re.IGNORECASE)
+_NEEDS_TO_RE = re.compile(
+    r"^(someone|anyone|we|the\s+team)\s+(needs?\s+to|has\s+to|should)\s+",
+    re.IGNORECASE,
+)
+_LABEL_RE = re.compile(
+    r"^(please\s+|action\s*item\s*:?\s*|todo\s*:?\s*)", re.IGNORECASE
+)
+
+
+def concise_title(sentence: str, limit: int = 80) -> str:
+    """Derive a short card title from one evidence sentence.
+
+    Strips speaker prefixes, will/needs wrappers, and due phrases so
+    the card reads like "Rate limiting on login endpoint" instead of
+    the full transcript sentence. The full sentence stays in the
+    evidence quote.
+    """
+    text = " ".join(str(sentence or "").split()).strip()
+    owned = _OWNER_PREFIX.match(text)
+    if owned:
+        text = owned.group(2).strip()
+    for pattern in (_OWNER_WILL_RE, _TEAM_WILL_RE, _NEEDS_TO_RE):
+        text = pattern.sub("", text).strip()
+    due = _DUE_RE.search(text)
+    if due:
+        text = (text[:due.start()] + text[due.end():]).strip()
+    text = _LABEL_RE.sub("", text).strip()
+    text = text.rstrip(" .")
+    if len(text) > limit:
+        cut = text[:limit].rsplit(" ", 1)[0].strip()
+        text = cut or text[:limit].strip()
+    if not text:
+        return "Meeting action"
+    return text[0].upper() + text[1:]
+
+
 
 def _tokens(text: str) -> set[str]:
     return {t for t in re.findall(r"[a-z0-9]+", str(text).lower()) if len(t) > 2}
@@ -131,7 +169,7 @@ def _local_extract(
             owner = _guess_owner(sent)
             actions.append(
                 {
-                    "title": sent[:200],
+                    "title": concise_title(sent)[:200],
                     "owner": owner or None,
                     "due_date": _guess_due(sent),
                     "evidence_quote": quote,
@@ -241,7 +279,7 @@ def _normalize_actions(value: Any) -> list[dict[str, Any]]:
         if isinstance(draft, str):
             out.append(
                 {
-                    "title": draft[:200],
+                    "title": concise_title(draft)[:200],
                     "owner": None,
                     "due_date": _guess_due(draft),
                     "evidence_quote": draft[:300],

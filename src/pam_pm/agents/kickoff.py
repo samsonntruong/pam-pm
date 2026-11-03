@@ -549,14 +549,33 @@ def notify_owners(
                     break
         if not owner:
             continue
-        text = f"You have been assigned {title or item_id}. Accept or flag."
+        detail = ""
+        if index < len(drafts) and isinstance(drafts[index], dict):
+            bits: list[str] = []
+            try:
+                est = drafts[index].get("estimate")
+                if est is not None and float(est) > 0:
+                    bits.append(f"estimate {float(est):g}h")
+            except (TypeError, ValueError):
+                pass
+            due = str(drafts[index].get("due_date", "") or "").strip()
+            if due:
+                bits.append(f"due {due[:40]}")
+            if bits:
+                detail = f" ({', '.join(bits)})"
+        label = title or f"item {item_id}"
+        text = f"You have been assigned {label}{detail}. Accept or flag."
         try:
             mid = chat.send_buttons(
                 owner,
                 text,
                 [
-                    {"id": "accept", "label": "Accept", "value": item_id},
-                    {"id": "flag", "label": "Flag", "value": item_id},
+                    {
+                        "id": "accept",
+                        "label": "Accept",
+                        "value": f"accept:{item_id}",
+                    },
+                    {"id": "flag", "label": "Flag", "value": f"flag:{item_id}"},
                 ],
             )
         except Exception:  # noqa: BLE001, S112

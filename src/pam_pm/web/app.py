@@ -7375,6 +7375,17 @@ async def meeting_proposals_approve_route(request: Request, session_id: str) -> 
         dry_run=dry_run,
         meeting_title=title,
     )
+    notified = 0
+    if created:
+        try:
+            from pam_pm.agents.kickoff import notify_owners
+
+            chat = get_chat_adapter(project)
+            if chat is not None:
+                picked = [proposals[i] for i in selected]
+                notified = len(notify_owners(chat, created, picked))
+        except Exception:  # noqa: BLE001
+            notified = 0
     status = "approved" if len(selected) == len(proposals) else "partial"
     try:
         store_mod.save_listen_proposals(
@@ -7383,6 +7394,8 @@ async def meeting_proposals_approve_route(request: Request, session_id: str) -> 
     except Exception:  # noqa: BLE001, S110
         pass
     message = f"Created {len(created)} of {len(proposals)} proposed tasks."
+    if notified:
+        message += f" Notified {notified} owners."
     if "hx-request" in request.headers:
         return HTMLResponse(_test_result_html(True, message))
     return {
@@ -7390,6 +7403,7 @@ async def meeting_proposals_approve_route(request: Request, session_id: str) -> 
         "created": len(created),
         "total": len(proposals),
         "status": status,
+        "notified": notified,
     }
 
 
