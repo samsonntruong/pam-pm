@@ -25,6 +25,29 @@ def _person_search_terms(person: dict[str, Any]) -> tuple[set[str], set[str]]:
     return role_tokens, skill_tokens
 
 
+def mentioned_owner(
+    text: str,
+    people: list[dict[str, Any]] | None,
+) -> str | None:
+    """Return a roster name explicitly mentioned in text, else None.
+
+    Matches on given name as a whole word. Never falls back, so callers
+    can prefer an explicit assignment without overriding everything.
+    """
+    candidates = [p for p in (people or []) if str(p.get("name", "")).strip()]
+    if not candidates:
+        return None
+    words = _tokens(text)
+    for person in candidates:
+        name = str(person["name"]).strip()
+        if not name:
+            continue
+        given = name.lower().replace(".", " ").split()[0]
+        if given and given in words:
+            return name
+    return None
+
+
 def suggest_owner(
     title: str,
     people: list[dict[str, Any]] | None,
@@ -130,10 +153,17 @@ def propose_listen_tasks(
         if raw_owner and raw_owner.lower() in known:
             owner: str | None = raw_owner
         else:
-            evidence = str(action.get("evidence_quote", "") or "")
-            mention_text = " ".join(
-                part for part in (evidence, title, str(transcript or "")[:2000]) if part
-            )
+            owner = None
+        evidence = str(action.get("evidence_quote", "") or "")
+        mention_text = " ".join(
+            part for part in (evidence, title, str(transcript or "")[:2000]) if part
+        )
+        mentioned = mentioned_owner(mention_text, people)
+        if mentioned is not None and (
+            owner is None or mentioned.lower() != owner.lower()
+        ):
+            owner = mentioned
+        if owner is None:
             owner = suggest_owner(mention_text, people, board_owners)
             if owner is None:
                 owner = suggest_owner(title, people, board_owners)
