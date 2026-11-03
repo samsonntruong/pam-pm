@@ -88,6 +88,29 @@ def suggest_owner(
     return None
 
 
+_HOURS_WORDS = {
+    "one": 1.0, "two": 2.0, "three": 3.0, "four": 4.0, "five": 5.0,
+    "six": 6.0, "seven": 7.0, "eight": 8.0,
+}
+
+
+def stated_hours(*texts: str) -> float | None:
+    """Return explicit hours mentioned in text, else None."""
+    import re as _re
+
+    hay = " ".join(str(t or "") for t in texts).lower()
+    match = _re.search(r"(\d+(?:\.\d+)?)\s*hours?", hay)
+    if match:
+        try:
+            return float(match.group(1))
+        except ValueError:
+            return None
+    for word, val in _HOURS_WORDS.items():
+        if _re.search(r"\b" + word + r"\s+hours?\b", hay):
+            return val
+    return None
+
+
 def estimate_hours(title: str) -> float:
     """Default estimate from title length, editable before approval."""
     size = len(str(title or "").strip())
@@ -184,11 +207,18 @@ def propose_listen_tasks(
         if text:
             summary = str(notes.get("summary", "") or "").strip() or text
             title = _short_title(summary[:200])
+            mention_text = " ".join(
+                part for part in (summary, title, text[:2000]) if part
+            )
+            owner = mentioned_owner(mention_text, people)
+            if owner is None:
+                owner = suggest_owner(mention_text, people, board_owners)
+            hours = stated_hours(summary, text) or estimate_hours(title)
             proposals.append(
                 {
                     "title": title,
-                    "owner": suggest_owner(title, people, board_owners),
-                    "estimate": estimate_hours(title),
+                    "owner": owner,
+                    "estimate": hours,
                     "evidence_quote": text[:300],
                     "due_date": "",
                     "meeting_id": str(session_id),
