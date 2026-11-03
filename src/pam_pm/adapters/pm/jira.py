@@ -256,6 +256,8 @@ class JiraAdapter(PMAdapter):
             },
         )
         self._board_id: str | None = None
+        self._user_cache: dict[str, str] = {}
+        self._assign_note: str = ""
 
     def close(self) -> None:
         self._client.close()
@@ -370,8 +372,45 @@ class JiraAdapter(PMAdapter):
             fields=item_fields,
         )
 
+    def _account_id_for_name(self, name: str) -> str:
+        want = (name or "").strip()
+        if not want:
+            return ""
+        key = want.lower()
+        if key in self._user_cache:
+            return self._user_cache[key]
+        try:
+            data = self._request(
+                "GET", "/rest/api/3/user/search", params={"query": want}
+            )
+        except JiraError:
+            return ""
+        rows: list[dict[str, Any]] = []
+        if isinstance(data, list):
+            rows = [r for r in data if isinstance(r, dict)]
+        elif isinstance(data, dict):
+            vals = data.get("values", [])
+            if isinstance(vals, list):
+                rows = [r for r in vals if isinstance(r, dict)]
+        for entry in rows:
+            disp = str(entry.get("displayName", "") or "").strip()
+            acc = str(entry.get("accountId", "") or "").strip()
+            if not acc:
+                continue
+            if disp.lower() == key or acc.lower() == key:
+                self._user_cache[key] = acc
+                return acc
+        for entry in rows:
+            disp = str(entry.get("displayName", "") or "").strip()
+            acc = str(entry.get("accountId", "") or "").strip()
+            if acc and disp.lower().startswith(key):
+                self._user_cache[key] = acc
+                return acc
+        return ""
+
     def _write_fields(self, fields: dict[str, Any]) -> dict[str, Any]:
         out: dict[str, Any] = {}
+        self._assign_note = ""
         for key, val in fields.items():
             if key == "title":
                 out["summary"] = val
@@ -392,9 +431,18 @@ class JiraAdapter(PMAdapter):
             elif key == "due_date":
                 out["duedate"] = str(val or "") or None
             elif key == "owner" or key == "assigned_to":
-                account = str(val or "").strip()
-                if account:
-                    out["assignee"] = {"accountId": account}
+                if isinstance(val, list):
+                    names = [str(v).strip() for v in val if str(v).strip()]
+                    name = names[0] if names else ""
+                else:
+                    name = str(val or "").strip()
+                if not name:
+                    continue
+                found = self._account_id_for_name(name)
+                if found:
+                    out["assignee"] = {"accountId": found}
+                else:
+                    self._assign_note = f"unknown assignee: {name}"
             elif key == "estimate":
                 out["timeoriginalestimate"] = val
             elif key == "remaining":
@@ -426,12 +474,14 @@ class JiraAdapter(PMAdapter):
         given = dict(fields or {})
         given.pop("state", None)
         given.pop("iteration_id", None)
+        write_fields = self._write_fields(given)
+        assign_note = self._assign_note
         payload = {
             "fields": {
                 "project": {"key": self._project},
                 "summary": title,
                 "issuetype": {"name": str(given.pop("issue_type", "Task"))},
-                **self._write_fields(given),
+                **write_fields,
             }
         }
         dropped: list[str] = []
@@ -456,6 +506,8 @@ class JiraAdapter(PMAdapter):
         item = self.get_item(str(data["key"]))
         if dropped:
             _annotate_degraded(item, dropped, reason)
+        if assign_note:
+            item.fields["assign_note"] = assign_note
         return item
 
     def update_item(
@@ -469,6 +521,7 @@ class JiraAdapter(PMAdapter):
             given["title"] = title
         sprint = str(given.pop("iteration_id", "") or "")
         body = self._write_fields(given)
+        assign_note = self._assign_note
         dropped: list[str] = []
         reason = ""
         if body:
@@ -500,6 +553,8 @@ class JiraAdapter(PMAdapter):
         item = self.get_item(key)
         if dropped:
             _annotate_degraded(item, dropped, reason)
+        if assign_note:
+            item.fields["assign_note"] = assign_note
         return item
 
     def delete_item(self, item_id: str) -> None:

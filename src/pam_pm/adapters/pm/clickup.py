@@ -221,6 +221,8 @@ class ClickUpAdapter(PMAdapter):
         self._team_id: str | None = None
         self._list_id: str | None = None
         self._statuses: list[dict[str, Any]] | None = None
+        self._user_cache: dict[str, str] = {}
+        self._assign_note: str = ""
 
     def close(self) -> None:
         self._client.close()
@@ -426,21 +428,67 @@ class ClickUpAdapter(PMAdapter):
         raise ClickUpError("no completed status on this list")
 
     def _assignee_id(self, owner: str) -> str:
-        name = (owner or "").strip().lower()
-        if not name:
+        want = (owner or "").strip()
+        if not want:
             return ""
+        key = want.lower()
+        if key in self._user_cache:
+            return self._user_cache[key]
+        candidates: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        def _collect(rows: Any) -> None:
+            for entry in rows if isinstance(rows, list) else []:
+                if not isinstance(entry, dict):
+                    continue
+                user = entry.get("user", entry)
+                if not isinstance(user, dict):
+                    continue
+                uid = str(user.get("id", "") or "").strip()
+                if not uid or uid in seen:
+                    if not uid:
+                        candidates.append(user)
+                    continue
+                seen.add(uid)
+                candidates.append(user)
+
         try:
             data = self._request("GET", f"/list/{self._list_id_for_ref()}/member")
+            rows = data.get("members", []) if isinstance(data, dict) else []
+            _collect(rows)
         except ClickUpError:
-            return ""
-        rows = data.get("members", []) if isinstance(data, dict) else []
-        for entry in rows if isinstance(rows, list) else []:
-            user = entry.get("user", entry) if isinstance(entry, dict) else {}
-            if not isinstance(user, dict):
+            pass
+        try:
+            for team in self._teams():
+                if isinstance(team, dict):
+                    _collect(team.get("members", []))
+        except ClickUpError:
+            pass
+
+        def _names(user: dict[str, Any]) -> list[str]:
+            out: list[str] = []
+            for field in ("username", "email", "full_name", "name", "display_name"):
+                val = str(user.get(field, "") or "").strip()
+                if val:
+                    out.append(val)
+            return out
+
+        for user in candidates:
+            uid = str(user.get("id", "") or "").strip()
+            if not uid:
                 continue
-            for field in ("username", "email"):
-                if str(user.get(field, "") or "").strip().lower() == name:
-                    return str(user.get("id", ""))
+            for text in _names(user):
+                if text.lower() == key:
+                    self._user_cache[key] = uid
+                    return uid
+        for user in candidates:
+            uid = str(user.get("id", "") or "").strip()
+            if not uid:
+                continue
+            for text in _names(user):
+                if text.lower().startswith(key):
+                    self._user_cache[key] = uid
+                    return uid
         return ""
 
     @staticmethod
@@ -455,6 +503,7 @@ class ClickUpAdapter(PMAdapter):
 
     def _task_input(self, fields: dict[str, Any]) -> dict[str, Any]:
         out: dict[str, Any] = {}
+        self._assign_note = ""
         for key, val in fields.items():
             if key == "title":
                 out["name"] = val
@@ -471,11 +520,17 @@ class ClickUpAdapter(PMAdapter):
                 out["due_date"] = int(_ms_from_due_date(text)) if text else None
             elif key == "owner" or key == "assigned_to":
                 names = self._split_tags(val)
-                ids = [self._assignee_id(n) for n in names]
-                found = [i for i in ids if i]
-                if found:
-                    out["assignees"] = found
-                elif not names:
+                if names:
+                    ids = [self._assignee_id(n) for n in names]
+                    found = [i for i in ids if i]
+                    if found:
+                        out["assignees"] = [
+                            int(i) if str(i).isdigit() else i for i in found
+                        ]
+                    missing = [n for n, i in zip(names, ids) if not i]
+                    if missing:
+                        self._assign_note = f"unknown assignee: {', '.join(missing)}"
+                else:
                     out["assignees"] = []
             elif key == "estimate":
                 try:
@@ -584,11 +639,16 @@ class ClickUpAdapter(PMAdapter):
     def create_item(self, title: str, fields: dict[str, Any] | None = None) -> WorkItem:
         given = dict(fields or {})
         given.pop("iteration_id", None)
-        payload = {"name": title, **self._task_input(given)}
+        task_input = self._task_input(given)
+        assign_note = self._assign_note
+        payload = {"name": title, **task_input}
         data = self._request("POST", f"/list/{self._list_id_for_ref()}/task", payload)
         if not isinstance(data, dict) or not data.get("id"):
             raise ClickUpError("create failed: no task id returned")
-        return self.get_item(str(data["id"]))
+        item = self.get_item(str(data["id"]))
+        if assign_note:
+            item.fields["assign_note"] = assign_note
+        return item
 
     def update_item(self, item_id: str, fields: dict[str, Any]) -> WorkItem:
         task_id = self._require_id(item_id)
@@ -597,9 +657,13 @@ class ClickUpAdapter(PMAdapter):
         if sprint:
             self.set_item_iteration(task_id, sprint)
         payload = self._task_input(given)
+        assign_note = self._assign_note
         if payload:
             self._request("PUT", f"/task/{task_id}", payload)
-        return self.get_item(task_id)
+        item = self.get_item(task_id)
+        if assign_note:
+            item.fields["assign_note"] = assign_note
+        return item
 
     def delete_item(self, item_id: str) -> None:
         task_id = self._require_id(item_id)

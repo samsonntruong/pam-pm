@@ -182,6 +182,8 @@ class MondayAdapter(PMAdapter):
         self._board_name = ""
         self._groups: list[dict[str, Any]] | None = None
         self._columns: list[dict[str, Any]] | None = None
+        self._user_cache: dict[str, str] = {}
+        self._assign_note: str = ""
 
     def close(self) -> None:
         self._client.close()
@@ -356,19 +358,30 @@ class MondayAdapter(PMAdapter):
         return ""
 
     def _user_id_for_name(self, name: str) -> str:
-        want = (name or "").strip().lower()
+        want = (name or "").strip()
         if not want:
             return ""
+        key = want.lower()
+        if key in self._user_cache:
+            return self._user_cache[key]
         try:
             data = self._graphql("query UserLookup { users(limit: 100) { id name } }")
         except MondayError:
             return ""
         rows = data.get("users", [])
-        for entry in rows if isinstance(rows, list) else []:
-            if not isinstance(entry, dict):
-                continue
-            if str(entry.get("name", "") or "").strip().lower() == want:
-                return str(entry.get("id", ""))
+        entries = [e for e in rows if isinstance(e, dict)] if isinstance(rows, list) else []
+        for entry in entries:
+            if str(entry.get("name", "") or "").strip().lower() == key:
+                uid = str(entry.get("id", "") or "").strip()
+                if uid:
+                    self._user_cache[key] = uid
+                    return uid
+        for entry in entries:
+            if str(entry.get("name", "") or "").strip().lower().startswith(key):
+                uid = str(entry.get("id", "") or "").strip()
+                if uid:
+                    self._user_cache[key] = uid
+                    return uid
         return ""
 
     @staticmethod
@@ -385,6 +398,7 @@ class MondayAdapter(PMAdapter):
 
     def _column_values_for(self, fields: dict[str, Any]) -> dict[str, Any]:
         out: dict[str, Any] = {}
+        self._assign_note = ""
         for key, val in fields.items():
             if key == "description":
                 column = self._column_id_for("description")
@@ -405,6 +419,8 @@ class MondayAdapter(PMAdapter):
                             out[column] = {
                                 "personsAndTeams": [{"id": found, "kind": "person"}]
                             }
+                        else:
+                            self._assign_note = f"unknown assignee: {names[0]}"
                     else:
                         out[column] = {"personsAndTeams": []}
             elif key == "tags":
@@ -558,6 +574,7 @@ class MondayAdapter(PMAdapter):
                 raise MondayError("no groups on this board")
             group_id = str(groups[0].get("id", ""))
         values = self._column_values_for(given)
+        assign_note = self._assign_note
         data = self._graphql(
             "mutation ItemCreate($boardId: ID!, $groupId: String!,"
             " $name: String!, $values: JSON!)"
@@ -574,7 +591,10 @@ class MondayAdapter(PMAdapter):
         new_id = str(created.get("id", "") or "") if isinstance(created, dict) else ""
         if not new_id:
             raise MondayError("create failed: no item id returned")
-        return self.get_item(new_id)
+        item = self.get_item(new_id)
+        if assign_note:
+            item.fields["assign_note"] = assign_note
+        return item
 
     def update_item(self, item_id: str, fields: dict[str, Any]) -> WorkItem:
         cleaned = self._require_id(item_id)
@@ -605,6 +625,7 @@ class MondayAdapter(PMAdapter):
                 },
             )
         values = self._column_values_for(given)
+        assign_note = self._assign_note
         if values:
             self._graphql(
                 "mutation ItemColumns($boardId: ID!, $itemId: ID!, $values: JSON!)"
@@ -612,7 +633,10 @@ class MondayAdapter(PMAdapter):
                 " column_values: $values) { id } }",
                 {"boardId": board_id, "itemId": cleaned, "values": json.dumps(values)},
             )
-        return self.get_item(cleaned)
+        item = self.get_item(cleaned)
+        if assign_note:
+            item.fields["assign_note"] = assign_note
+        return item
 
     def delete_item(self, item_id: str) -> None:
         cleaned = self._require_id(item_id)

@@ -159,6 +159,8 @@ class AsanaAdapter(PMAdapter):
         self._project_gid: str | None = None
         self._project_name = ""
         self._workspace_gid = ""
+        self._user_cache: dict[str, str] = {}
+        self._assign_note: str = ""
 
     def close(self) -> None:
         self._client.close()
@@ -328,9 +330,12 @@ class AsanaAdapter(PMAdapter):
         raise AsanaError(f"unknown Asana section: {name}")
 
     def _user_id_for_name(self, name: str) -> str:
-        want = (name or "").strip().lower()
+        want = (name or "").strip()
         if not want:
             return ""
+        key = want.lower()
+        if key in self._user_cache:
+            return self._user_cache[key]
         workspace = self._workspace_for_project()
         params: dict[str, Any] = {"opt_fields": "gid,name", "limit": "100"}
         if workspace:
@@ -339,9 +344,19 @@ class AsanaAdapter(PMAdapter):
             data = self._request("GET", "/users", params)
         except AsanaError:
             return ""
-        for entry in _data_list(data):
-            if str(entry.get("name", "") or "").strip().lower() == want:
-                return str(entry.get("gid", ""))
+        rows = _data_list(data)
+        for entry in rows:
+            if str(entry.get("name", "") or "").strip().lower() == key:
+                gid = str(entry.get("gid", "") or "").strip()
+                if gid:
+                    self._user_cache[key] = gid
+                    return gid
+        for entry in rows:
+            if str(entry.get("name", "") or "").strip().lower().startswith(key):
+                gid = str(entry.get("gid", "") or "").strip()
+                if gid:
+                    self._user_cache[key] = gid
+                    return gid
         return ""
 
     def _tag_ids_for_names(self, names: list[str]) -> list[str]:
@@ -458,6 +473,7 @@ class AsanaAdapter(PMAdapter):
 
     def _write_payload(self, fields: dict[str, Any]) -> dict[str, Any]:
         out: dict[str, Any] = {}
+        self._assign_note = ""
         for key, val in fields.items():
             if key == "title":
                 out["name"] = val
@@ -472,6 +488,8 @@ class AsanaAdapter(PMAdapter):
                     found = self._user_id_for_name(names[0])
                     if found:
                         out["assignee"] = found
+                    else:
+                        self._assign_note = f"unknown assignee: {names[0]}"
                 else:
                     out["assignee"] = None
             elif key == "tags":
@@ -521,10 +539,12 @@ class AsanaAdapter(PMAdapter):
             if not sections:
                 raise AsanaError("no sections on this project")
             section_gid = str(sections[0].get("gid", ""))
+        write_payload = self._write_payload(given)
+        assign_note = self._assign_note
         payload = {
             "name": title,
             "projects": [self._project_gid_for_ref()],
-            **self._write_payload(given),
+            **write_payload,
         }
         data = self._request("POST", "/tasks", None, payload)
         entry = _data_dict(data)
@@ -532,7 +552,10 @@ class AsanaAdapter(PMAdapter):
             raise AsanaError("create failed: no task gid returned")
         gid = str(entry["gid"])
         self._move_to_section(gid, section_gid)
-        return self.get_item(gid)
+        item = self.get_item(gid)
+        if assign_note:
+            item.fields["assign_note"] = assign_note
+        return item
 
     def update_item(self, item_id: str, fields: dict[str, Any]) -> WorkItem:
         gid = self._require_id(item_id)
@@ -544,9 +567,13 @@ class AsanaAdapter(PMAdapter):
         if state:
             self._move_to_section(gid, self._section_gid_for_name(state))
         payload = self._write_payload(given)
+        assign_note = self._assign_note
         if payload:
             self._request("PUT", f"/tasks/{quote(gid, safe='')}", None, payload)
-        return self.get_item(gid)
+        item = self.get_item(gid)
+        if assign_note:
+            item.fields["assign_note"] = assign_note
+        return item
 
     def delete_item(self, item_id: str) -> None:
         gid = self._require_id(item_id)

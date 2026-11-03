@@ -83,6 +83,13 @@ class _FakeJira:
             body = json.loads(request.content.decode("utf-8")) if request.content else None
         except ValueError:
             body = None
+        if path.endswith("/user/search") and method == "GET":
+            query = request.url.params.get("query", "").strip()
+            if not query:
+                return httpx.Response(200, json=[])
+            return httpx.Response(
+                200, json=[{"accountId": query, "displayName": query}]
+            )
         if path.endswith("/search/jql") and method == "POST":
             return self._search(body)
         if path.endswith("/issueLink") and method == "POST":
