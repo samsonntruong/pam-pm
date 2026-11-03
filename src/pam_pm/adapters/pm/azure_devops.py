@@ -492,6 +492,44 @@ class ADOAdapter(PMAdapter):
         item.fields["rejected_fields"] = dict(rejected)
         return item
 
+    def _create_minimal_then_patch(
+        self,
+        item_type: str,
+        url: str,
+        normalized: dict[str, Any],
+        warnings: list[str],
+    ) -> dict[str, Any]:
+        """Create with title plus state only, then patch the rest.
+
+        One invalid field (unknown on this process) no longer fails
+        the whole create. The follow-up update reuses the per-field
+        retry, keeping every field ADO accepts. Raises when even the
+        minimal create fails.
+        """
+        minimal = {
+            key: normalized[key]
+            for key in ("title", "state", "System.Title", "System.State")
+            if key in normalized
+        } or {"title": normalized.get("title", "Untitled")}
+        data = self._request(
+            "POST", url, self._patch_ops(minimal), "application/json-patch+json"
+        )
+        if not isinstance(data, dict) or not data.get("id"):
+            raise ADOError("create failed: no work item id returned")
+        item_id = str(data["id"])
+        rest = {
+            key: val for key, val in normalized.items() if key not in minimal
+        }
+        rest = {key: val for key, val in rest.items() if val is not None}
+        if rest:
+            item_url = self._url(
+                f"/_apis/wit/workitems/{item_id}?api-version={API_VERSION}"
+            )
+            self._update_fields_one_by_one(item_id, rest, warnings, item_url)
+        return self._request(
+            "GET", self._url(f"/_apis/wit/workitems/{item_id}?api-version={API_VERSION}")
+        )
+
     def _update_fields_one_by_one(
         self,
         item_id: str,
@@ -604,12 +642,19 @@ class ADOAdapter(PMAdapter):
             f"/_apis/wit/workitems/${quote(item_type, safe='')}"
             f"?api-version={API_VERSION}"
         )
-        data = self._request(
-            "POST",
-            url,
-            self._patch_ops(normalized),
-            "application/json-patch+json",
-        )
+        try:
+            data = self._request(
+                "POST",
+                url,
+                self._patch_ops(normalized),
+                "application/json-patch+json",
+            )
+        except ADOError as exc:
+            if exc.status_code != 400:
+                raise
+            data = self._create_minimal_then_patch(
+                item_type, url, normalized, warnings
+            )
         if not isinstance(data, dict) or not data.get("id"):
             raise ADOError("create failed: no work item id returned")
         item = self._to_item(data)
