@@ -110,3 +110,31 @@ def test_waiter_gets_eta_at_end(tmp_path) -> None:
         assert out["plan"]["summary"] in last
     finally:
         board.close()
+
+
+class _ADOShapedItem:
+    def __init__(self, item_id, title, state, display_name):
+        self.id = item_id
+        self.title = title
+        self.state = state
+        self.fields = {"System.AssignedTo": {"displayName": display_name}}
+
+
+class _ADOShapedBoard:
+    def __init__(self, items):
+        self._items = items
+
+    def list_items(self, limit=200):
+        return list(self._items)[:limit]
+
+
+def test_blocker_matches_ado_identity_dict_owner() -> None:
+    from pam_pm.agents import interviewer as iv
+    items = [
+        _ADOShapedItem("5", "Auth token refresh", "Active", "Maya Pam"),
+        _ADOShapedItem("6", "Session timeout", "Active", "Leo Pam"),
+    ]
+    board = _ADOShapedBoard(items)
+    matched = iv._match_blocked_item(LEO_REPORT, ["Leo Pam"], board, None)
+    assert matched is not None
+    assert matched.id == "6"

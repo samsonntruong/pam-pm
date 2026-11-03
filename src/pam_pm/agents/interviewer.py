@@ -1031,6 +1031,16 @@ def _blocker_item_state(item: Any) -> str:
     return str(getattr(item, "state", "") or "")
 
 
+def _blocker_owner_name(value: Any) -> str:
+    if isinstance(value, dict):
+        for key in ("displayName", "display_name", "name", "uniqueName"):
+            text = str(value.get(key) or "").strip()
+            if text:
+                return text
+        return ""
+    return str(value or "").strip()
+
+
 def _blocker_item_owner(item: Any) -> str:
     if isinstance(item, dict):
         fields = item.get("fields", {})
@@ -1039,19 +1049,19 @@ def _blocker_item_owner(item: Any) -> str:
         for key in ("assigned_to", "owner", "assignee", "user_id"):
             value = item.get(key) or fields.get(key)
             if value:
-                return str(value)
-        return str(fields.get("System.AssignedTo", "") or "")
+                return _blocker_owner_name(value)
+        return _blocker_owner_name(fields.get("System.AssignedTo", ""))
     for key in ("assigned_to", "owner", "assignee", "user_id"):
         value = getattr(item, key, None)
         if value:
-            return str(value)
+            return _blocker_owner_name(value)
     fields = getattr(item, "fields", None)
     if isinstance(fields, dict):
         for key in ("assigned_to", "owner", "assignee", "user_id"):
             value = fields.get(key)
             if value:
-                return str(value)
-        return str(fields.get("System.AssignedTo", "") or "")
+                return _blocker_owner_name(value)
+        return _blocker_owner_name(fields.get("System.AssignedTo", ""))
     return ""
 
 
