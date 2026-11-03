@@ -131,7 +131,10 @@ def propose_listen_tasks(
             owner: str | None = raw_owner
         else:
             evidence = str(action.get("evidence_quote", "") or "")
-            owner = suggest_owner(evidence or title, people, board_owners)
+            mention_text = " ".join(
+                part for part in (evidence, title, str(transcript or "")[:2000]) if part
+            )
+            owner = suggest_owner(mention_text, people, board_owners)
             if owner is None:
                 owner = suggest_owner(title, people, board_owners)
         quote = str(action.get("evidence_quote", "") or "")[:300] or title[:300]
