@@ -67,8 +67,8 @@ class _FakeLinks:
         if "TeamIssueLinks" in query:
             self.team_issues_calls += 1
             assert variables.get("teamId") == TEAM_ID
-            assert "issues(first: 250)" in query
-            assert "relations(first: 50)" in query
+            assert "issues(first: 25)" in query
+            assert "relations(first: 10)" in query
             assert "inverseRelations" not in query
             nodes: list[dict[str, Any]] = []
             for ident, uuid in self.by_ident.items():

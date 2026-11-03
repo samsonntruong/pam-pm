@@ -635,8 +635,8 @@ class LinearAdapter(PMAdapter):
         team_id = self._team_id_for_key()
         data = self._graphql(
             "query TeamIssueLinks($teamId: String!) {"
-            " team(id: $teamId) { issues(first: 250)"
-            " { nodes { id identifier relations(first: 50)"
+            " team(id: $teamId) { issues(first: 25)"
+            " { nodes { id identifier relations(first: 10)"
             " { nodes { type relatedIssue { id identifier } } } } } } }",
             {"teamId": team_id},
         )
