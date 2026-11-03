@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.0.0 - 2026-11-03
+
+- Live PM backends: Pam board, Azure DevOps, Jira, Linear, Trello, ClickUp, Asana, and Monday, chosen per project in the wizard.
+- Guided setup wizard with per-connector help and Test buttons.
+- Slack Socket Mode plus polling fallback.
+- Listen meetings beta with realtime transcription, notes, and action item approval.
+- LAN share mode for team access on the local network.
+- Desktop wrapper beta: `pam desktop` window plus tray on Windows and macOS.
+
 ## Unreleased
 
 - Teams two-way via Graph polling: Entra device code sign-in in the wizard Teams step, per-chat watermarks on the shared poll interval, DM plus mention detection onto the shared event bus. No public endpoint needed.

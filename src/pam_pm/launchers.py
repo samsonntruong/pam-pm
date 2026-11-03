@@ -131,7 +131,7 @@ def create_mac_app_bundle(
     parent: Path,
     *,
     pam_exe: str = "$HOME/.local/bin/pam",
-    version: str = "0.2.0",
+    version: str = "1.0.0",
     icon_src: Path | None = None,
 ) -> Path:
     """Create Pam.app under parent, overwriting any stale bundle."""

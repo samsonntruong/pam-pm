@@ -24,7 +24,7 @@ HOME="${HOME:-$(eval echo ~)}"
 
 # Default release tag. Update this constant when tagging a release.
 # Mirrors the version in pyproject.toml and src/pam_pm/__init__.py (__version__).
-DEFAULT_VERSION="v0.2.0"
+DEFAULT_VERSION="v1.0.0"
 UV_INSTALL_SCRIPT="https://astral.sh/uv/install.sh"
 REPO_ARCHIVE_BASE="https://github.com/samsonntruong/pam-pm/archive/refs"
 
