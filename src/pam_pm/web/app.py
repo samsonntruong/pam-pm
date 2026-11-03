@@ -7493,7 +7493,7 @@ async def listen_socket(websocket: WebSocket) -> None:
     params = websocket.query_params
     project = (params.get("project", "default") or "default").strip() or "default"
     title = (params.get("title", "") or "").strip()
-    mode = (params.get("mode", "PUSH_TO_TALK") or "PUSH_TO_TALK").strip()
+    mode = (params.get("mode", "ENDPOINTING") or "ENDPOINTING").strip()
     session_id = (params.get("session_id", "") or "").strip()
     if not session_id:
         import uuid
