@@ -46,10 +46,10 @@ POLLER_DDL = """CREATE TABLE IF NOT EXISTS poller_state (
 def build_changed_wiql(since: str | None) -> str:
     """Return WIQL ordered by ChangedDate ascending."""
     if since:
-        tick = since.replace("'", "''")
+        tick = since.replace("'", "''").split("T")[0]
         return (
             "SELECT [System.Id] FROM WorkItems"
-            f" WHERE [System.ChangedDate] > '{tick}'"
+            f" WHERE [System.ChangedDate] >= '{tick}'"
             " ORDER BY [System.ChangedDate] ASC"
         )
     return (

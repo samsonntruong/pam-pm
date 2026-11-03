@@ -846,10 +846,10 @@ class ADOAdapter(PMAdapter):
     def poll_changes(self, since: str | None = None) -> list[WorkItem]:
         """List changed items; closed means is_closed state on any process."""
         if since:
-            tick = since.replace("'", "''")
+            tick = since.replace("'", "''").split("T")[0]
             query = (
                 "SELECT [System.Id] FROM WorkItems"
-                f" WHERE [System.ChangedDate] > '{tick}'"
+                f" WHERE [System.ChangedDate] >= '{tick}'"
                 " ORDER BY [System.ChangedDate] ASC"
             )
         else:
