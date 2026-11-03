@@ -36,7 +36,8 @@ INTERVIEWS_TABLE_DDL = """CREATE TABLE IF NOT EXISTS interviews (
 PROJECTS_TABLE_DDL = """CREATE TABLE IF NOT EXISTS projects (
   name TEXT PRIMARY KEY,
   backend TEXT NOT NULL DEFAULT 'azure_devops',
-  share_on_lan INTEGER NOT NULL DEFAULT 0
+  share_on_lan INTEGER NOT NULL DEFAULT 0,
+  chat_backend TEXT NOT NULL DEFAULT 'slack'
 )"""
 
 CONVERSATIONS_TABLE_DDL = """CREATE TABLE IF NOT EXISTS conversations (
@@ -203,6 +204,16 @@ def _migrate_projects(conn: sqlite3.Connection) -> None:
         "UPDATE projects SET share_on_lan = 0"
         " WHERE share_on_lan IS NULL OR share_on_lan NOT IN (0, 1)"
     )
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(projects)").fetchall()]
+    if "chat_backend" not in cols:
+        conn.execute(
+            "ALTER TABLE projects ADD COLUMN chat_backend"
+            " TEXT NOT NULL DEFAULT 'slack'"
+        )
+    conn.execute(
+        "UPDATE projects SET chat_backend = 'slack'"
+        " WHERE chat_backend IS NULL OR chat_backend NOT IN ('slack', 'teams')"
+    )
     conn.commit()
 
 
@@ -368,6 +379,42 @@ def set_project_backend(db: DbLike, name: str, backend: str) -> str:
         conn.execute(
             "INSERT INTO projects (name, backend) VALUES (?, ?)"
             " ON CONFLICT(name) DO UPDATE SET backend = excluded.backend",
+            (want, canonical),
+        )
+        conn.commit()
+    return canonical
+
+
+def normalize_chat_backend(value: object) -> str:
+    """Return slack or teams, defaulting to slack for unknown values."""
+    text = str(value or "").strip().lower()
+    if text == "teams":
+        return "teams"
+    return "slack"
+
+
+def get_project_chat_backend(db: DbLike, name: str) -> str:
+    """Return a project chat backend, defaulting to slack."""
+    want = (name or "").strip()
+    with _connect(db) as conn:
+        _ensure_tables(conn)
+        row = conn.execute(
+            "SELECT chat_backend FROM projects WHERE name = ?", (want,)
+        ).fetchone()
+    if row is None:
+        return "slack"
+    return normalize_chat_backend(row[0])
+
+
+def set_project_chat_backend(db: DbLike, name: str, backend: str) -> str:
+    """Store a project chat backend choice, returning the canonical value."""
+    want = (name or "").strip() or "default"
+    canonical = normalize_chat_backend(backend)
+    with _connect(db) as conn:
+        _ensure_tables(conn)
+        conn.execute(
+            "INSERT INTO projects (name, chat_backend) VALUES (?, ?)"
+            " ON CONFLICT(name) DO UPDATE SET chat_backend = excluded.chat_backend",
             (want, canonical),
         )
         conn.commit()

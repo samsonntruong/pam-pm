@@ -64,6 +64,10 @@ _SLACK_POLL_TASK: Any = None
 _SLACK_SOCKET: Any = None
 _SLACK_SOCKET_PROJECT = "default"
 _BOARD_POLL_TASK: Any = None
+_TEAMS_POLLERS: dict[str, Any] = {}
+_TEAMS_POLL_TASKS: dict[str, Any] = {}
+_TEAMS_TEST_GRAPHS: dict[str, Any] = {}
+_TEAMS_TEST_CHATS: dict[str, Any] = {}
 
 logger = logging.getLogger(__name__)
 
@@ -613,6 +617,227 @@ def stop_slack_polling() -> None:
             logger.info("slack poll task cancel skipped")
 
 
+def set_teams_test_graph(project: str, graph: Any) -> None:
+    """Pin a fake Graph reader for one project (tests only)."""
+    _TEAMS_TEST_GRAPHS[_safe_project(project)] = graph
+
+
+def set_teams_test_chats(project: str, chats: list[dict[str, Any]]) -> None:
+    """Pin a watched chat list for one project (tests only)."""
+    _TEAMS_TEST_CHATS[_safe_project(project)] = [dict(c) for c in (chats or [])]
+
+
+def reset_teams_poll_state() -> None:
+    """Clear cached Teams pollers, tasks, and test overrides."""
+    for task in list(_TEAMS_POLL_TASKS.values()):
+        try:
+            task.cancel()
+        except Exception:  # noqa: BLE001, S110
+            pass
+    _TEAMS_POLL_TASKS.clear()
+    _TEAMS_POLLERS.clear()
+    _TEAMS_TEST_GRAPHS.clear()
+    _TEAMS_TEST_CHATS.clear()
+
+
+def teams_refresh_available() -> bool:
+    """Return True when a Teams refresh token is stored or in env."""
+    try:
+        effective = secrets_mod.effective_teams_config()
+    except Exception:  # noqa: BLE001
+        return bool(os.environ.get("TEAMS_REFRESH_TOKEN", "").strip())
+    if str(effective.get("refresh_token", "") or "").strip():
+        return True
+    try:
+        saved = secrets_mod.load_teams_config()
+    except Exception:  # noqa: BLE001
+        return False
+    return bool((saved or {}).get("has_refresh_token", False))
+
+
+def _teams_watched_chats(project: str) -> list[dict[str, Any]]:
+    name = _safe_project(project)
+    if name in _TEAMS_TEST_CHATS:
+        return [dict(c) for c in _TEAMS_TEST_CHATS[name]]
+    try:
+        from pam_pm.core import recovery as recovery_mod
+
+        raw = recovery_mod.kv_get(_db_path(), f"teams.chats:{name}")
+        if str(raw or "").strip():
+            data = json.loads(str(raw))
+            if isinstance(data, list):
+                return [dict(c) for c in data if isinstance(c, dict)]
+    except Exception:  # noqa: BLE001, S110
+        pass
+    return []
+
+
+def get_teams_poller(
+    project: str = "default",
+    graph: Any = None,
+    db: Any = None,
+    chats: list[dict[str, Any]] | None = None,
+    bus_override: Any = None,
+) -> Any | None:
+    """Return the shared TeamsPoller for a project, or None when off.
+
+    The loop is off when the project chat backend is not teams, or
+    when no refresh token is stored (and no test graph is pinned).
+    Access tokens are minted silently from the stored refresh token
+    and rotated values are saved back (0600) by GraphTokenProvider.
+    Watermarks resume from SQLite. Inbound matches publish to the
+    shared bus used by Slack.
+    """
+    name = _safe_project(project)
+    if name in _TEAMS_POLLERS:
+        return _TEAMS_POLLERS[name]
+    if _project_chat_backend(name) != "teams":
+        return None
+    use_graph = graph if graph is not None else _TEAMS_TEST_GRAPHS.get(name)
+    poll_db = db if db is not None else _db_path()
+    use_bus = bus_override if bus_override is not None else bus
+    if use_graph is None:
+        if not teams_refresh_available():
+            return None
+        try:
+            from pam_pm.adapters.chat.teams_auth import GraphTokenProvider
+            from pam_pm.adapters.chat.teams_poll import GraphClient
+        except Exception:  # noqa: BLE001
+            return None
+        try:
+            provider = GraphTokenProvider()
+            use_graph = GraphClient(provider)
+        except Exception:  # noqa: BLE001
+            return None
+    if chats is not None:
+        watch = [dict(c) for c in chats]
+    else:
+        watch = _teams_watched_chats(name)
+    try:
+        from pam_pm.adapters.chat.teams_poll import TeamsPoller
+    except Exception:  # noqa: BLE001
+        return None
+
+    def _resume_polled(message: Any) -> None:
+        try:
+            router_mod.handle_teams_event(
+                {
+                    "type": "teams_message",
+                    "text": str(getattr(message, "text", "") or ""),
+                    "user_id": str(getattr(message, "user_id", "") or ""),
+                    "channel": str(getattr(message, "user_id", "") or ""),
+                    "message_id": str(getattr(message, "id", "") or ""),
+                },
+                chat=get_chat_adapter(name),
+                board=get_board_adapter(name),
+                db=poll_db,
+                event_sink=use_bus.publish if use_bus is not None else bus.publish,
+            )
+        except Exception:  # noqa: BLE001
+            logger.info("teams poll resume failed, keeping local result")
+
+    try:
+        poller = TeamsPoller(
+            use_graph, poll_db, watch, bus=use_bus, on_message=_resume_polled
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    _TEAMS_POLLERS[name] = poller
+    return poller
+
+
+def poll_teams_once(project: str = "default") -> list[Any]:
+    """Poll Teams once, returning inbound matches (never raises)."""
+    name = _safe_project(project)
+    poller = get_teams_poller(name)
+    if poller is None:
+        return []
+    try:
+        found = list(poller.poll_once())
+    except Exception:  # noqa: BLE001
+        logger.info("teams poll_once failed, will retry next interval")
+        return []
+    if found:
+        logger.info("teams poll found %d inbound messages", len(found))
+    return found
+
+
+async def _teams_poll_loop(project: str = "default") -> None:
+    """Poll Teams forever on the normal cadence."""
+    name = _safe_project(project)
+    while True:
+        try:
+            await asyncio.to_thread(poll_teams_once, name)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.info("teams poll loop failed, will retry")
+        await asyncio.sleep(max(5, _effective_poll_interval()))
+
+
+def start_teams_polling(project: str = "default") -> Any | None:
+    """Start the Teams poller loop for one project when configured."""
+    name = _safe_project(project)
+    poller = get_teams_poller(name)
+    if poller is None:
+        return None
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return poller
+    task = _TEAMS_POLL_TASKS.get(name)
+    if task is None or task.done():
+        _TEAMS_POLL_TASKS[name] = loop.create_task(_teams_poll_loop(name))
+        try:
+            interval = _effective_poll_interval()
+        except Exception:  # noqa: BLE001
+            interval = 60
+        logger.info("teams poller loop started: project=%s interval=%ss", name, interval)
+    return poller
+
+
+def start_all_teams_polling() -> list[str]:
+    """Start Teams loops for every teams project with a refresh token."""
+    started: list[str] = []
+    if not teams_refresh_available():
+        return started
+    for name in _known_project_names():
+        try:
+            if _project_chat_backend(name) != "teams":
+                continue
+        except Exception:  # noqa: BLE001, S112
+            continue
+        try:
+            if start_teams_polling(name) is not None:
+                started.append(name)
+        except Exception:  # noqa: BLE001
+            logger.info("teams poll startup skipped for %s", name)
+    return started
+
+
+def stop_teams_polling(project: str | None = None) -> None:
+    """Stop one or all Teams background loops and drop cached pollers."""
+    if project is None:
+        names = list(_TEAMS_POLL_TASKS.keys())
+        for key in names:
+            task = _TEAMS_POLL_TASKS.pop(key, None)
+            _TEAMS_POLLERS.pop(key, None)
+            if task is not None:
+                try:
+                    task.cancel()
+                except Exception:  # noqa: BLE001
+                    logger.info("teams poll task cancel skipped")
+        return
+    name = _safe_project(project)
+    task = _TEAMS_POLL_TASKS.pop(name, None)
+    _TEAMS_POLLERS.pop(name, None)
+    if task is not None:
+        try:
+            task.cancel()
+        except Exception:  # noqa: BLE001
+            logger.info("teams poll task cancel skipped")
+
+
 _BOARD_FORWARD_TOKENS = frozenset(
     {"dependency-forward", "successor", "forward", "blocks", "block"}
 )
@@ -1063,6 +1288,15 @@ async def _startup_board_poll() -> None:
         logger.info("board poll startup skipped")
 
 
+@app.on_event("startup")
+async def _startup_teams_poll() -> None:
+    """Start Teams poll loops for teams projects with a refresh token."""
+    try:
+        start_all_teams_polling()
+    except Exception:  # noqa: BLE001
+        logger.info("teams poll startup skipped")
+
+
 @app.on_event("shutdown")
 async def _shutdown_board_poll() -> None:
     """Stop the board close poller."""
@@ -1070,6 +1304,15 @@ async def _shutdown_board_poll() -> None:
         stop_board_polling()
     except Exception:  # noqa: BLE001
         logger.info("board poll shutdown skipped")
+
+
+@app.on_event("shutdown")
+async def _shutdown_teams_poll() -> None:
+    """Stop all Teams poll loops."""
+    try:
+        stop_teams_polling()
+    except Exception:  # noqa: BLE001
+        logger.info("teams poll shutdown skipped")
 
 
 @app.on_event("shutdown")
@@ -2110,22 +2353,37 @@ def _check_teams() -> tuple[bool, str, str]:
             "app_id": os.environ.get("TEAMS_APP_ID", ""),
             "app_password": os.environ.get("TEAMS_APP_PASSWORD", ""),
             "tenant_id": os.environ.get("TEAMS_TENANT_ID", ""),
+            "refresh_token": os.environ.get("TEAMS_REFRESH_TOKEN", ""),
         }
-    missing: list[str] = []
     if not str(effective.get("app_id", "") or "").strip():
-        missing.append("app ID")
-    if not str(effective.get("app_password", "") or "").strip():
-        missing.append("app password")
-    if not str(effective.get("tenant_id", "") or "").strip():
-        missing.append("tenant ID")
-    if missing:
         return (
             False,
-            "Teams check failed. Pam cannot send messages.",
-            "Open Step 2, add the missing "
-            + ", ".join(missing)
-            + ", choose Save, then Test again.",
+            "Teams check failed. App ID is missing.",
+            "Open Step 2, add the App ID, choose Save, then Test again.",
         )
+    if not str(effective.get("app_password", "") or "").strip():
+        return (
+            False,
+            "Teams check failed. App password is missing.",
+            "Open Step 2, add the app password, choose Save, then Test again.",
+        )
+    if not str(effective.get("tenant_id", "") or "").strip():
+        return (
+            False,
+            "Teams check failed. Tenant ID is missing.",
+            "Open Step 2, add the tenant ID, choose Save, then Test again.",
+        )
+    if not str(effective.get("refresh_token", "") or "").strip():
+        try:
+            saved = secrets_mod.load_teams_config()
+        except Exception:  # noqa: BLE001
+            saved = {}
+        if not bool((saved or {}).get("has_refresh_token", False)):
+            return (
+                False,
+                "Teams check failed. Teams is not signed in.",
+                "Open Step 2, finish device sign-in, then Test again.",
+            )
     return (
         True,
         (
@@ -3598,11 +3856,36 @@ def reset_chat_state() -> None:
     _MODEL_OVERRIDES.clear()
 
 
+def _project_chat_backend(name: str) -> str:
+    try:
+        return store_mod.normalize_chat_backend(
+            store_mod.get_project_chat_backend(_db_path(), name)
+        )
+    except Exception:  # noqa: BLE001
+        return "slack"
+
+
 def get_chat_adapter(project: str) -> Any | None:
     """Return the chat adapter for a project, or None when missing."""
     name = _safe_project(project)
     if name in _CHAT_OVERRIDES:
         return _CHAT_OVERRIDES[name]
+    if _project_chat_backend(name) == "teams":
+        try:
+            effective = secrets_mod.effective_teams_config()
+        except Exception:  # noqa: BLE001
+            return None
+        app_id = str(effective.get("app_id", "") or "").strip()
+        app_password = str(effective.get("app_password", "") or "").strip()
+        tenant_id = str(effective.get("tenant_id", "") or "").strip()
+        if not (app_id and app_password and tenant_id):
+            return None
+        try:
+            from pam_pm.adapters.chat.teams import TeamsAdapter
+
+            return TeamsAdapter()
+        except Exception:  # noqa: BLE001
+            return None
     try:
         from pam_pm.adapters.chat.slack import SlackAdapter
 
@@ -4963,6 +5246,10 @@ async def save_setup_slack(request: Request) -> Any:
         )
     except Exception:  # noqa: BLE001, S110
         pass
+    try:
+        store_mod.set_project_chat_backend(_db_path(), _safe_project(project), "slack")
+    except Exception:  # noqa: BLE001, S110
+        pass
     message = "Slack settings saved."
     if "hx-request" in request.headers:
         return HTMLResponse(_test_result_html(True, message))
@@ -5107,6 +5394,10 @@ async def save_setup_teams(request: Request) -> Any:
                 "has_tenant_id": saved.get("has_tenant_id", False),
             },
         )
+    except Exception:  # noqa: BLE001, S110
+        pass
+    try:
+        store_mod.set_project_chat_backend(_db_path(), _safe_project(project), "teams")
     except Exception:  # noqa: BLE001, S110
         pass
     message = "Teams settings saved."

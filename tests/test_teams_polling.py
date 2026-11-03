@@ -727,3 +727,125 @@ def test_wizard_device_poll_without_start(device_client) -> None:
     )
     assert resp.status_code == 400
     assert resp.json()["status"] == "missing"
+
+def test_teams_loop_publishes_dm_and_skips_own(tmp_path, monkeypatch) -> None:
+    import pam_pm.web.app as app_mod
+    from pam_pm.core import secrets as secrets_mod
+    from pam_pm.core import store as store_mod
+
+    for key in (*ENV_KEYS, "PAM_SETUP_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("PAM_HOME", str(tmp_path))
+    app_mod.reset_teams_poll_state()
+    app_mod.reset_chat_state()
+    try:
+        secrets_mod.save_teams_config(
+            tmp_path, app_id=APP_ID, app_password=APP_PASSWORD, tenant_id=TENANT_ID
+        )
+        secrets_mod.save_secret("TEAMS_REFRESH_TOKEN", REFRESH, tmp_path)
+        store_mod.set_project_chat_backend(tmp_path / "state.db", "loop1", "teams")
+        stub = StubGraph(
+            {
+                "chat-1": [
+                    _graph_message("m-1", "hello pam", "2026-11-02T08:00:00Z"),
+                    _graph_message(
+                        "m-2", "own send", "2026-11-02T08:01:00Z", sender="pam-bot"
+                    ),
+                ]
+            }
+        )
+        bus = app_mod.EventBus(seed=[])
+        poller = TeamsPoller(
+            stub,
+            tmp_path / "state.db",
+            [{"id": "chat-1", "chatType": "oneOnOne"}],
+            interval=60,
+            bus=bus,
+            bot_id="pam-bot",
+        )
+        found = poller.poll_once()
+        assert [m.id for m in found] == ["m-1"]
+        assert bus.history()[-1]["source"] == "teams"
+        assert bus.history()[-1]["text"] == "hello pam"
+        assert poller.get_watermark("chat-1") == "2026-11-02T08:01:00Z"
+    finally:
+        app_mod.reset_teams_poll_state()
+        app_mod.reset_chat_state()
+
+
+def test_poll_teams_once_wrapper_uses_bus_and_watermark(tmp_path, monkeypatch) -> None:
+    import pam_pm.web.app as app_mod
+    from pam_pm.core import secrets as secrets_mod
+    from pam_pm.core import store as store_mod
+
+    for key in (*ENV_KEYS, "PAM_SETUP_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("PAM_HOME", str(tmp_path))
+    app_mod.reset_teams_poll_state()
+    app_mod.reset_chat_state()
+    try:
+        secrets_mod.save_teams_config(
+            tmp_path, app_id=APP_ID, app_password=APP_PASSWORD, tenant_id=TENANT_ID
+        )
+        secrets_mod.save_secret("TEAMS_REFRESH_TOKEN", REFRESH, tmp_path)
+        store_mod.set_project_chat_backend(tmp_path / "state.db", "loop2", "teams")
+        stub = StubGraph(
+            {"chat-9": [_graph_message("m-9", "dm here", "2026-11-02T09:00:00Z")]}
+        )
+        app_mod.set_teams_test_graph("loop2", stub)
+        app_mod.set_teams_test_chats("loop2", [{"id": "chat-9", "chatType": "oneOnOne"}])
+        before = len(app_mod.bus.history())
+        found = app_mod.poll_teams_once("loop2")
+        assert [m.id for m in found] == ["m-9"]
+        assert len(app_mod.bus.history()) == before + 1
+        assert app_mod.bus.history()[-1]["source"] == "teams"
+        assert app_mod.poll_teams_once("loop2") == []
+        assert len(app_mod.bus.history()) == before + 1
+        poller = app_mod.get_teams_poller("loop2")
+        assert poller is not None
+        assert poller.get_watermark("chat-9") == "2026-11-02T09:00:00Z"
+    finally:
+        app_mod.reset_teams_poll_state()
+        app_mod.reset_chat_state()
+
+
+def test_no_refresh_token_means_loop_off(tmp_path, monkeypatch) -> None:
+    import pam_pm.web.app as app_mod
+    from pam_pm.core import secrets as secrets_mod
+    from pam_pm.core import store as store_mod
+
+    for key in (*ENV_KEYS, "PAM_SETUP_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("PAM_HOME", str(tmp_path))
+    app_mod.reset_teams_poll_state()
+    try:
+        secrets_mod.save_teams_config(
+            tmp_path, app_id=APP_ID, app_password=APP_PASSWORD, tenant_id=TENANT_ID
+        )
+        store_mod.set_project_chat_backend(tmp_path / "state.db", "loopoff", "teams")
+        assert app_mod.get_teams_poller("loopoff") is None
+        assert app_mod.poll_teams_once("loopoff") == []
+    finally:
+        app_mod.reset_teams_poll_state()
+
+
+def test_rotated_refresh_saved_on_silent_mint(tmp_path, monkeypatch) -> None:
+    import os
+    import stat
+
+    from pam_pm.adapters.chat import teams_auth as teams_auth_mod
+    from pam_pm.core import secrets as secrets_mod
+
+    for key in (*ENV_KEYS,):
+        monkeypatch.delenv(key, raising=False)
+    teams_auth_mod.store_teams_refresh_token("old-refresh-1", tmp_path)
+    seen: dict[str, Any] = {}
+    provider = GraphTokenProvider(
+        APP_ID, TENANT_ID, data_dir=tmp_path, transport=_fake_entra(seen)
+    )
+    token = provider.access_token()
+    assert token.startswith("graph-access-")
+    assert secrets_mod.load_secret("TEAMS_REFRESH_TOKEN", tmp_path) != "old-refresh-1"
+    if os.name != "nt":
+        mode = stat.S_IMODE(os.stat(tmp_path / "teams_refresh_token.txt").st_mode)
+        assert mode == 0o600

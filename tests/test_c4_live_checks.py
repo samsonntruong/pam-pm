@@ -272,6 +272,7 @@ def test_teams_presence_only_message(c4_client, monkeypatch) -> None:
     monkeypatch.setenv("TEAMS_APP_ID", "c4-app-id")
     monkeypatch.setenv("TEAMS_APP_PASSWORD", "c4-app-pw")
     monkeypatch.setenv("TEAMS_TENANT_ID", "c4-tenant")
+    monkeypatch.setenv("TEAMS_REFRESH_TOKEN", "c4-refresh")
     data = client.post("/api/test/teams").json()
     assert data["ok"] is True
     assert "(presence only, send tested on Save)" in data["message"]

@@ -231,6 +231,9 @@ def teams_client(tmp_path, monkeypatch):
 
 
 def test_wizard_save_and_test_teams(teams_client) -> None:
+    from pam_pm.adapters.chat import teams_auth as teams_auth_mod
+    from pam_pm.core import store as store_mod
+
     client, home, _ = teams_client
     resp = client.post(
         "/api/setup/teams",
@@ -244,9 +247,94 @@ def test_wizard_save_and_test_teams(teams_client) -> None:
     )
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
+    assert teams_auth_mod.store_teams_refresh_token("teams-wiz-refresh-1", home) is True
     assert client.post("/api/test/teams?project=teamswiz").json()["ok"] is True
+    assert store_mod.get_project_chat_backend(home / "state.db", "teamswiz") == "teams"
     blob = (home / "wizard_progress.json").read_text(encoding="utf-8")
     assert APP_PASSWORD not in blob
     page = client.get("/setup?project=teamswiz").text
     assert APP_PASSWORD not in page
     assert "Microsoft Teams" in page
+
+def test_setup_save_persists_chat_backend(teams_client) -> None:
+    from pam_pm.core import store as store_mod
+
+    client, home, _ = teams_client
+    resp = client.post(
+        "/api/setup/teams",
+        json={
+            "token": "teams-test-setup-token-1",
+            "project": "persist1",
+            "app_id": APP_ID,
+            "app_password": APP_PASSWORD,
+            "tenant_id": TENANT_ID,
+        },
+    )
+    assert resp.json()["ok"] is True
+    assert store_mod.get_project_chat_backend(home / "state.db", "persist1") == "teams"
+    slack = client.post(
+        "/api/setup/slack",
+        json={
+            "token": "teams-test-setup-token-1",
+            "project": "persist1",
+            "bot_token": "xoxb-fake",
+            "app_token": "",
+        },
+    )
+    assert slack.json()["ok"] is True
+    assert store_mod.get_project_chat_backend(home / "state.db", "persist1") == "slack"
+
+
+def test_chat_adapter_selection_slack_vs_teams(tmp_path, monkeypatch) -> None:
+    import pam_pm.web.app as app_mod
+    from pam_pm.adapters.chat.slack import SlackAdapter
+    from pam_pm.adapters.chat.teams import TeamsAdapter
+    from pam_pm.core import secrets as secrets_mod
+    from pam_pm.core import store as store_mod
+
+    for key in (*ENV_KEYS, "PAM_SETUP_TOKEN", "SLACK_BOT_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("PAM_HOME", str(tmp_path))
+    app_mod.reset_chat_state()
+    try:
+        db = tmp_path / "state.db"
+        assert store_mod.get_project_chat_backend(db, "sel1") == "slack"
+        assert isinstance(app_mod.get_chat_adapter("sel1"), SlackAdapter)
+        store_mod.set_project_chat_backend(db, "sel1", "teams")
+        assert app_mod.get_chat_adapter("sel1") is None
+        secrets_mod.save_teams_config(
+            tmp_path, app_id=APP_ID, app_password=APP_PASSWORD, tenant_id=TENANT_ID
+        )
+        got = app_mod.get_chat_adapter("sel1")
+        assert isinstance(got, TeamsAdapter)
+        try:
+            got.close()
+        except Exception:  # noqa: BLE001, S110
+            pass
+        store_mod.set_project_chat_backend(db, "sel1", "slack")
+        assert isinstance(app_mod.get_chat_adapter("sel1"), SlackAdapter)
+    finally:
+        app_mod.reset_chat_state()
+
+
+def test_check_teams_names_each_missing_piece(tmp_path, monkeypatch) -> None:
+    import pam_pm.web.app as app_mod
+    from pam_pm.core import secrets as secrets_mod
+
+    for key in (*ENV_KEYS, "TEAMS_REFRESH_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("PAM_HOME", str(tmp_path))
+    ok, msg, _hint = app_mod._check_teams()
+    assert ok is False and "App ID" in msg
+    secrets_mod.save_secret("TEAMS_APP_ID", APP_ID, tmp_path)
+    ok, msg, _hint = app_mod._check_teams()
+    assert ok is False and "password" in msg.lower()
+    secrets_mod.save_secret("TEAMS_APP_PASSWORD", APP_PASSWORD, tmp_path)
+    ok, msg, _hint = app_mod._check_teams()
+    assert ok is False and "Tenant" in msg
+    secrets_mod.save_secret("TEAMS_TENANT_ID", TENANT_ID, tmp_path)
+    ok, msg, _hint = app_mod._check_teams()
+    assert ok is False and "not signed in" in msg.lower()
+    secrets_mod.save_secret("TEAMS_REFRESH_TOKEN", "r-1", tmp_path)
+    ok, msg, _hint = app_mod._check_teams()
+    assert ok is True

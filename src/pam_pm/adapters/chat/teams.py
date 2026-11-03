@@ -1,4 +1,4 @@
-"""Teams adapter: Bot Framework send plus Graph poll mode.
+"""Teams adapter: Bot Framework send plus Graph poll mode (Teams1 wired).
 
 Outbound messages always go through the Bot Framework REST API.
 Inbound has two modes. Send mode (default) receives Bot Framework
