@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import base64
 import importlib
+import json
 import logging
+import os
+import re
+import urllib.error
+import urllib.request
 from collections.abc import Sequence
 from typing import Any
 
@@ -15,6 +20,8 @@ logger = logging.getLogger(__name__)
 SAM_MODULE_CANDIDATES = ("sam3", "segment_anything_3", "sam_3")
 PATH_SAM = "sam"
 PATH_FALLBACK = "fallback"
+SAM_API_PROMPT = "sticky note. Give one bounding box per sticky note."
+SAM_API_TIMEOUT = 30
 
 
 def _data_uri(raw: bytes) -> str:
@@ -46,6 +53,190 @@ def sam_available() -> bool:
             continue
         return True
     return False
+
+
+def _sam_responses_url(base_url: str) -> str:
+    """Return the Responses URL for a Meta base URL."""
+    base = str(base_url or "").strip().rstrip("/")
+    if not base:
+        return ""
+    if base.endswith("/responses"):
+        return base
+    if base.endswith("/v1"):
+        return base + "/responses"
+    return base + "/v1/responses"
+
+
+def _numbers(text: str) -> list[float]:
+    out: list[float] = []
+    for tok in re.findall(r"-?\d+(?:\.\d+)?", str(text or "")):
+        try:
+            out.append(float(tok))
+        except ValueError:
+            continue
+    return out
+
+
+def parse_sam_boxes(data: Any, raw: str = "") -> list[dict[str, Any]]:
+    """Parse SAM boxes from a Responses payload, else masks as fallback.
+
+    Looks for JSON bbox or box arrays first, then for <|box> tokens
+    with nearby coordinates. When no coordinates parse but <|mask>
+    tokens are present, returns one placeholder box per mask token.
+    Never raises; returns an empty list when nothing usable is found.
+    """
+    try:
+        hay = json.dumps(data) if not isinstance(data, str) else str(data)
+    except (TypeError, ValueError):
+        hay = str(data)
+    hay = str(hay or "") + str(raw or "")
+    if not hay:
+        return []
+    boxes: list[list[float]] = []
+    try:
+        for group in re.findall(
+            r'"(?:bbox|box)"\s*:\s*\[([^\]]+)\]', hay, flags=re.IGNORECASE
+        ):
+            nums = _numbers(group)
+            if len(nums) >= 4:
+                boxes.append(nums[:4])
+    except Exception:  # noqa: BLE001
+        boxes = []
+    if not boxes:
+        try:
+            for match in re.finditer(r"<\|box", hay, flags=re.IGNORECASE):
+                window = hay[match.start() : match.start() + 400]
+                nums = _numbers(window)
+                if len(nums) >= 4:
+                    boxes.append(nums[:4])
+                if len(boxes) >= 50:
+                    break
+        except Exception:  # noqa: BLE001
+            boxes = []
+    if boxes:
+        return [
+            {"bbox": b, "box": list(b), "id": i} for i, b in enumerate(boxes[:50])
+        ]
+    try:
+        masks = hay.lower().count("<|mask")
+    except Exception:  # noqa: BLE001
+        masks = 0
+    if masks > 0:
+        count = min(int(masks), 50)
+        return [{"bbox": [], "mask": True, "id": i} for i in range(count)]
+    return []
+
+
+def sam_api_boxes(
+    image_bytes: bytes | bytearray | None,
+    model: str | None = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    timeout: int = SAM_API_TIMEOUT,
+) -> list[dict[str, Any]]:
+    """Segment one photo through SAM 3.1 on the Meta API.
+
+    Sends the photo to META_VISION_MODEL asking for one bounding box
+    per sticky note. Returns one box dict per note, or an empty list
+    when config is missing, the call fails, or nothing parses. Never
+    raises and never logs secrets or image bytes.
+    """
+    if not isinstance(image_bytes, (bytes, bytearray)) or not image_bytes:
+        return []
+    base = (
+        str(base_url).strip()
+        if base_url is not None
+        else os.environ.get("META_BASE_URL", "").strip()
+    )
+    key = (
+        str(api_key).strip()
+        if api_key is not None
+        else os.environ.get("META_API_KEY", "").strip()
+    )
+    want_model = str(model or "").strip() or router_mod.vision_segment_model()
+    if not base or not key or not want_model:
+        return []
+    url = _sam_responses_url(base)
+    if not url:
+        return []
+    try:
+        data_uri = _data_uri(bytes(image_bytes))
+    except Exception:  # noqa: BLE001
+        return []
+    payload = {
+        "model": want_model,
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": SAM_API_PROMPT},
+                    {"type": "input_image", "image_url": data_uri},
+                ],
+            }
+        ],
+    }
+    try:
+        body = json.dumps(payload).encode("utf-8")
+    except (TypeError, ValueError):
+        return []
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": "Bearer " + key,
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        wait = int(timeout) if int(timeout) > 0 else SAM_API_TIMEOUT
+    except (TypeError, ValueError):
+        wait = SAM_API_TIMEOUT
+    try:
+        with urllib.request.urlopen(req, timeout=wait) as resp:
+            status = int(getattr(resp, "status", 200) or 200)
+            text = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        logger.debug("SAM API segment failed: status=%s", exc.code)
+        return []
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("SAM API segment failed: %s", type(exc).__name__)
+        return []
+    if status != 200:
+        logger.debug("SAM API segment failed: status=%s", status)
+        return []
+    try:
+        parsed: Any = json.loads(text) if text else {}
+    except json.JSONDecodeError:
+        parsed = {}
+    boxes = parse_sam_boxes(parsed, text)
+    return boxes
+
+
+def api_segmenter(
+    image: bytes | bytearray | Any,
+) -> tuple[list[bytes], list[dict[str, Any]]]:
+    """Segment a photo via the Meta SAM API into crops plus boxes.
+
+    Returns (crops, boxes) with one full photo crop per box so each
+    crop can be read by Muse Spark vision. Returns ([], []) when the
+    image is missing, config is missing, or parsing finds no notes.
+    Never raises.
+    """
+    if not isinstance(image, (bytes, bytearray)) or not image:
+        return ([], [])
+    try:
+        raw = bytes(image)
+    except Exception:  # noqa: BLE001
+        return ([], [])
+    try:
+        boxes = sam_api_boxes(raw)
+    except Exception:  # noqa: BLE001
+        return ([], [])
+    if not boxes:
+        return ([], [])
+    return ([bytes(raw) for _ in boxes], list(boxes))
 
 
 class VisionClient:
@@ -250,6 +441,7 @@ def plan_from_photo(
         return {
             "readings": readings,
             "masks": [],
+            "boxes": [],
             "path": PATH_FALLBACK,
             "notes_text": "\n".join(readings),
             "model": read_model,
@@ -275,6 +467,7 @@ def plan_from_photo(
             return {
                 "readings": readings,
                 "masks": list(range(len(readings))),
+                "boxes": [],
                 "path": PATH_SAM,
                 "notes_text": "\n".join(notes),
                 "model": read_model,
@@ -283,6 +476,28 @@ def plan_from_photo(
         if crops is not None:
             logger.info("vision path used: fallback (SAM returned no crops)")
     else:
+        try:
+            api_crops, api_boxes = api_segmenter(image_bytes)
+        except Exception:  # noqa: BLE001
+            api_crops, api_boxes = [], []
+        if api_crops and api_boxes:
+            readings = client.read_crops(list(api_crops))
+            logger.info("vision path used: sam (%d boxes)", len(api_boxes))
+            router_mod.log_route(
+                router_mod.CAP_VISION_READ,
+                read_model,
+                f"planner path=sam boxes={len(api_boxes)}",
+            )
+            notes = [text for text in readings if text.strip()]
+            return {
+                "readings": readings,
+                "masks": list(api_boxes),
+                "boxes": list(api_boxes),
+                "path": PATH_SAM,
+                "notes_text": "\n".join(notes),
+                "model": read_model,
+                "segment_model": segment_model,
+            }
         found = client.segment(image_bytes)
         if found:
             readings = client.read_crops(found)
@@ -294,6 +509,7 @@ def plan_from_photo(
             return {
                 "readings": readings,
                 "masks": list(range(len(readings))),
+                "boxes": [],
                 "path": PATH_SAM,
                 "notes_text": "\n".join(notes),
                 "model": read_model,
@@ -306,6 +522,7 @@ def plan_from_photo(
     return {
         "readings": readings,
         "masks": [],
+        "boxes": [],
         "path": PATH_FALLBACK,
         "notes_text": "\n".join(readings),
         "model": read_model,

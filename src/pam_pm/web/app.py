@@ -378,6 +378,7 @@ LAST_REVIEW: dict[str, Any] = {
 LAST_PLAN: dict[str, Any] = {
     "readings": [],
     "masks": [],
+    "boxes": [],
     "path": "",
     "proposal": [],
     "approved": [],
@@ -5079,6 +5080,7 @@ async def upload_plan_photo(request: Request) -> Any:
     proposal = propose_sprint(photo.get("readings") or photo.get("notes_text", ""))
     LAST_PLAN["readings"] = photo.get("readings", [])
     LAST_PLAN["masks"] = photo.get("masks", [])
+    LAST_PLAN["boxes"] = photo.get("boxes", photo.get("masks", []))
     LAST_PLAN["path"] = photo.get("path", "")
     LAST_PLAN["proposal"] = proposal
     LAST_PLAN["approved"] = []
@@ -5118,6 +5120,7 @@ async def upload_plan_photo(request: Request) -> Any:
         "ok": True,
         "readings": photo.get("readings", []),
         "masks": photo.get("masks", []),
+        "boxes": photo.get("boxes", photo.get("masks", [])),
         "path": photo.get("path", ""),
         "proposal": proposal,
     }
