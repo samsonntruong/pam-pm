@@ -236,7 +236,37 @@ def api_segmenter(
         return ([], [])
     if not boxes:
         return ([], [])
-    return ([bytes(raw) for _ in boxes], list(boxes))
+    crops: list[bytes] = []
+    try:
+        import io as _io
+
+        from PIL import Image as _PILImage
+
+        photo = _PILImage.open(_io.BytesIO(raw)).convert("RGB")
+        width, height = photo.size
+        for entry in boxes:
+            bbox = (entry or {}).get("bbox", []) if isinstance(entry, dict) else []
+            nums = [float(v) for v in (bbox or [])[:4]]
+            if len(nums) < 4:
+                crops.append(bytes(raw))
+                continue
+            x0, y0, x1, y1 = nums
+            if max(nums) <= 1.5:
+                x0, y0 = x0 * width, y0 * height
+                x1, y1 = x1 * width, y1 * height
+            left, top = max(0, int(min(x0, x1))), max(0, int(min(y0, y1)))
+            right, bottom = min(width, int(max(x0, x1))), min(height, int(max(y0, y1)))
+            if right - left < 8 or bottom - top < 8:
+                crops.append(bytes(raw))
+                continue
+            buf = _io.BytesIO()
+            photo.crop((left, top, right, bottom)).save(buf, format="PNG")
+            crops.append(buf.getvalue())
+    except Exception:  # noqa: BLE001
+        crops = [bytes(raw) for _ in boxes]
+    if len(crops) != len(boxes):
+        crops = [bytes(raw) for _ in boxes]
+    return (crops, list(boxes))
 
 
 class VisionClient:
