@@ -68,7 +68,11 @@ _LABEL_RE = re.compile(
     r"^(please\s+|action\s*item\s*:?\s*|todo\s*:?\s*)", re.IGNORECASE
 )
 _AGREE_TAIL_RE = re.compile(
-    r"\s*\?\s*(yep|yes|sure|okay|ok|sounds good|will do|got it|i'll take it|i will)[,.!?\s]*$",
+    r"\?\s*((yep|yes|sure|okay|ok|sounds good|will do|got it|take it|i'll take it|i will|i'll)[,.]?\s*)+[.!?\s]*$",
+    re.IGNORECASE,
+)
+_BEFORE_DUE_RE = re.compile(
+    r"\bbefore\s+(Friday|Monday|Tuesday|Wednesday|Thursday|tomorrow|next\s+week|end\s+of\s+week)\b",
     re.IGNORECASE,
 )
 
@@ -89,6 +93,8 @@ def concise_title(sentence: str, limit: int = 80) -> str:
     for pattern in (_OWNER_WILL_RE, _TEAM_WILL_RE, _NEEDS_TO_RE):
         text = pattern.sub("", text).strip()
     due = _DUE_RE.search(text)
+    if not due:
+        due = _BEFORE_DUE_RE.search(text)
     if due:
         text = (text[:due.start()] + text[due.end():]).strip()
     text = _LABEL_RE.sub("", text).strip()
