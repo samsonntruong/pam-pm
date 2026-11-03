@@ -242,6 +242,8 @@ class SlackAdapter(ChatAdapter):
             return None
         if self._looks_like_user_id(text):
             return text
+        if text.startswith(("C", "G")) and len(text) >= 8 and text.isalnum():
+            return text
         return self._resolve_user_id(client, text)
 
     def _skip_unresolved(self, op: str, target: str) -> str:
