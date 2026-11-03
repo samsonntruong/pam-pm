@@ -743,6 +743,9 @@ class ClickUpAdapter(PMAdapter):
         for other in _ids(data.get("dependencies", [])):
             if other and other != task_id:
                 out.append(Link(source_id=task_id, target_id=other, rel=REL_BLOCKED_BY))
+        for other in _ids(data.get("linked_tasks", [])):
+            if other and other != task_id:
+                out.append(Link(source_id=task_id, target_id=other, rel=REL_BLOCKS))
         return out
 
     @staticmethod
