@@ -996,8 +996,22 @@ _BLOCKER_EXTRA_MARKS = (
 _BLOCKER_LINK_REL = "System.LinkTypes.Dependency-Forward"
 
 
+_BLOCKER_NEGATIONS = (
+    "no blocker",
+    "no blockers",
+    "not blocked",
+    "no blockage",
+    "nothing blocking",
+)
+
+
 def _looks_like_blocker(text: str) -> bool:
     """Return True when free text reads like a blocker report."""
+    lowered = (text or "").lower().replace("’", "'").replace("‘", "'").strip()
+    squashed = lowered.replace("'", "")
+    for neg in _BLOCKER_NEGATIONS:
+        if neg in lowered or neg.replace("'", "") in squashed:
+            return False
     try:
         from pam_pm.rules.engine import is_blocker_message as _engine_match
 
