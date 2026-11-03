@@ -130,7 +130,10 @@ def propose_listen_tasks(
         if raw_owner and raw_owner.lower() in known:
             owner: str | None = raw_owner
         else:
-            owner = suggest_owner(title, people, board_owners)
+            evidence = str(action.get("evidence_quote", "") or "")
+            owner = suggest_owner(evidence or title, people, board_owners)
+            if owner is None:
+                owner = suggest_owner(title, people, board_owners)
         quote = str(action.get("evidence_quote", "") or "")[:300] or title[:300]
         title = _short_title(title)
         proposals.append(

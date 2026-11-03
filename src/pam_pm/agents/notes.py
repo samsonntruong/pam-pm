@@ -67,6 +67,10 @@ _NEEDS_TO_RE = re.compile(
 _LABEL_RE = re.compile(
     r"^(please\s+|action\s*item\s*:?\s*|todo\s*:?\s*)", re.IGNORECASE
 )
+_AGREE_TAIL_RE = re.compile(
+    r"\s*\?\s*(yep|yes|sure|okay|ok|sounds good|will do|got it|i'll take it|i will)[,.!?\s]*$",
+    re.IGNORECASE,
+)
 
 
 def concise_title(sentence: str, limit: int = 80) -> str:
@@ -88,6 +92,7 @@ def concise_title(sentence: str, limit: int = 80) -> str:
     if due:
         text = (text[:due.start()] + text[due.end():]).strip()
     text = _LABEL_RE.sub("", text).strip()
+    text = _AGREE_TAIL_RE.sub("", text).strip()
     text = text.rstrip(" .")
     if len(text) > limit:
         cut = text[:limit].rsplit(" ", 1)[0].strip()
