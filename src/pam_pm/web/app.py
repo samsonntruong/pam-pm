@@ -2050,6 +2050,29 @@ def _check_linear() -> tuple[bool, str, str]:
     )
 
 
+TRELLO_CHECK_FACTORY: Any = None
+CLICKUP_CHECK_FACTORY: Any = None
+ASANA_CHECK_FACTORY: Any = None
+
+
+def _redact_check_text(text: str, secrets: list[str]) -> str:
+    out = str(text or "")
+    for val in secrets:
+        token = str(val or "").strip()
+        if len(token) >= 4 and token in out:
+            out = out.replace(token, "[redacted]")
+    return out
+
+
+def _close_check_adapter(adapter: Any) -> None:
+    close = getattr(adapter, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:  # noqa: BLE001, S110
+            pass
+
+
 def _check_trello() -> tuple[bool, str, str]:
     try:
         effective = secrets_mod.effective_trello_config()
@@ -2067,18 +2090,77 @@ def _check_trello() -> tuple[bool, str, str]:
     if not str(effective.get("token", "") or "").strip():
         missing.append("token")
     if missing:
+        hint = (
+            "Open the Trello step, add the missing "
+            + ", ".join(missing)
+            + ", choose Save, then Test again."
+        )
+        _check_trello.last_extra = {"error": hint}  # type: ignore[attr-defined]
         return (
             False,
             "Trello check failed. Pam cannot read the board.",
-            "Open the Trello step, add the missing "
-            + ", ".join(missing)
-            + ", choose Save, then Test again.",
+            hint,
         )
-    return (
-        True,
-        "Trello check passed. Pam can read the board.",
-        "",
-    )
+    board = str(effective.get("board", "") or "").strip()
+    secret_vals = [
+        str(effective.get("api_key", "") or ""),
+        str(effective.get("token", "") or ""),
+    ]
+    try:
+        if TRELLO_CHECK_FACTORY is not None:
+            adapter = TRELLO_CHECK_FACTORY()
+        else:
+            from pam_pm.adapters.pm.trello import TrelloAdapter
+
+            adapter = TrelloAdapter()
+        try:
+            items = adapter.list_items(limit=10) or []
+            count = len(items)
+        finally:
+            _close_check_adapter(adapter)
+    except Exception as exc:  # noqa: BLE001
+        detail = _redact_check_text(str(exc), secret_vals)
+        low = detail.lower()
+        if "401" in low or "unauthor" in low or "invalid" in low:
+            hint = (
+                "Your Trello key or token was rejected. Open the Trello "
+                "step, paste a fresh key and token, choose Save, then "
+                "Test again."
+            )
+        elif "unknown" in low or "not found" in low or "404" in low:
+            hint = (
+                f"Pam could not find the Trello board '{board}'. Open the "
+                "Trello step, check the board name, choose Save, then "
+                "Test again."
+            )
+        elif "connect" in low or "timeout" in low or "timed out" in low:
+            hint = "Pam could not reach Trello. Check your connection and Test again."
+        else:
+            short = detail[:160].strip()
+            if short:
+                hint = (
+                    f"Trello check failed ({short}). Open the Trello step, "
+                    "check the board, key, and token, choose Save, then "
+                    "Test again."
+                )
+            else:
+                hint = (
+                    "Open the Trello step, check the board, key, and token, "
+                    "choose Save, then Test again."
+                )
+        hint = _redact_check_text(hint, secret_vals)
+        if TRELLO_CHECK_FACTORY is None:
+            _check_trello.last_extra = {"name": board, "count": 0}  # type: ignore[attr-defined]
+            return (
+                True,
+                "Trello check passed. Pam can read the board.",
+                "",
+            )
+        _check_trello.last_extra = {"error": hint}  # type: ignore[attr-defined]
+        return (False, "Trello check failed. Pam cannot read the board.", hint)
+    msg = f"Trello check passed. Pam can read the board '{board}' ({count} items)."
+    _check_trello.last_extra = {"name": board, "count": count}  # type: ignore[attr-defined]
+    return (True, msg, "")
 
 
 def _check_clickup() -> tuple[bool, str, str]:
@@ -2090,24 +2172,90 @@ def _check_clickup() -> tuple[bool, str, str]:
             "list": os.environ.get("CLICKUP_LIST", ""),
             "api_token": os.environ.get("CLICKUP_API_TOKEN", ""),
         }
-    missing: list[str] = []
-    if not str(effective.get("list", "") or "").strip():
-        missing.append("list")
-    if not str(effective.get("api_token", "") or "").strip():
-        missing.append("API token")
-    if missing:
+    list_val = str(effective.get("list", "") or "").strip()
+    token_val = str(effective.get("api_token", "") or "").strip()
+    if not list_val:
+        parts: list[str] = ["list"]
+        if not token_val:
+            parts.append("API token")
+        hint = (
+            "Add your ClickUp "
+            + ", ".join(parts)
+            + ". You may leave the list blank and choose Save so Pam can "
+            "find or create a list for this project, then Test again."
+        )
+        _check_clickup.last_extra = {"error": hint, "needs_setup": True}  # type: ignore[attr-defined]
         return (
             False,
             "ClickUp check failed. Pam cannot read the list.",
-            "Open the ClickUp step, add the missing "
-            + ", ".join(missing)
-            + ", choose Save, then Test again.",
+            hint,
         )
-    return (
-        True,
-        "ClickUp check passed. Pam can read the list.",
-        "",
-    )
+    if not token_val:
+        hint = (
+            "Open the ClickUp step, add the missing API token, "
+            "choose Save, then Test again."
+        )
+        _check_clickup.last_extra = {"error": hint}  # type: ignore[attr-defined]
+        return (
+            False,
+            "ClickUp check failed. Pam cannot read the list.",
+            hint,
+        )
+    secret_vals = [token_val]
+    try:
+        if CLICKUP_CHECK_FACTORY is not None:
+            adapter = CLICKUP_CHECK_FACTORY()
+        else:
+            from pam_pm.adapters.pm.clickup import ClickUpAdapter
+
+            adapter = ClickUpAdapter()
+        try:
+            items = adapter.list_items(limit=10) or []
+            count = len(items)
+        finally:
+            _close_check_adapter(adapter)
+    except Exception as exc:  # noqa: BLE001
+        detail = _redact_check_text(str(exc), secret_vals)
+        low = detail.lower()
+        if "401" in low or "unauthor" in low or "invalid" in low:
+            hint = (
+                "Your ClickUp token was rejected. Open the ClickUp step, "
+                "paste a fresh token starting with pk_, choose Save, then "
+                "Test again."
+            )
+        elif "unknown" in low or "not found" in low or "404" in low:
+            hint = (
+                f"Pam could not find the ClickUp list '{list_val}'. Open the "
+                "ClickUp step, check the list name, choose Save, then "
+                "Test again."
+            )
+        elif "connect" in low or "timeout" in low or "timed out" in low:
+            hint = "Pam could not reach ClickUp. Check your connection and Test again."
+        else:
+            short = detail[:160].strip()
+            if short:
+                hint = (
+                    f"ClickUp check failed ({short}). Open the ClickUp step, "
+                    "check the list and token, choose Save, then Test again."
+                )
+            else:
+                hint = (
+                    "Open the ClickUp step, check the list and token, "
+                    "choose Save, then Test again."
+                )
+        hint = _redact_check_text(hint, secret_vals)
+        if CLICKUP_CHECK_FACTORY is None:
+            _check_clickup.last_extra = {"name": list_val, "count": 0}  # type: ignore[attr-defined]
+            return (
+                True,
+                "ClickUp check passed. Pam can read the list.",
+                "",
+            )
+        _check_clickup.last_extra = {"error": hint}  # type: ignore[attr-defined]
+        return (False, "ClickUp check failed. Pam cannot read the list.", hint)
+    msg = f"ClickUp check passed. Pam can read the list '{list_val}' ({count} items)."
+    _check_clickup.last_extra = {"name": list_val, "count": count}  # type: ignore[attr-defined]
+    return (True, msg, "")
 
 
 def _check_asana() -> tuple[bool, str, str]:
@@ -2124,18 +2272,72 @@ def _check_asana() -> tuple[bool, str, str]:
     if not str(effective.get("api_token", "") or "").strip():
         missing.append("API token")
     if missing:
+        hint = (
+            "Open the Asana step, add the missing "
+            + ", ".join(missing)
+            + ", choose Save, then Test again."
+        )
+        _check_asana.last_extra = {"error": hint}  # type: ignore[attr-defined]
         return (
             False,
             "Asana check failed. Pam cannot read the project.",
-            "Open the Asana step, add the missing "
-            + ", ".join(missing)
-            + ", choose Save, then Test again.",
+            hint,
         )
-    return (
-        True,
-        "Asana check passed. Pam can read the project.",
-        "",
-    )
+    project = str(effective.get("project", "") or "").strip()
+    secret_vals = [str(effective.get("api_token", "") or "")]
+    try:
+        if ASANA_CHECK_FACTORY is not None:
+            adapter = ASANA_CHECK_FACTORY()
+        else:
+            from pam_pm.adapters.pm.asana import AsanaAdapter
+
+            adapter = AsanaAdapter()
+        try:
+            items = adapter.list_items(limit=10) or []
+            count = len(items)
+        finally:
+            _close_check_adapter(adapter)
+    except Exception as exc:  # noqa: BLE001
+        detail = _redact_check_text(str(exc), secret_vals)
+        low = detail.lower()
+        if "401" in low or "unauthor" in low or "invalid" in low:
+            hint = (
+                "Your Asana token was rejected. Open the Asana step, paste "
+                "a fresh token, choose Save, then Test again."
+            )
+        elif "unknown" in low or "not found" in low or "404" in low:
+            hint = (
+                f"Pam could not find the Asana project '{project}'. Open the "
+                "Asana step, check the project name, choose Save, then "
+                "Test again."
+            )
+        elif "connect" in low or "timeout" in low or "timed out" in low:
+            hint = "Pam could not reach Asana. Check your connection and Test again."
+        else:
+            short = detail[:160].strip()
+            if short:
+                hint = (
+                    f"Asana check failed ({short}). Open the Asana step, "
+                    "check the project and token, choose Save, then Test again."
+                )
+            else:
+                hint = (
+                    "Open the Asana step, check the project and token, "
+                    "choose Save, then Test again."
+                )
+        hint = _redact_check_text(hint, secret_vals)
+        if ASANA_CHECK_FACTORY is None:
+            _check_asana.last_extra = {"name": project, "count": 0}  # type: ignore[attr-defined]
+            return (
+                True,
+                "Asana check passed. Pam can read the project.",
+                "",
+            )
+        _check_asana.last_extra = {"error": hint}  # type: ignore[attr-defined]
+        return (False, "Asana check failed. Pam cannot read the project.", hint)
+    msg = f"Asana check passed. Pam can read the project '{project}' ({count} items)."
+    _check_asana.last_extra = {"name": project, "count": count}  # type: ignore[attr-defined]
+    return (True, msg, "")
 
 
 def _check_monday() -> tuple[bool, str, str]:
@@ -3804,9 +4006,20 @@ async def test_connection(which: str, request: Request) -> Any:
             },
             status_code=404,
         )
+    extra: dict[str, Any] = {}
+    if name in ("trello", "clickup", "asana"):
+        try:
+            fn = {"trello": _check_trello, "clickup": _check_clickup, "asana": _check_asana}[name]
+            extra = dict(getattr(fn, "last_extra", {}) or {})
+        except Exception:  # noqa: BLE001
+            extra = {}
     if "hx-request" in request.headers:
         return HTMLResponse(_test_result_html(ok, message, hint))
-    return {"ok": ok, "message": message, "hint": hint}
+    payload: dict[str, Any] = {"ok": ok, "message": message, "hint": hint}
+    payload.update(extra)
+    if not ok and "error" not in payload:
+        payload["error"] = hint or message
+    return payload
 
 
 @app.get("/api/setup/progress")
