@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from pam_pm.agents.prompts.builder import build_messages
+
+logger = logging.getLogger(__name__)
 
 REVIEW_ROLE = "lead"
 REVIEW_MAX_TOKENS = 6000
@@ -517,12 +520,19 @@ def post_review(
     """
     target = review_target(channel, lead)
     if chat is None or not target:
+        reason = "no chat adapter" if chat is None else "no channel or lead target"
+        logger.warning("review post skipped: %s", reason)
         return False
     try:
-        chat.send_dm(target, format_review_message(review))
-        return True
-    except Exception:  # noqa: BLE001
+        message_id = chat.send_dm(target, format_review_message(review))
+    except Exception as exc:  # noqa: BLE001
+        logger.error("review post to %s failed: %s", target, exc)
         return False
+    if not str(message_id or "").strip():
+        logger.error("review post to %s unresolved: no message id returned", target)
+        return False
+    logger.info("review posted to %s id=%s", target, message_id)
+    return True
 
 
 class LeadAgent:

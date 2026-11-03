@@ -1113,6 +1113,151 @@ def _sample_interviews() -> dict[str, dict[str, Any]]:
     }
 
 
+def _review_board_items(project: str) -> tuple[list[dict[str, Any]], str]:
+    """Load review items from the real board, else samples as fallback."""
+    try:
+        adapter = get_board_adapter(project)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("review items: board unreachable for %s: %s", project, exc)
+        return [dict(entry) for entry in SAMPLE_ITEMS], "sample:board-unreachable"
+    if adapter is None:
+        logger.warning("review items: no board adapter for %s", project)
+        return [dict(entry) for entry in SAMPLE_ITEMS], "sample:no-adapter"
+    try:
+        raw = list(adapter.list_items(limit=500) or [])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("review items: board read failed for %s: %s", project, exc)
+        return [dict(entry) for entry in SAMPLE_ITEMS], "sample:board-error"
+    items: list[dict[str, Any]] = []
+    for entry in raw:
+        try:
+            if isinstance(entry, dict):
+                fields = dict(entry.get("fields", {}) or {})
+                item_id = str(entry.get("id", entry.get("item_id", "")) or "")
+                title = str(entry.get("title", "") or fields.get("title", "") or item_id)
+                state = str(entry.get("state", "") or "")
+                owner = str(
+                    entry.get("owner", "")
+                    or fields.get("owner", "")
+                    or fields.get("assigned_to", "")
+                )
+            else:
+                fields = dict(getattr(entry, "fields", {}) or {})
+                item_id = str(getattr(entry, "id", getattr(entry, "item_id", "")) or "")
+                title = str(
+                    getattr(entry, "title", "") or fields.get("title", "") or item_id
+                )
+                state = str(getattr(entry, "state", "") or "")
+                owner = str(
+                    fields.get("owner", "")
+                    or fields.get("assigned_to", "")
+                    or getattr(entry, "owner", "")
+                    or ""
+                )
+        except Exception:  # noqa: BLE001, S112
+            continue
+        if not item_id:
+            continue
+        items.append({"id": item_id, "title": title, "state": state, "owner": owner})
+    if not items:
+        logger.warning("review items: board empty for %s, using samples", project)
+        return [dict(entry) for entry in SAMPLE_ITEMS], "sample:board-empty"
+    return items, "board"
+
+
+def _conversation_evidence(turns: Any) -> str:
+    """Return the latest user turn text from stored interview turns."""
+    if not isinstance(turns, list):
+        return ""
+    ordered = [turn for turn in turns if isinstance(turn, dict)]
+    for turn in reversed(ordered):
+        if str(turn.get("role", "")).strip().lower() != "user":
+            continue
+        text = str(turn.get("content", turn.get("text", "")) or "").strip()
+        if text:
+            return text[:500]
+    for turn in reversed(ordered):
+        text = str(turn.get("content", turn.get("text", "")) or "").strip()
+        if text:
+            return text[:500]
+    return ""
+
+
+def _review_interviews(
+    items: list[dict[str, Any]], db: Any
+) -> tuple[dict[str, dict[str, Any]], str]:
+    """Build interview evidence from recovery history for real items."""
+    evidence: dict[str, str] = {}
+    try:
+        convs = recovery_mod.list_open_conversations(db)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("review interviews: recovery read failed: %s", exc)
+        convs = []
+    try:
+        import sqlite3
+
+        with sqlite3.connect(str(db)) as conn:
+            rows = conn.execute(
+                "SELECT item_id, turns_json FROM conversations ORDER BY updated_at ASC"
+            ).fetchall()
+    except Exception:  # noqa: BLE001
+        rows = []
+    import json as _json
+
+    for row in rows:
+        try:
+            item_id = str(row[0] or "").strip()
+            turns = _json.loads(row[1] or "[]")
+        except (ValueError, TypeError, IndexError):
+            continue
+        quote = _conversation_evidence(turns)
+        if item_id and quote:
+            evidence[item_id] = quote
+    for conv in convs or []:
+        if not isinstance(conv, dict):
+            continue
+        item_id = str(conv.get("item_id", "") or "").strip()
+        quote = _conversation_evidence(conv.get("turns", []))
+        if item_id and quote:
+            evidence[item_id] = quote
+    try:
+        writes = store_mod.list_writes(db, limit=500)
+    except Exception:  # noqa: BLE001
+        writes = []
+    for record in writes or []:
+        try:
+            if isinstance(record, dict):
+                item_id = str(record.get("item_id", "") or "").strip()
+                quote = str(record.get("evidence_quote", "") or "").strip()
+            else:
+                item_id = str(getattr(record, "item_id", "") or "").strip()
+                quote = str(getattr(record, "evidence_quote", "") or "").strip()
+        except Exception:  # noqa: BLE001, S112
+            continue
+        if item_id and quote and item_id not in evidence:
+            evidence[item_id] = quote[:500]
+    interviews: dict[str, dict[str, Any]] = {}
+    for item in items:
+        item_id = str(item.get("id", "") or "")
+        if not item_id:
+            continue
+        quote = evidence.get(item_id, "")
+        if quote:
+            interviews[item_id] = {
+                "status": str(item.get("state", "") or ""),
+                "evidence_quote": quote,
+                "confidence": 0.6,
+            }
+        else:
+            interviews[item_id] = {
+                "status": str(item.get("state", "") or ""),
+                "evidence_quote": "No interview evidence recorded.",
+                "confidence": 0.3,
+            }
+    source = "recovery" if evidence else "recovery:empty"
+    return interviews, source
+
+
 def _run_review_now(project: str = "default") -> dict[str, Any]:
     try:
         raid_backend = _project_backend(project)
@@ -1133,10 +1278,38 @@ def _run_review_now(project: str = "default") -> dict[str, Any]:
             )
     except Exception:  # noqa: BLE001
         model_client = None
+    items, items_source = _review_board_items(project)
+    if items_source == "board":
+        try:
+            review_db = raid_db if raid_db is not None else _db_path()
+        except Exception:  # noqa: BLE001
+            review_db = raid_db
+        if review_db is None:
+            interviews: dict[str, dict[str, Any]] = {
+                str(item.get("id", "")): {
+                    "status": str(item.get("state", "") or ""),
+                    "evidence_quote": "No interview evidence recorded.",
+                    "confidence": 0.3,
+                }
+                for item in items
+                if str(item.get("id", ""))
+            }
+            interviews_source = "recovery:unavailable"
+        else:
+            interviews, interviews_source = _review_interviews(items, review_db)
+    else:
+        interviews = _sample_interviews()
+        interviews_source = "sample:board-fallback"
+    logger.info(
+        "review run source: items=%s interviews=%s (%d items)",
+        items_source,
+        interviews_source,
+        len(items),
+    )
     try:
         result = synthesize_review(
-            SAMPLE_ITEMS,
-            _sample_interviews(),
+            items,
+            interviews,
             bus.history(),
             model_client=model_client,
             raid_db=raid_db,
@@ -1145,8 +1318,8 @@ def _run_review_now(project: str = "default") -> dict[str, Any]:
         )
     except Exception:  # noqa: BLE001
         result = synthesize_review(
-            SAMPLE_ITEMS,
-            _sample_interviews(),
+            items,
+            interviews,
             bus.history(),
             raid_db=raid_db,
             raid_backend=raid_backend,
@@ -4965,6 +5138,8 @@ async def run_review(request: Request) -> Any:
     project = _safe_project(request.query_params.get("project", "default"))
     result = _run_review_now(project)
     posted = False
+    post_error = ""
+    target = ""
     try:
         chat = get_chat_adapter(project)
         channel = os.environ.get(lead_mod.REVIEW_CHANNEL_ENV, "").strip()
@@ -4975,11 +5150,21 @@ async def run_review(request: Request) -> Any:
             except Exception:  # noqa: BLE001
                 names = []
             target = str(names[0]).strip() if names else ""
-        if chat is not None and target:
+        if chat is None:
+            post_error = "chat unavailable"
+            logger.warning("review post skipped for %s: %s", project, post_error)
+        elif not target:
+            post_error = "no review target (channel or lead)"
+            logger.warning("review post skipped for %s: %s", project, post_error)
+        else:
             posted = bool(lead_mod.post_review(chat, result, channel=target))
-    except Exception:  # noqa: BLE001
+            if not posted:
+                post_error = f"delivery to {target} failed or target unresolved"
+    except Exception as exc:  # noqa: BLE001
         posted = False
+        post_error = str(exc)[:200]
     result["posted"] = posted
+    result["post_error"] = post_error
     if "hx-request" in request.headers:
         return HTMLResponse(_review_result_html(result))
     return {
@@ -4988,6 +5173,7 @@ async def run_review(request: Request) -> Any:
         "retro_actions": result["retro_actions"],
         "low_confidence": result["low_confidence"],
         "posted": posted,
+        "post_error": post_error,
     }
 
 
