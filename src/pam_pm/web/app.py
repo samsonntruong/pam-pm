@@ -2286,7 +2286,7 @@ def _check_trello() -> tuple[bool, str, str]:
     return (True, msg, "")
 
 
-def _check_clickup() -> tuple[bool, str, str]:
+def _check_clickup(project_name: str = "default") -> tuple[bool, str, str]:
     try:
         effective = secrets_mod.effective_clickup_config()
     except Exception:  # noqa: BLE001
@@ -2298,21 +2298,85 @@ def _check_clickup() -> tuple[bool, str, str]:
     list_val = str(effective.get("list", "") or "").strip()
     token_val = str(effective.get("api_token", "") or "").strip()
     if not list_val:
-        parts: list[str] = ["list"]
         if not token_val:
-            parts.append("API token")
-        hint = (
-            "Add your ClickUp "
-            + ", ".join(parts)
-            + ". You may leave the list blank and choose Save so Pam can "
-            "find or create a list for this project, then Test again."
-        )
-        _check_clickup.last_extra = {"error": hint, "needs_setup": True}  # type: ignore[attr-defined]
-        return (
-            False,
-            "ClickUp check failed. Pam cannot read the list.",
-            hint,
-        )
+            hint = (
+                "Add your ClickUp list and API token. You may leave the list "
+                "blank and choose Save so Pam can find or create a list for "
+                "this project, then Test again."
+            )
+            _check_clickup.last_extra = {"error": hint, "needs_setup": True}  # type: ignore[attr-defined]
+            return (
+                False,
+                "ClickUp check failed. Pam cannot read the list.",
+                hint,
+            )
+        pam_project = (project_name or "default").strip() or "default"
+        secret_vals = [token_val]
+        try:
+            if CLICKUP_CHECK_FACTORY is not None:
+                adapter = CLICKUP_CHECK_FACTORY()
+                try:
+                    resolve = getattr(adapter, "resolve_list", None)
+                    if not callable(resolve):
+                        hint = (
+                            "Add your ClickUp list. You may leave the list blank "
+                            "and choose Save so Pam can find or create a list "
+                            "for this project, then Test again."
+                        )
+                        _check_clickup.last_extra = {"error": hint, "needs_setup": True}  # type: ignore[attr-defined]
+                        return (
+                            False,
+                            "ClickUp check failed. Pam cannot read the list.",
+                            hint,
+                        )
+                    try:
+                        found_id = resolve(pam_project, dry_run=True)
+                    except TypeError:
+                        found_id = resolve(pam_project)
+                finally:
+                    _close_check_adapter(adapter)
+            else:
+                from pam_pm.adapters.pm.clickup import ClickUpAdapter as _CUAdapter
+
+                adapter = _CUAdapter()
+                try:
+                    found_id = adapter.resolve_list(pam_project, dry_run=True)
+                finally:
+                    _close_check_adapter(adapter)
+        except Exception as exc:  # noqa: BLE001
+            detail = _redact_check_text(str(exc), secret_vals)
+            low = detail.lower()
+            if "permission" in low or "settings" in low:
+                hint = detail
+            elif "team" in low and ("unknown" in low or "not found" in low):
+                hint = (
+                    "Pam could not find the ClickUp team. Open the ClickUp step, "
+                    "check the team name, choose Save, then Test again."
+                )
+            elif "connect" in low or "timeout" in low or "timed out" in low:
+                hint = "Pam could not reach ClickUp. Check your connection and Test again."
+            else:
+                short = detail[:160].strip()
+                if short:
+                    hint = (
+                        f"ClickUp check failed ({short}). Open the ClickUp step, "
+                        "check the team and token, choose Save, then Test again."
+                    )
+                else:
+                    hint = (
+                        "Open the ClickUp step, check the team and token, "
+                        "choose Save, then Test again."
+                    )
+            hint = _redact_check_text(hint, secret_vals)
+            _check_clickup.last_extra = {"error": hint, "needs_setup": True}  # type: ignore[attr-defined]
+            return (False, "ClickUp check failed. Pam cannot read the list.", hint)
+        if found_id:
+            msg = f"ClickUp check passed. Found list '{pam_project}'."
+            _check_clickup.last_extra = {"name": pam_project, "count": 0, "list_id": found_id, "dry_run": True, "found": True}  # type: ignore[attr-defined]
+            return (True, msg, "")
+        msg = f'ClickUp check passed. Would create Space+List named "{pam_project}".'
+        _check_clickup.last_extra = {"name": pam_project, "count": 0, "dry_run": True, "found": False}  # type: ignore[attr-defined]
+        return (True, msg, "")
     if not token_val:
         hint = (
             "Open the ClickUp step, add the missing API token, "
@@ -4161,7 +4225,7 @@ async def test_connection(which: str, request: Request) -> Any:
     elif name == "trello":
         ok, message, hint = _check_trello()
     elif name == "clickup":
-        ok, message, hint = _check_clickup()
+        ok, message, hint = _check_clickup(project)
     elif name == "asana":
         ok, message, hint = _check_asana()
     elif name == "monday":

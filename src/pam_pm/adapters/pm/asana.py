@@ -198,23 +198,98 @@ class AsanaAdapter(PMAdapter):
         except ValueError:
             return {"data": {"raw": resp.text[:2000]}}
 
+    def _workspaces(self) -> list[dict[str, Any]]:
+        data = self._request(
+            "GET",
+            "/workspaces",
+            {"opt_fields": "gid,name", "limit": "100"},
+        )
+        return _data_list(data)
+
     def _project_gid_for_ref(self) -> str:
         if self._project_gid:
             return self._project_gid
-        data = self._request(
-            "GET",
-            "/projects",
-            {"opt_fields": "gid,name,workspace.gid,workspace.name", "limit": "100"},
-        )
-        want = self._project_ref.strip().lower()
-        for entry in _data_list(data):
-            for field in ("gid", "name"):
-                if str(entry.get(field, "") or "").strip().lower() == want:
+        ref = self._project_ref.strip()
+        want = ref.lower()
+        if ref and ref.isdigit():
+            try:
+                data = self._request(
+                    "GET",
+                    f"/projects/{quote(ref, safe='')}",
+                    {"opt_fields": "gid,name,workspace.gid,workspace.name"},
+                )
+            except AsanaError as exc:
+                low = str(exc).lower()
+                if "401" in low or "403" in low or "unauthor" in low:
+                    raise
+                data = None
+            if data is not None:
+                entry = _data_dict(data)
+                if str(entry.get("gid", "") or "").strip():
                     self._project_gid = str(entry.get("gid", ""))
                     self._project_name = str(entry.get("name", "") or "")
                     workspace = entry.get("workspace", {})
                     if isinstance(workspace, dict):
                         self._workspace_gid = str(workspace.get("gid", "") or "")
+                    return self._project_gid
+        try:
+            workspaces = self._workspaces()
+        except AsanaError as exc:
+            low = str(exc).lower()
+            if "401" in low or "403" in low or "unauthor" in low:
+                raise
+            workspaces = []
+        for workspace in workspaces:
+            wid = str(workspace.get("gid", "") or "").strip()
+            if not wid:
+                continue
+            try:
+                data = self._request(
+                    "GET",
+                    "/projects",
+                    {
+                        "workspace": wid,
+                        "opt_fields": "gid,name,workspace.gid,workspace.name",
+                        "limit": "100",
+                    },
+                )
+            except AsanaError as exc:
+                low = str(exc).lower()
+                if "401" in low or "403" in low or "unauthor" in low:
+                    raise
+                continue
+            for entry in _data_list(data):
+                for field in ("gid", "name"):
+                    if str(entry.get(field, "") or "").strip().lower() == want:
+                        self._project_gid = str(entry.get("gid", ""))
+                        self._project_name = str(entry.get("name", "") or "")
+                        ws = entry.get("workspace", {})
+                        if isinstance(ws, dict):
+                            self._workspace_gid = str(ws.get("gid", "") or wid)
+                        else:
+                            self._workspace_gid = wid
+                        return self._project_gid
+        if workspaces:
+            raise AsanaError(f"unknown Asana project: {self._project_ref}")
+        try:
+            data = self._request(
+                "GET",
+                "/projects",
+                {"opt_fields": "gid,name,workspace.gid,workspace.name", "limit": "100"},
+            )
+        except AsanaError as exc:
+            low = str(exc).lower()
+            if "workspace" in low and ("400" in low or "paginate" in low):
+                raise AsanaError(f"unknown Asana project: {self._project_ref}") from exc
+            raise
+        for entry in _data_list(data):
+            for field in ("gid", "name"):
+                if str(entry.get(field, "") or "").strip().lower() == want:
+                    self._project_gid = str(entry.get("gid", ""))
+                    self._project_name = str(entry.get("name", "") or "")
+                    ws = entry.get("workspace", {})
+                    if isinstance(ws, dict):
+                        self._workspace_gid = str(ws.get("gid", "") or "")
                     return self._project_gid
         raise AsanaError(f"unknown Asana project: {self._project_ref}")
 

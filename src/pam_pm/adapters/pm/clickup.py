@@ -154,6 +154,22 @@ def _priority_num(value: object) -> int | None:
     return num if num in _NUM_TO_PRIORITY else None
 
 
+def _is_permission_error(exc: Exception) -> bool:
+    low = str(exc).lower()
+    return any(
+        s in low
+        for s in ("401", "403", "unauthor", "forbidden", "permission", "access denied")
+    )
+
+
+def _permission_message() -> str:
+    return (
+        "ClickUp token lacks permission to read or create Spaces and Lists. "
+        "In ClickUp, open Settings > Apps > ClickUp API and enable access "
+        "for this token, then try again."
+    )
+
+
 class ClickUpAdapter(PMAdapter):
     """PM adapter backed by the ClickUp REST API."""
 
@@ -186,8 +202,6 @@ class ClickUpAdapter(PMAdapter):
         want_team = (team or "").strip() or saved_team.strip()
         want_list = (list_ref or "").strip() or saved_list.strip()
         token = saved_token.strip()
-        if not want_list:
-            raise ClickUpError("CLICKUP_LIST is required.")
         if not token:
             raise ClickUpError(
                 "CLICKUP_API_TOKEN is missing; save it in Setup or set CLICKUP_API_TOKEN."
@@ -297,6 +311,77 @@ class ClickUpAdapter(PMAdapter):
                                 self._statuses = [s for s in statuses if isinstance(s, dict)]
                             return self._list_id
         raise ClickUpError(f"unknown ClickUp list: {self._list_ref}")
+
+    def resolve_list(self, project_name: str, dry_run: bool = False) -> str:
+        """Find or create a ClickUp list named project_name; return its id."""
+        name = (project_name or "").strip()
+        if not name:
+            raise ClickUpError("project name is required")
+        want = name.lower()
+        try:
+            team_ids = self._wanted_team_ids()
+        except ClickUpError as exc:
+            if _is_permission_error(exc):
+                raise ClickUpError(_permission_message()) from exc
+            raise
+        if not team_ids:
+            raise ClickUpError(f"unknown ClickUp team: {self._team_ref or name}")
+        for team_id in team_ids:
+            try:
+                spaces = self._spaces_of(team_id)
+            except ClickUpError as exc:
+                if _is_permission_error(exc):
+                    raise ClickUpError(_permission_message()) from exc
+                raise
+            for space in spaces:
+                sid = str(space.get("id", "") or "").strip()
+                if not sid:
+                    continue
+                try:
+                    lists = self._lists_of_space(sid)
+                except ClickUpError as exc:
+                    if _is_permission_error(exc):
+                        raise ClickUpError(_permission_message()) from exc
+                    raise
+                for entry in lists:
+                    if str(entry.get("name", "") or "").strip().lower() == want:
+                        lid = str(entry.get("id", "") or "").strip()
+                        if lid:
+                            return lid
+        if dry_run:
+            return ""
+        target_team = team_ids[0]
+        try:
+            space_data = self._request(
+                "POST", f"/team/{target_team}/space", {"name": name}
+            )
+        except ClickUpError as exc:
+            if _is_permission_error(exc):
+                raise ClickUpError(_permission_message()) from exc
+            raise
+        space_id = ""
+        if isinstance(space_data, dict):
+            space_id = str(space_data.get("id", "") or "").strip()
+            if not space_id and isinstance(space_data.get("space"), dict):
+                space_id = str(space_data["space"].get("id", "") or "").strip()
+        if not space_id:
+            raise ClickUpError(f"ClickUp Space create failed for: {name}")
+        try:
+            list_data = self._request(
+                "POST", f"/space/{space_id}/list", {"name": name}
+            )
+        except ClickUpError as exc:
+            if _is_permission_error(exc):
+                raise ClickUpError(_permission_message()) from exc
+            raise
+        list_id = ""
+        if isinstance(list_data, dict):
+            list_id = str(list_data.get("id", "") or "").strip()
+            if not list_id and isinstance(list_data.get("list"), dict):
+                list_id = str(list_data["list"].get("id", "") or "").strip()
+        if not list_id:
+            raise ClickUpError(f"ClickUp List create failed for: {name}")
+        return list_id
 
     def _list_statuses(self) -> list[dict[str, Any]]:
         if self._statuses is not None:
@@ -643,6 +728,25 @@ class ClickUpAdapter(PMAdapter):
             if changed is not None and changed > watermark:
                 out.append(item)
         return out
+
+
+def resolve_list(
+    project_name: str,
+    team: str | None = None,
+    transport: httpx.BaseTransport | None = None,
+    data_dir: str | Path | None = None,
+    dry_run: bool = False,
+    timeout: int = 30,
+) -> str:
+    """Find or create a list named project_name; return its id."""
+    adapter = ClickUpAdapter(
+        team=team, list_ref="", transport=transport, data_dir=data_dir,
+        timeout=timeout,
+    )
+    try:
+        return adapter.resolve_list(project_name, dry_run=dry_run)
+    finally:
+        adapter.close()
 
 
 ClickUpListAdapter = ClickUpAdapter

@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from pam_pm.adapters.pm.asana import AsanaAdapter, AsanaError
-from pam_pm.adapters.pm.clickup import ClickUpAdapter, ClickUpError
+from pam_pm.adapters.pm.clickup import ClickUpAdapter
 from pam_pm.adapters.pm.jira import JiraAdapter, JiraError
 from pam_pm.adapters.pm.linear import LinearAdapter, LinearError
 from pam_pm.adapters.pm.monday import MondayAdapter, MondayError
@@ -256,8 +256,9 @@ def test_required_errors_keep_canonical_name(
         MondayAdapter(data_dir=tmp_path)
     clean_env.setenv("CLICKUP_API_TOKEN", FAKE_TOKEN)
     clean_env.setenv("CLICKUP_TEAM", "canon-team-1")
-    with pytest.raises(ClickUpError, match="CLICKUP_LIST is required"):
-        ClickUpAdapter(data_dir=tmp_path)
+    clickup_adapter = ClickUpAdapter(data_dir=tmp_path)
+    assert clickup_adapter._list_ref == ""
+    clickup_adapter.close()
     clean_env.setenv("JIRA_EMAIL", FAKE_EMAIL)
     clean_env.setenv("JIRA_API_TOKEN", FAKE_TOKEN)
     with pytest.raises(JiraError, match="JIRA_BASE_URL and JIRA_PROJECT"):
