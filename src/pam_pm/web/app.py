@@ -61,6 +61,7 @@ _SLACK_POLLER: Any = None
 _SLACK_POLL_TASK: Any = None
 _SLACK_SOCKET: Any = None
 _SLACK_SOCKET_PROJECT = "default"
+_BOARD_POLL_TASK: Any = None
 
 logger = logging.getLogger(__name__)
 
@@ -609,6 +610,251 @@ def stop_slack_polling() -> None:
             logger.info("slack poll task cancel skipped")
 
 
+_BOARD_FORWARD_TOKENS = frozenset(
+    {"dependency-forward", "successor", "forward", "blocks", "block"}
+)
+_BOARD_REVERSE_TOKENS = frozenset(
+    {
+        "dependency-reverse",
+        "predecessor",
+        "reverse",
+        "is blocked by",
+        "blocked by",
+        "blocked",
+    }
+)
+_BOARD_OWNER_KEYS = (
+    "assigned_to",
+    "owner",
+    "System.AssignedTo",
+    "user_id",
+    "assignee",
+)
+
+
+def _board_link_endpoints(link: Any) -> tuple[str, str, str]:
+    """Return source, target, rel for a link object or dict."""
+    if isinstance(link, dict):
+        return (
+            str(link.get("source_id", "") or ""),
+            str(link.get("target_id", "") or ""),
+            str(link.get("rel", "") or ""),
+        )
+    return (
+        str(getattr(link, "source_id", "") or ""),
+        str(getattr(link, "target_id", "") or ""),
+        str(getattr(link, "rel", "") or ""),
+    )
+
+
+def _blocked_by_closed(closed_id: str, links: list[Any]) -> list[str]:
+    """Return ids of items blocked by a closed item id."""
+    found: list[str] = []
+    for link in links or []:
+        try:
+            source, target, rel = _board_link_endpoints(link)
+        except Exception:  # noqa: BLE001, S112
+            continue
+        low = str(rel or "").strip().lower()
+        is_forward = low in _BOARD_FORWARD_TOKENS or low.endswith(
+            "dependency-forward"
+        )
+        is_reverse = low in _BOARD_REVERSE_TOKENS or low.endswith(
+            "dependency-reverse"
+        )
+        if source == closed_id and target and is_forward:
+            if target not in found:
+                found.append(target)
+        elif (
+            target == closed_id
+            and source
+            and is_reverse
+            and source not in found
+        ):
+            found.append(source)
+    return found
+
+
+def _board_item_id(item: Any) -> str:
+    if isinstance(item, dict):
+        return str(item.get("id", item.get("item_id", "")) or "")
+    return str(getattr(item, "id", getattr(item, "item_id", "")) or "")
+
+
+def _board_item_state(item: Any) -> str:
+    if isinstance(item, dict):
+        return str(item.get("state", "") or "")
+    return str(getattr(item, "state", "") or "")
+
+
+def _board_item_title(item: Any) -> str:
+    if isinstance(item, dict):
+        title = item.get("title", "")
+        return str(title or _board_item_id(item))
+    title = getattr(item, "title", "")
+    return str(title or _board_item_id(item))
+
+
+def _board_owner_text(value: Any) -> str:
+    if value is None or value == "":
+        return ""
+    if isinstance(value, dict):
+        for key in ("displayName", "uniqueName", "name", "id"):
+            cand = value.get(key)
+            if cand:
+                return str(cand)
+        return ""
+    return str(value)
+
+
+def _board_item_owner(item: Any) -> str:
+    """Return the owner user id for a board item, or blank."""
+    if isinstance(item, dict):
+        fields = item.get("fields", {})
+        if not isinstance(fields, dict):
+            fields = {}
+        for key in _BOARD_OWNER_KEYS:
+            value = _board_owner_text(fields.get(key))
+            if not value:
+                value = _board_owner_text(item.get(key))
+            if value:
+                return value
+        return ""
+    fields = getattr(item, "fields", None)
+    if not isinstance(fields, dict):
+        fields = {}
+    for key in _BOARD_OWNER_KEYS:
+        value = _board_owner_text(fields.get(key))
+        if value:
+            return value
+    return ""
+
+
+def poll_board_once(
+    project: str = "default",
+    board: Any = None,
+    chat: Any = None,
+    db: Any = None,
+) -> list[str]:
+    """Poll board changes once, DM owners unblocked by newly closed items.
+
+    Uses a per project watermark so restarts never re-notify. The first
+    run only stores the watermark and skips already closed items.
+    """
+    name = (project or "default").strip() or "default"
+    try:
+        name = _safe_project(name)
+    except Exception:  # noqa: BLE001, S110
+        pass
+    use_board = board if board is not None else get_board_adapter(name)
+    use_chat = chat if chat is not None else get_chat_adapter(name)
+    if use_board is None or use_chat is None:
+        return []
+    if not callable(getattr(use_board, "poll_changes", None)):
+        return []
+    try:
+        from pam_pm.rules.poller import ADOPoller
+    except Exception:  # noqa: BLE001
+        return []
+    poll_db = db if db is not None else _db_path()
+    try:
+        poller = ADOPoller(use_board, poll_db, project=name)
+    except Exception:  # noqa: BLE001
+        return []
+    try:
+        first_run = poller.get_watermark() is None
+    except Exception:  # noqa: BLE001
+        first_run = False
+    try:
+        changes = list(poller.poll_once())
+    except Exception:  # noqa: BLE001
+        logger.info("board poll_once failed, will retry next interval")
+        return []
+    if first_run:
+        return []
+    sent: list[str] = []
+    for item in changes:
+        try:
+            state = _board_item_state(item)
+        except Exception:  # noqa: BLE001, S112
+            continue
+        if not is_closed(state):
+            continue
+        closed_id = _board_item_id(item)
+        if not closed_id:
+            continue
+        try:
+            links = list(use_board.list_links(closed_id))
+        except Exception:  # noqa: BLE001, S112
+            continue
+        blocked_ids = _blocked_by_closed(closed_id, links)
+        if not blocked_ids:
+            continue
+        closed_title = _board_item_title(item)
+        for succ_id in blocked_ids:
+            try:
+                succ = use_board.get_item(succ_id)
+            except Exception:  # noqa: BLE001, S112
+                continue
+            owner = _board_item_owner(succ)
+            if not owner:
+                continue
+            succ_title = _board_item_title(succ)
+            text = (
+                f"You are unblocked on '{succ_title}' (#{succ_id}): "
+                f"'{closed_title}' (#{closed_id}) is closed."
+            )
+            try:
+                mid = use_chat.send_dm(owner, text)
+            except Exception:  # noqa: BLE001, S112
+                continue
+            sent.append(str(mid))
+    if sent:
+        logger.info("board poll notified %d unblocked owners", len(sent))
+    return sent
+
+
+async def _board_poll_loop(project: str = "default") -> None:
+    """Poll board changes forever on the normal cadence."""
+    while True:
+        try:
+            await asyncio.to_thread(poll_board_once, project)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.info("board poll loop failed, will retry")
+        await asyncio.sleep(max(5, _effective_poll_interval()))
+
+
+def start_board_polling(project: str = "default") -> Any | None:
+    """Start the board close poller background loop."""
+    global _BOARD_POLL_TASK
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+    if _BOARD_POLL_TASK is None or _BOARD_POLL_TASK.done():
+        _BOARD_POLL_TASK = loop.create_task(_board_poll_loop(project))
+        try:
+            interval = _effective_poll_interval()
+        except Exception:  # noqa: BLE001
+            interval = 60
+        logger.info("board poller loop started: interval=%ss", interval)
+    return _BOARD_POLL_TASK
+
+
+def stop_board_polling() -> None:
+    """Stop the board close poller background loop."""
+    global _BOARD_POLL_TASK
+    task = _BOARD_POLL_TASK
+    _BOARD_POLL_TASK = None
+    if task is not None:
+        try:
+            task.cancel()
+        except Exception:  # noqa: BLE001
+            logger.info("board poll task cancel skipped")
+
+
 def slack_app_token() -> str:
     """Return the configured Slack app token (xapp), or blank."""
     try:
@@ -803,6 +1049,24 @@ async def _startup_slack_poll() -> None:
         start_slack_polling()
     except Exception:  # noqa: BLE001
         logger.info("slack poll startup skipped")
+
+
+@app.on_event("startup")
+async def _startup_board_poll() -> None:
+    """Start the board close poller beside the Slack poller."""
+    try:
+        start_board_polling()
+    except Exception:  # noqa: BLE001
+        logger.info("board poll startup skipped")
+
+
+@app.on_event("shutdown")
+async def _shutdown_board_poll() -> None:
+    """Stop the board close poller."""
+    try:
+        stop_board_polling()
+    except Exception:  # noqa: BLE001
+        logger.info("board poll shutdown skipped")
 
 
 @app.on_event("shutdown")
