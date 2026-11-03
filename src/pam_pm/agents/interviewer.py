@@ -1480,11 +1480,15 @@ def _handle_blocker_confirmation(
         except Exception:  # noqa: BLE001, S110
             pass
     link: Any = None
+    link_error = ""
+    link_attempted = False
     if board is not None and blocked_id and blocking_id:
+        link_attempted = True
         try:
             link = board.add_link(blocking_id, blocked_id, _BLOCKER_LINK_REL)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             link = None
+            link_error = str(exc) or exc.__class__.__name__
     if db is not None and blocked_id:
         try:
             from pam_pm.core.writes import WriteService
@@ -1497,6 +1501,23 @@ def _handle_blocker_confirmation(
             })
         except Exception:  # noqa: BLE001, S110
             pass
+    if link_attempted and link_error:
+        try:
+            fail_mid = str(chat.send_dm(
+                person_id, normalize_followup_spacing(
+                    f"Could not link '{blocked_title}' as blocked by "
+                    f"'{blocking_title}': {link_error}. The link did not stick."
+                )) or "")
+        except Exception:  # noqa: BLE001
+            fail_mid = ""
+        _clear_pending_blocker(db, pending.get("_person", person_id))
+        return {
+            "kind": "blocker_link_failed", "replied": bool(fail_mid),
+            "person": person_id,
+            "item_id": blocked_id, "blocking_item_id": blocking_id,
+            "blocked_title": blocked_title, "blocking_title": blocking_title,
+            "message_id": fail_mid, "link": None, "error": link_error,
+        }
     try:
         link_mid = str(chat.send_dm(
             person_id, normalize_followup_spacing(
