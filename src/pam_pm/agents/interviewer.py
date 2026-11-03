@@ -1,5 +1,7 @@
 """Interviewer agent with pushback on vague answers."""
 
+# M2: role-aware blocker matching boost
+
 from __future__ import annotations
 
 import json
@@ -1144,6 +1146,68 @@ def _title_score(title: str, report_tokens: set[str]) -> int:
     return len(title_tokens & report_tokens)
 
 
+_BLOCKED_ROLE_RE = re.compile(
+    r"(?:can't|cant|cannot)\s+(?:finish|complete)|blocked\s+by|waiting\s+on",
+    re.IGNORECASE,
+)
+_BLOCKING_WORD_RE = re.compile(
+    r"\b(?:failing|fails|broken|down|error)\b", re.IGNORECASE
+)
+_BLOCKING_RETURNS_RE = re.compile(
+    r"return(?:s|ing)?\s+(?:a\s+)?5(?:xx|\d\d)", re.IGNORECASE
+)
+_ROLE_SPAN_LIMIT = 6
+_ROLE_SPAN_MIN = 3
+_ROLE_BOOST = 3
+
+
+def _normalize_quotes(text: str) -> str:
+    return (text or "").replace("\u2019", "'").replace("\u2018", "'")
+
+
+def _words_after(text: str, pos: int, limit: int = 6) -> list[str]:
+    words = re.findall(r"[A-Za-z0-9]+", text[pos:])
+    return words[:limit]
+
+
+def _words_before(text: str, pos: int, limit: int = 6) -> list[str]:
+    words = re.findall(r"[A-Za-z0-9]+", text[:pos])
+    return words[-limit:] if words else []
+
+
+def _blocked_span_tokens(report: str) -> set[str]:
+    norm = _normalize_quotes(report)
+    spans: set[str] = set()
+    for match in _BLOCKED_ROLE_RE.finditer(norm):
+        words = _words_after(norm, match.end(), _ROLE_SPAN_LIMIT)
+        if len(words) < _ROLE_SPAN_MIN:
+            continue
+        spans |= _blocker_tokens(" ".join(words))
+    return spans
+
+
+def _blocking_span_tokens(report: str) -> set[str]:
+    norm = _normalize_quotes(report)
+    spans: set[str] = set()
+    positions: list[int] = [m.start() for m in _BLOCKING_WORD_RE.finditer(norm)]
+    positions += [m.start() for m in _BLOCKING_RETURNS_RE.finditer(norm)]
+    for pos in positions:
+        words = _words_before(norm, pos, _ROLE_SPAN_LIMIT)
+        if len(words) < _ROLE_SPAN_MIN:
+            continue
+        spans |= _blocker_tokens(" ".join(words))
+    return spans
+
+
+def _role_boost(title: str, span_tokens: set[str]) -> int:
+    if not span_tokens:
+        return 0
+    title_tokens = _blocker_tokens(title)
+    if not title_tokens:
+        return 0
+    return _ROLE_BOOST if title_tokens <= span_tokens else 0
+
+
 def _match_blocked_item(
     report: str, candidates: list[str], board: Any, db: Any = None
 ) -> Any | None:
@@ -1174,12 +1238,13 @@ def _match_blocked_item(
     if not mine:
         return None
     tokens = _blocker_tokens(report)
+    role_tokens = _blocked_span_tokens(report)
     best: Any | None = None
     best_score = 0
     best_len = 0
     for item in mine:
         title = _blocker_item_title(item)
-        score = _title_score(title, tokens)
+        score = _title_score(title, tokens) + _role_boost(title, role_tokens)
         title_len = len(_blocker_tokens(title))
         if score > best_score or (
             score > 0 and score == best_score and title_len < best_len
@@ -1222,6 +1287,7 @@ def _match_blocking_item(
     wants = {str(e) for e in reporter_candidates if str(e)}
     lowered = {str(e).lower() for e in reporter_candidates if str(e)}
     tokens = _blocker_tokens(report)
+    role_tokens = _blocking_span_tokens(report)
     best_other: Any | None = None
     best_other_score = 0
     best_other_len = 0
@@ -1240,7 +1306,7 @@ def _match_blocking_item(
         if closed:
             continue
         title = _blocker_item_title(item)
-        score = _title_score(title, tokens)
+        score = _title_score(title, tokens) + _role_boost(title, role_tokens)
         if score <= 0:
             continue
         title_len = len(_blocker_tokens(title))

@@ -438,6 +438,25 @@ class LinearAdapter(PMAdapter):
             raise LinearError(f"unknown item: {key}")
         return self._to_item(issue)
 
+    def _uuid_for(self, item_id: str) -> str:
+        key = (item_id or "").strip()
+        if not key:
+            raise LinearError("issue id is required")
+        uuid_re = (
+            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-"
+            r"[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+            r"[0-9a-fA-F]{12}"
+        )
+        if re.fullmatch(uuid_re, key):
+            return key
+        item = self.get_item(key)
+        uuid = str(item.fields.get("linear_id", "") or "").strip()
+        if not uuid:
+            raise LinearError(f"unknown item: {key}")
+        if re.fullmatch(uuid_re, uuid):
+            return uuid
+        return key
+
     def create_item(
         self, title: str, fields: dict[str, Any] | None = None
     ) -> WorkItem:
@@ -593,14 +612,16 @@ class LinearAdapter(PMAdapter):
             blocker, blocked = source, target
         else:
             blocker, blocked = target, source
+        blocker_uuid = self._uuid_for(blocker)
+        blocked_uuid = self._uuid_for(blocked)
         self._graphql(
             "mutation RelationCreate($input: IssueRelationCreateInput!) {"
             " issueRelationCreate(input: $input)"
             " { success issueRelation { id } } }",
             {
                 "input": {
-                    "issueId": blocker,
-                    "relatedIssueId": blocked,
+                    "issueId": blocker_uuid,
+                    "relatedIssueId": blocked_uuid,
                     "type": "blocks",
                 }
             },
@@ -611,13 +632,14 @@ class LinearAdapter(PMAdapter):
         key = (item_id or "").strip()
         if not key:
             raise LinearError("issue id is required")
+        uuid = self._uuid_for(key)
         data = self._graphql(
             "query IssueRelations($id: String!) { issue(id: $id) {"
             " relations(first: 50)"
             " { nodes { type relatedIssue { id identifier } } }"
             " inverseRelations(first: 50)"
             " { nodes { type relatedIssue { id identifier } } } } }",
-            {"id": key},
+            {"id": uuid},
         )
         issue = data.get("issue", {})
         if not isinstance(issue, dict):
@@ -632,13 +654,19 @@ class LinearAdapter(PMAdapter):
                 if str(entry.get("type", "")).strip().lower() != "blocks":
                     continue
                 related = entry.get("relatedIssue", {})
-                other = ""
-                if isinstance(related, dict):
-                    other = str(
-                        related.get("identifier", "") or related.get("id", "")
-                    )
-                if other:
-                    out.append(Link(source_id=key, target_id=other, rel=rel))
+                if not isinstance(related, dict):
+                    continue
+                related_id = str(related.get("id", "") or "").strip()
+                other = str(
+                    related.get("identifier", "") or related_id
+                ).strip()
+                if not other:
+                    continue
+                if related_id and uuid and related_id == uuid:
+                    continue
+                if other == key or other == uuid:
+                    continue
+                out.append(Link(source_id=key, target_id=other, rel=rel))
         return out
 
     @staticmethod
