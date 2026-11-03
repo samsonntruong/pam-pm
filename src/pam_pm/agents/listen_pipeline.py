@@ -41,6 +41,13 @@ def suggest_owner(
     candidates = [p for p in (people or []) if str(p.get("name", "")).strip()]
     if candidates:
         words = _tokens(title)
+        for person in candidates:
+            name = str(person["name"]).strip()
+            if not name:
+                continue
+            given = name.lower().replace(".", " ").split()[0]
+            if given and given in words:
+                return name
         best = ""
         best_score = -1
         for person in candidates:
@@ -119,13 +126,13 @@ def propose_listen_tasks(
         title = str(action.get("title", "") or "").strip()[:200]
         if not title:
             continue
-        title = _short_title(title)
-        quote = str(action.get("evidence_quote", "") or "")[:300] or title[:300]
         raw_owner = str(action.get("owner", "") or "").strip()
         if raw_owner and raw_owner.lower() in known:
             owner: str | None = raw_owner
         else:
             owner = suggest_owner(title, people, board_owners)
+        quote = str(action.get("evidence_quote", "") or "")[:300] or title[:300]
+        title = _short_title(title)
         proposals.append(
             {
                 "title": title,
