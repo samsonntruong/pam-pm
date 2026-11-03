@@ -77,6 +77,25 @@ def _numbers(text: str) -> list[float]:
     return out
 
 
+def _box_iou(a: list[float], b: list[float]) -> float:
+    try:
+        ax0, ay0, ax1, ay1 = (float(v) for v in a[:4])
+        bx0, by0, bx1, by1 = (float(v) for v in b[:4])
+    except (TypeError, ValueError):
+        return 0.0
+    if max(ax0, ay0, ax1, ay1, bx0, by0, bx1, by1) <= 1.5:
+        return 1.0 if a[:4] == b[:4] else 0.0
+    left, top = max(min(ax0, ax1), min(bx0, bx1)), max(min(ay0, ay1), min(by0, by1))
+    right, bottom = min(max(ax0, ax1), max(bx0, bx1)), min(max(ay0, ay1), max(by0, by1))
+    inter = max(0.0, right - left) * max(0.0, bottom - top)
+    if inter <= 0.0:
+        return 0.0
+    area_a = max(0.0, max(ax0, ax1) - min(ax0, ax1)) * max(0.0, max(ay0, ay1) - min(ay0, ay1))
+    area_b = max(0.0, max(bx0, bx1) - min(bx0, bx1)) * max(0.0, max(by0, by1) - min(by0, by1))
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
 def parse_sam_boxes(data: Any, raw: str = "") -> list[dict[str, Any]]:
     """Parse SAM boxes from a Responses payload, else masks as fallback.
 
@@ -114,8 +133,17 @@ def parse_sam_boxes(data: Any, raw: str = "") -> list[dict[str, Any]]:
         except Exception:  # noqa: BLE001
             boxes = []
     if boxes:
+        kept: list[list[float]] = []
+        for cand in boxes[:50]:
+            duplicate = False
+            for have in kept:
+                if _box_iou(cand, have) > 0.5:
+                    duplicate = True
+                    break
+            if not duplicate:
+                kept.append(cand)
         return [
-            {"bbox": b, "box": list(b), "id": i} for i, b in enumerate(boxes[:50])
+            {"bbox": b, "box": list(b), "id": i} for i, b in enumerate(kept)
         ]
     try:
         masks = hay.lower().count("<|mask")
