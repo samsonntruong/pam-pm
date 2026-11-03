@@ -145,6 +145,81 @@ def test_permission_errors_become_plain(tmp_path, monkeypatch) -> None:
         assert "Traceback" not in msg
 
 
+class _FakeBlankPoll(_FakeResolve):
+    def __init__(self) -> None:
+        super().__init__(lists=[{"id": "L1", "name": CLICKUP_TEAM}])
+        self.task_calls = 0
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        method = request.method
+        if method == "GET" and re.search(r"/list/[^/]+/task$", path):
+            self.task_calls += 1
+            assert request.headers.get("authorization", "")
+            self.calls.append((method, path))
+            return httpx.Response(
+                200,
+                json={
+                    "tasks": [
+                        {
+                            "id": "t1",
+                            "name": "One",
+                            "date_updated": "1700000000000",
+                            "status": {"status": "To Do", "type": "open"},
+                        }
+                    ]
+                },
+            )
+        return super().handle(request)
+
+
+def test_blank_list_poll_resolves_once_then_caches(tmp_path, monkeypatch) -> None:
+    from pam_pm.adapters.pm.clickup import ClickUpAdapter
+
+    _env(monkeypatch, list_val="")
+    fake = _FakeBlankPoll()
+    adapter = ClickUpAdapter(
+        transport=httpx.MockTransport(fake.handle), data_dir=tmp_path
+    )
+    try:
+        assert adapter._list_id is None
+        orig = adapter.resolve_list
+        seen: list[str] = []
+
+        def _spy(name: str, dry_run: bool = False) -> str:
+            seen.append(name)
+            return orig(name, dry_run=dry_run)
+
+        monkeypatch.setattr(adapter, "resolve_list", _spy)
+        first = adapter.poll_changes()
+        assert [item.id for item in first] == ["t1"]
+        second = adapter.poll_changes()
+        assert [item.id for item in second] == ["t1"]
+    finally:
+        adapter.close()
+    assert seen == [CLICKUP_TEAM]
+    assert fake.task_calls == 2
+    assert adapter._list_id == "L1"
+
+
+def test_blank_list_poll_permission_error_is_plain(tmp_path, monkeypatch) -> None:
+    from pam_pm.adapters.pm.clickup import ClickUpAdapter, ClickUpError
+
+    _env(monkeypatch, list_val="")
+    fake = _FakeResolve(lists=[], permission_fail="team")
+    adapter = ClickUpAdapter(
+        transport=httpx.MockTransport(fake.handle), data_dir=tmp_path
+    )
+    try:
+        with pytest.raises(ClickUpError) as excinfo:
+            adapter.poll_changes()
+    finally:
+        adapter.close()
+    msg = str(excinfo.value)
+    assert "Settings" in msg
+    assert CLICKUP_TOKEN not in msg
+
+
 def test_dry_run_finds_without_creating(tmp_path, monkeypatch) -> None:
     from pam_pm.adapters.pm.clickup import ClickUpAdapter
 

@@ -293,6 +293,11 @@ class ClickUpAdapter(PMAdapter):
     def _list_id_for_ref(self) -> str:
         if self._list_id:
             return self._list_id
+        if not self._list_ref.strip():
+            project = self._team_ref.strip()
+            resolved = self.resolve_list(project)
+            self._list_id = resolved
+            return resolved
         want = self._list_ref.strip().lower()
         team_ids = self._wanted_team_ids()
         if not team_ids:
