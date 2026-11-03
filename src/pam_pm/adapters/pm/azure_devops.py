@@ -511,9 +511,24 @@ class ADOAdapter(PMAdapter):
             for key in ("title", "state", "System.Title", "System.State")
             if key in normalized
         } or {"title": normalized.get("title", "Untitled")}
-        data = self._request(
-            "POST", url, self._patch_ops(minimal), "application/json-patch+json"
-        )
+        try:
+            data = self._request(
+                "POST", url, self._patch_ops(minimal), "application/json-patch+json"
+            )
+        except ADOError as exc:
+            if exc.status_code != 400:
+                raise
+            minimal = dict(minimal)
+            try:
+                minimal_state = self._mapped_state("open")
+            except Exception:  # noqa: BLE001
+                minimal_state = "New"
+            for key in ("state", "System.State", "/fields/System.State"):
+                if key in minimal:
+                    minimal[key] = minimal_state
+            data = self._request(
+                "POST", url, self._patch_ops(minimal), "application/json-patch+json"
+            )
         if not isinstance(data, dict) or not data.get("id"):
             raise ADOError("create failed: no work item id returned")
         item_id = str(data["id"])
