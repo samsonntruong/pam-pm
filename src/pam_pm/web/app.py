@@ -5219,7 +5219,14 @@ async def create_retro_action(request: Request) -> Any:
             return HTMLResponse(_test_result_html(False, msg))
         return JSONResponse({"ok": False, "message": msg}, status_code=404)
     action = actions[index]
-    item = _demo_board().create_item(
+    project = _safe_project(request.query_params.get("project", "default"))
+    board = get_board_adapter(project)
+    if board is None:
+        msg = "Board is not configured for this project."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg))
+        return JSONResponse({"ok": False, "message": msg}, status_code=500)
+    item = board.create_item(
         str(action.get("title", "Retro action")),
         {
             "type": "Task",
