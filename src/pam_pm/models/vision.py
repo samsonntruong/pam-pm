@@ -78,6 +78,8 @@ def _numbers(text: str) -> list[float]:
 
 
 def _box_iou(a: list[float], b: list[float]) -> float:
+    if list(a[:4]) == list(b[:4]):
+        return 1.0
     try:
         ax0, ay0, ax1, ay1 = (float(v) for v in a[:4])
         bx0, by0, bx1, by1 = (float(v) for v in b[:4])
@@ -264,6 +266,18 @@ def api_segmenter(
         return ([], [])
     if not boxes:
         return ([], [])
+    coords = []
+    for entry in boxes:
+        bbox = (entry or {}).get("bbox", []) if isinstance(entry, dict) else []
+        nums = [float(v) for v in (bbox or [])[:4]]
+        if len(nums) == 4:
+            coords.append(nums)
+    if coords and all(
+        abs(max(c[0], c[2]) - min(c[0], c[2])) < 8
+        or abs(max(c[1], c[3]) - min(c[1], c[3])) < 8
+        for c in coords
+    ):
+        return ([bytes(raw)], [{"bbox": [], "box": [], "id": 0}])
     crops: list[bytes] = []
     try:
         import io as _io
