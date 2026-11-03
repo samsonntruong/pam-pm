@@ -402,7 +402,7 @@ def test_clickup_known_resolves(tmp_path, monkeypatch) -> None:
     finally:
         adapter.close()
     assert fake.put_bodies
-    assignees = fake.put_bodies[-1].get("assignees", [])
+    assignees = (fake.put_bodies[-1].get("assignees", {}) or {}).get("add", [])
     assert [str(v) for v in assignees] == ["12345"]
     assert "assign_note" not in item.fields
 
@@ -462,5 +462,5 @@ def test_clickup_team_fallback_resolves(tmp_path, monkeypatch) -> None:
     finally:
         adapter2.close()
     assert fake.put_bodies
-    assert [str(v) for v in fake.put_bodies[-1].get("assignees", [])] == ["67890"]
+    assert [str(v) for v in (fake.put_bodies[-1].get("assignees", {}) or {}).get("add", [])] == ["67890"]
     assert "assign_note" not in item.fields

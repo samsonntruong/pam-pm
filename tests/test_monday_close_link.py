@@ -19,14 +19,18 @@ class _FakeMonday:
         self,
         groups: list[dict[str, str]],
         columns: list[dict[str, str]],
+        drop_dependency_writes: bool = False,
     ) -> None:
         self.groups = groups
         self.columns = columns
+        self.drop_dependency_writes = drop_dependency_writes
         self.items: dict[str, dict[str, Any]] = {
             "1": {"id": "1", "name": "one", "group": dict(groups[0]), "deps": []},
             "2": {"id": "2", "name": "two", "group": dict(groups[0]), "deps": []},
         }
         self.last_values: dict[str, Any] = {}
+        self.updates: list[dict[str, str]] = []
+        self._next_update = 1
 
     def _payload(self, item_id: str) -> dict[str, Any]:
         entry = self.items[item_id]
@@ -125,15 +129,42 @@ class _FakeMonday:
                     )
             self.last_values = values
             item_id = str(variables.get("itemId", ""))
-            for key, val in values.items():
-                if isinstance(val, dict) and isinstance(
-                    val.get("linked_item_ids"), list
-                ):
-                    self.items[item_id]["deps"] = [
-                        str(v) for v in val["linked_item_ids"]
-                    ]
+            if not self.drop_dependency_writes:
+                for val in values.values():
+                    if not isinstance(val, dict):
+                        continue
+                    ids: Any = None
+                    if isinstance(val.get("item_ids"), list):
+                        ids = val["item_ids"]
+                    elif isinstance(val.get("linked_item_ids"), list):
+                        ids = val["linked_item_ids"]
+                    if ids is not None and item_id in self.items:
+                        self.items[item_id]["deps"] = [str(v) for v in ids]
             return httpx.Response(
                 200, json={"data": {"change_multiple_column_values": {"id": item_id}}}
+            )
+        if "UpdateCreate" in query:
+            item_id = str(variables.get("itemId", ""))
+            text = str(variables.get("body", ""))
+            entry = {
+                "id": str(self._next_update),
+                "item_id": item_id,
+                "body": text,
+            }
+            self._next_update += 1
+            self.updates.append(entry)
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "create_update": {
+                            "id": entry["id"],
+                            "body": text,
+                            "creator": {"name": ""},
+                            "created_at": "2026-01-01T00:00:00Z",
+                        }
+                    }
+                },
             )
         return httpx.Response(400, json={"errors": [{"message": "unknown fake query"}]})
 
@@ -175,8 +206,12 @@ def test_add_link_uses_discovered_dependency_column(
     try:
         link = adapter.add_link("1", "2", "is blocked by")
         assert link.source_id == "1"
+        assert link.target_id == "2"
+        assert link.rel == "is blocked by"
         assert "dep_abc" in fake.last_values
         assert "dependency" not in fake.last_values
+        assert fake.items["1"]["deps"] == ["2"]
+        assert fake.updates == []
     finally:
         adapter.close()
 
@@ -199,5 +234,31 @@ def test_add_link_missing_column_raises_helpful_error(
             MondayError, match="add a Dependency or Link column to the board"
         ):
             adapter.add_link("1", "2", "is blocked by")
+    finally:
+        adapter.close()
+
+
+def test_add_link_dropped_write_posts_note_and_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeMonday(
+        groups=[{"id": "g1", "title": "To-Do"}, {"id": "g2", "title": "Completed"}],
+        columns=[
+            {"id": "name", "title": "Name", "type": "name"},
+            {"id": "dep_abc", "title": "Blocked by", "type": "dependency"},
+        ],
+        drop_dependency_writes=True,
+    )
+    adapter = _adapter(fake, monkeypatch)
+    try:
+        with pytest.raises(MondayError, match="dep_abc"):
+            adapter.add_link("1", "2", "is blocked by")
+        assert len(fake.updates) == 1
+        posted = fake.updates[0]
+        assert posted["item_id"] == "1"
+        assert posted["body"] == (
+            "Blocked by two (2). Recorded as a note "
+            "because the Dependency column rejected the write."
+        )
     finally:
         adapter.close()

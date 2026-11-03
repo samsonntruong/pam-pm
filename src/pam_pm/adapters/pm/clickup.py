@@ -524,9 +524,11 @@ class ClickUpAdapter(PMAdapter):
                     ids = [self._assignee_id(n) for n in names]
                     found = [i for i in ids if i]
                     if found:
-                        out["assignees"] = [
-                            int(i) if str(i).isdigit() else i for i in found
-                        ]
+                        out["assignees"] = {
+                            "add": [
+                                int(i) if str(i).isdigit() else i for i in found
+                            ]
+                        }
                     missing = [n for n, i in zip(names, ids) if not i]
                     if missing:
                         self._assign_note = f"unknown assignee: {', '.join(missing)}"

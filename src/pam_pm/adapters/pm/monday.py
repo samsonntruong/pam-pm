@@ -750,9 +750,21 @@ class MondayAdapter(PMAdapter):
             {
                 "boardId": self._board_id_for_ref(),
                 "itemId": blocked,
-                "values": json.dumps({column: {"linked_item_ids": current}}),
+                "values": json.dumps({column: {"item_ids": current}}),
             },
         )
+        verified = self._fetch_item(blocked)
+        if blocker not in self._dependency_ids(verified):
+            blocker_title = str(other.get("name", "") or blocker).strip() or blocker
+            note = (
+                f"Blocked by {blocker_title} ({blocker}). Recorded as a note "
+                "because the Dependency column rejected the write."
+            )
+            self.add_comment(blocked, note)
+            raise MondayError(
+                f"Dependency column {column} rejected the write; "
+                f"recorded as a note on item {blocked}."
+            )
         return Link(source_id=source, target_id=target, rel=kind)
 
     def list_links(self, item_id: str) -> list[Link]:

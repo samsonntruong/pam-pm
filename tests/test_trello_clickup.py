@@ -394,7 +394,7 @@ class _FakeClickUp:
             "status": status,
             "tags": [str(t) for t in tags] if isinstance(tags, list) else [],
             "due_date": str(due) if due not in (None, "") else None,
-            "assignees": self._users_for(payload.get("assignees", [])),
+            "assignees": self._users_for((payload.get("assignees", {}) or {}).get("add", [])),
             "priority": self._priority_for(payload.get("priority")),
             "created": self._ms(),
             "updated": self._ms(),
@@ -430,7 +430,7 @@ class _FakeClickUp:
                 due = payload.get("due_date")
                 entry["due_date"] = str(due) if due not in (None, "") else None
             if "assignees" in payload:
-                entry["assignees"] = self._users_for(payload.get("assignees", []))
+                entry["assignees"] = self._users_for((payload.get("assignees", {}) or {}).get("add", []))
             if "time_estimate" in payload:
                 entry["estimate"] = payload.get("time_estimate")
             if "priority" in payload:
