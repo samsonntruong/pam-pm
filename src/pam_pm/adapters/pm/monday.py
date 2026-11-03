@@ -809,6 +809,27 @@ class MondayAdapter(PMAdapter):
                     out.append(cleaned)
         return out
 
+    def _dependency_column_ids(self) -> list[str]:
+        """Return link-capable column ids in preference order."""
+        columns = self._board_columns()
+        buckets: dict[str, list[str]] = {"dependency": [], "relation": [], "link": [], "named": []}
+        for entry in columns:
+            cid = str(entry.get("id", "") or "")
+            if not cid:
+                continue
+            ctype = str(entry.get("type", "") or "").strip().lower().replace("_", "-")
+            flat = ctype.replace("-", "")
+            title = str(entry.get("title", "") or "").strip().lower()
+            if ctype == "dependency" or flat == "dependency":
+                buckets["dependency"].append(cid)
+            elif ctype == "board-relation" or flat == "boardrelation":
+                buckets["relation"].append(cid)
+            elif ctype == "link":
+                buckets["link"].append(cid)
+            elif "depend" in f"{cid} {title}":
+                buckets["named"].append(cid)
+        return buckets["dependency"] + buckets["relation"] + buckets["link"] + buckets["named"]
+
     def add_link(self, source_id: str, target_id: str, rel: str) -> Link:
         kind = self._normalize_rel(rel)
         source = self._require_id(source_id)
@@ -823,45 +844,47 @@ class MondayAdapter(PMAdapter):
         other = self._fetch_item(blocker)
         if not other.get("id"):
             raise MondayError(f"unknown item: {blocker}")
-        column = self._column_id_for("dependency")
-        if not column:
+        blocker_title = str(other.get("name", "") or blocker).strip() or blocker
+        board_id = self._board_id_for_ref()
+        blocker_url = f"https://monday.com/boards/{board_id}/pulses/{blocker}"
+        candidates: list[tuple[str, dict[str, Any]]] = []
+        for column_id in self._dependency_column_ids():
+            ctype = self._column_type_for(column_id)
+            if ctype == "link":
+                candidates.append(
+                    (column_id, {column_id: {"url": blocker_url, "text": blocker_title}})
+                )
+            else:
+                current = self._dependency_ids(entry)
+                if blocker not in current:
+                    current = current + [blocker]
+                candidates.append((column_id, {column_id: {"item_ids": current}}))
+        if not candidates:
             raise MondayError("add a Dependency or Link column to the board")
-        ctype = self._column_type_for(column)
-        if ctype == "link":
-            blocker_title = str(other.get("name", "") or blocker).strip() or blocker
-            board_id = self._board_id_for_ref()
-            blocker_url = f"https://monday.com/boards/{board_id}/pulses/{blocker}"
-            payload: dict[str, Any] = {
-                column: {"url": blocker_url, "text": blocker_title}
-            }
-        else:
-            current = self._dependency_ids(entry)
-            if blocker not in current:
-                current.append(blocker)
-            payload = {column: {"item_ids": current}}
-        self._graphql(
-            "mutation ItemColumns($boardId: ID!, $itemId: ID!, $values: JSON!)"
-            " { change_multiple_column_values(board_id: $boardId item_id: $itemId"
-            " column_values: $values) { id } }",
-            {
-                "boardId": self._board_id_for_ref(),
-                "itemId": blocked,
-                "values": json.dumps(payload),
-            },
+        last_error = ""
+        for column_id, payload in candidates:
+            self._graphql(
+                "mutation ItemColumns($boardId: ID!, $itemId: ID!, $values: JSON!)"
+                " { change_multiple_column_values(board_id: $boardId item_id: $itemId"
+                " column_values: $values) { id } }",
+                {
+                    "boardId": board_id,
+                    "itemId": blocked,
+                    "values": json.dumps(payload),
+                },
+            )
+            verified = self._fetch_item(blocked)
+            if blocker in self._dependency_ids(verified):
+                return Link(source_id=source, target_id=target, rel=kind)
+            last_error = f"column {column_id} rejected the write"
+        note = (
+            f"Blocked by {blocker_title} ({blocker}). Recorded as a note "
+            "because the link columns rejected the write."
         )
-        verified = self._fetch_item(blocked)
-        if blocker not in self._dependency_ids(verified):
-            blocker_title = str(other.get("name", "") or blocker).strip() or blocker
-            note = (
-                f"Blocked by {blocker_title} ({blocker}). Recorded as a note "
-                "because the Dependency column rejected the write."
-            )
-            self.add_comment(blocked, note)
-            raise MondayError(
-                f"Dependency column {column} rejected the write; "
-                f"recorded as a note on item {blocked}."
-            )
-        return Link(source_id=source, target_id=target, rel=kind)
+        self.add_comment(blocked, note)
+        raise MondayError(
+            f"{last_error}; recorded as a note on item {blocked}."
+        )
 
     def list_links(self, item_id: str) -> list[Link]:
         cleaned = self._require_id(item_id)

@@ -308,7 +308,7 @@ def test_add_link_dropped_write_posts_note_and_raises(
         assert posted["item_id"] == "1"
         assert posted["body"] == (
             "Blocked by two (2). Recorded as a note "
-            "because the Dependency column rejected the write."
+            "because the link columns rejected the write."
         )
     finally:
         adapter.close()
