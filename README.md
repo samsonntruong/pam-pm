@@ -74,7 +74,7 @@ pam doctor
 Full list: [docs/features.md](docs/features.md).
 
 - Morning check-ins in Slack DM: one question at a time, with pushback on vague answers until remaining work and an ETA are stated.
-- Board sync: status updates, comments, and dependency links written with a quoted evidence line behind each write. Works with the built-in Pam board or Azure DevOps. See [docs/native-board.md](docs/native-board.md).
+- Board sync: status updates, comments, and dependency links written with a quoted evidence line behind each write. Works with the Pam board, Azure DevOps, Jira, Linear, Trello, ClickUp, Asana, and Monday. Required vs optional fields per connector are listed in [.env.example](.env.example). See [docs/native-board.md](docs/native-board.md).
 - Blocker intake: asks what is blocked, finds or creates the blocking item, links it, asks the owner for an ETA, and notifies the waiting person when it clears.
 - Sprint review and retro: synthesizes per-item status into a review and creates retro actions tagged `retro-action`.
 - Sticky-note photo to sprint: segments a planning photo, reads each note, proposes a sprint, and creates the items after you press Approve.

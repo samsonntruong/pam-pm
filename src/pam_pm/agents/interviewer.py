@@ -1,5 +1,7 @@
 """Interviewer agent with pushback on vague answers."""
 
+# M2: role-aware blocker matching boost
+
 from __future__ import annotations
 
 import json
@@ -1144,6 +1146,68 @@ def _title_score(title: str, report_tokens: set[str]) -> int:
     return len(title_tokens & report_tokens)
 
 
+_BLOCKED_ROLE_RE = re.compile(
+    r"(?:can't|cant|cannot)\s+(?:finish|complete)|blocked\s+by|waiting\s+on",
+    re.IGNORECASE,
+)
+_BLOCKING_WORD_RE = re.compile(
+    r"\b(?:failing|fails|broken|down|error)\b", re.IGNORECASE
+)
+_BLOCKING_RETURNS_RE = re.compile(
+    r"return(?:s|ing)?\s+(?:a\s+)?5(?:xx|\d\d)", re.IGNORECASE
+)
+_ROLE_SPAN_LIMIT = 6
+_ROLE_SPAN_MIN = 3
+_ROLE_BOOST = 3
+
+
+def _normalize_quotes(text: str) -> str:
+    return (text or "").replace("\u2019", "'").replace("\u2018", "'")
+
+
+def _words_after(text: str, pos: int, limit: int = 6) -> list[str]:
+    words = re.findall(r"[A-Za-z0-9]+", text[pos:])
+    return words[:limit]
+
+
+def _words_before(text: str, pos: int, limit: int = 6) -> list[str]:
+    words = re.findall(r"[A-Za-z0-9]+", text[:pos])
+    return words[-limit:] if words else []
+
+
+def _blocked_span_tokens(report: str) -> set[str]:
+    norm = _normalize_quotes(report)
+    spans: set[str] = set()
+    for match in _BLOCKED_ROLE_RE.finditer(norm):
+        words = _words_after(norm, match.end(), _ROLE_SPAN_LIMIT)
+        if len(words) < _ROLE_SPAN_MIN:
+            continue
+        spans |= _blocker_tokens(" ".join(words))
+    return spans
+
+
+def _blocking_span_tokens(report: str) -> set[str]:
+    norm = _normalize_quotes(report)
+    spans: set[str] = set()
+    positions: list[int] = [m.start() for m in _BLOCKING_WORD_RE.finditer(norm)]
+    positions += [m.start() for m in _BLOCKING_RETURNS_RE.finditer(norm)]
+    for pos in positions:
+        words = _words_before(norm, pos, _ROLE_SPAN_LIMIT)
+        if len(words) < _ROLE_SPAN_MIN:
+            continue
+        spans |= _blocker_tokens(" ".join(words))
+    return spans
+
+
+def _role_boost(title: str, span_tokens: set[str]) -> int:
+    if not span_tokens:
+        return 0
+    title_tokens = _blocker_tokens(title)
+    if not title_tokens:
+        return 0
+    return _ROLE_BOOST if title_tokens <= span_tokens else 0
+
+
 def _match_blocked_item(
     report: str, candidates: list[str], board: Any, db: Any = None
 ) -> Any | None:
@@ -1174,12 +1238,19 @@ def _match_blocked_item(
     if not mine:
         return None
     tokens = _blocker_tokens(report)
+    role_tokens = _blocked_span_tokens(report)
     best: Any | None = None
     best_score = 0
+    best_len = 0
     for item in mine:
-        score = _title_score(_blocker_item_title(item), tokens)
-        if score > best_score:
+        title = _blocker_item_title(item)
+        score = _title_score(title, tokens) + _role_boost(title, role_tokens)
+        title_len = len(_blocker_tokens(title))
+        if score > best_score or (
+            score > 0 and score == best_score and title_len < best_len
+        ):
             best_score = score
+            best_len = title_len
             best = item
     if best is not None and best_score > 0:
         return best
@@ -1216,10 +1287,13 @@ def _match_blocking_item(
     wants = {str(e) for e in reporter_candidates if str(e)}
     lowered = {str(e).lower() for e in reporter_candidates if str(e)}
     tokens = _blocker_tokens(report)
+    role_tokens = _blocking_span_tokens(report)
     best_other: Any | None = None
     best_other_score = 0
+    best_other_len = 0
     best_mine: Any | None = None
     best_mine_score = 0
+    best_mine_len = 0
     for item in items:
         item_id = _blocker_item_id(item)
         if blocked_id and item_id == blocked_id:
@@ -1231,18 +1305,26 @@ def _match_blocking_item(
             closed = False
         if closed:
             continue
-        score = _title_score(_blocker_item_title(item), tokens)
+        title = _blocker_item_title(item)
+        score = _title_score(title, tokens) + _role_boost(title, role_tokens)
         if score <= 0:
             continue
+        title_len = len(_blocker_tokens(title))
         owner = _blocker_item_owner(item)
         is_mine = owner in wants or owner.lower() in lowered
         if is_mine:
-            if score > best_mine_score:
+            if score > best_mine_score or (
+                score == best_mine_score and title_len < best_mine_len
+            ):
                 best_mine_score = score
+                best_mine_len = title_len
                 best_mine = item
         else:
-            if score > best_other_score:
+            if score > best_other_score or (
+                score == best_other_score and title_len < best_other_len
+            ):
                 best_other_score = score
+                best_other_len = title_len
                 best_other = item
     if best_other is not None:
         return best_other
@@ -1464,11 +1546,15 @@ def _handle_blocker_confirmation(
         except Exception:  # noqa: BLE001, S110
             pass
     link: Any = None
+    link_error = ""
+    link_attempted = False
     if board is not None and blocked_id and blocking_id:
+        link_attempted = True
         try:
             link = board.add_link(blocking_id, blocked_id, _BLOCKER_LINK_REL)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             link = None
+            link_error = str(exc) or exc.__class__.__name__
     if db is not None and blocked_id:
         try:
             from pam_pm.core.writes import WriteService
@@ -1481,6 +1567,23 @@ def _handle_blocker_confirmation(
             })
         except Exception:  # noqa: BLE001, S110
             pass
+    if link_attempted and link_error:
+        try:
+            fail_mid = str(chat.send_dm(
+                person_id, normalize_followup_spacing(
+                    f"Could not link '{blocked_title}' as blocked by "
+                    f"'{blocking_title}': {link_error}. The link did not stick."
+                )) or "")
+        except Exception:  # noqa: BLE001
+            fail_mid = ""
+        _clear_pending_blocker(db, pending.get("_person", person_id))
+        return {
+            "kind": "blocker_link_failed", "replied": bool(fail_mid),
+            "person": person_id,
+            "item_id": blocked_id, "blocking_item_id": blocking_id,
+            "blocked_title": blocked_title, "blocking_title": blocking_title,
+            "message_id": fail_mid, "link": None, "error": link_error,
+        }
     try:
         link_mid = str(chat.send_dm(
             person_id, normalize_followup_spacing(

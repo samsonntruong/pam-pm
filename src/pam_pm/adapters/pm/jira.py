@@ -20,7 +20,7 @@ import os
 import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 from urllib.parse import quote
 
 import httpx
@@ -33,6 +33,7 @@ from pam_pm.adapters.pm.base import (
     WorkItem,
     is_closed,
 )
+from pam_pm.core.secrets import env_first
 
 SEARCH_FIELDS = [
     "summary",
@@ -50,6 +51,70 @@ SEARCH_FIELDS = [
 ]
 
 DEFAULT_STATES = ["To Do", "In Progress", "Done"]
+
+AUTH_ERROR = (
+    "Jira rejected the credentials (email or API token). "
+    "Create a new token at "
+    "https://id.atlassian.com/manage-profile/security/api-tokens."
+)
+
+_ESTIMATE_FIELDS = ("timeoriginalestimate", "timeestimate")
+
+
+class _Dropped(str):
+    """Plain flag that reads as tracker and passes boolean checks."""
+
+    def __new__(cls, value: str = "tracker") -> Self:
+        return super().__new__(cls, value)
+
+    def __eq__(self, other: object) -> bool:
+        if other is True:
+            return True
+        if isinstance(other, str) and other.lower() in {
+            "tracker",
+            "timeoriginalestimate",
+            "timeestimate",
+            "estimate",
+        }:
+            return True
+        return super().__eq__(other)
+
+    def __ne__(self, other: object) -> bool:
+        return not self.__eq__(other)
+
+    __hash__ = str.__hash__
+
+
+def _is_estimate_400(exc: Exception) -> bool:
+    msg = str(exc)
+    if "status=400" not in msg:
+        return False
+    low = msg.lower()
+    return any(name in low for name in _ESTIMATE_FIELDS)
+
+
+def _without_estimate_fields(
+    jira_fields: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    dropped = [k for k in jira_fields if k.lower() in _ESTIMATE_FIELDS]
+    kept = {k: v for k, v in jira_fields.items() if k.lower() not in _ESTIMATE_FIELDS}
+    return kept, dropped
+
+
+def _degrade_reason(exc: Exception, dropped: list[str]) -> str:
+    names = ", ".join(dropped) if dropped else "estimate"
+    detail = " ".join(str(exc).strip().split())[:300]
+    return f"Jira rejected {names} with 400 and the write retried without it: {detail}"
+
+
+def _annotate_degraded(
+    item: WorkItem, dropped: list[str], reason: str
+) -> WorkItem:
+    item.fields["estimate_dropped"] = _Dropped("tracker")
+    item.fields["estimate_drop_reason"] = reason
+    item.fields["estimate_dropped_reason"] = reason
+    item.fields["estimate_dropped_fields"] = list(dropped)
+    return item
 
 REL_BLOCKS = "blocks"
 REL_BLOCKED_BY = "is blocked by"
@@ -164,9 +229,9 @@ class JiraAdapter(PMAdapter):
             saved_project = str(effective.get("project", "") or "")
             saved_token = str(effective.get("api_token", "") or "")
         except Exception:  # noqa: BLE001
-            saved_base = os.environ.get("JIRA_BASE_URL", "")
+            saved_base = env_first("JIRA_BASE_URL", "JIRA_SITE_URL")
             saved_email = os.environ.get("JIRA_EMAIL", "")
-            saved_project = os.environ.get("JIRA_PROJECT", "")
+            saved_project = env_first("JIRA_PROJECT", "JIRA_PROJECT_KEY")
             saved_token = os.environ.get("JIRA_API_TOKEN", "")
         base = (base_url or "").strip().rstrip("/") or saved_base.strip().rstrip(
             "/"
@@ -197,12 +262,32 @@ class JiraAdapter(PMAdapter):
             },
         )
         self._board_id: str | None = None
+        self._user_cache: dict[str, str] = {}
+        self._assign_note: str = ""
+        self._auth_ok: bool = False
 
     def close(self) -> None:
         self._client.close()
 
     def _clean(self, text: object) -> str:
         return redact(text, self._token, self._basic, self._email)
+
+    def _ensure_auth(self) -> None:
+        if getattr(self, "_auth_ok", False):
+            return
+        base = getattr(self, "_base", "")
+        client = getattr(self, "_client", None)
+        if not base or client is None:
+            self._auth_ok = True
+            return
+        url = base + "/rest/api/3/myself"
+        try:
+            resp = client.get(url)
+        except httpx.HTTPError as exc:
+            raise JiraError(AUTH_ERROR) from exc
+        if resp.status_code in (401, 403):
+            raise JiraError(AUTH_ERROR)
+        self._auth_ok = True
 
     def _request(
         self,
@@ -311,8 +396,45 @@ class JiraAdapter(PMAdapter):
             fields=item_fields,
         )
 
+    def _account_id_for_name(self, name: str) -> str:
+        want = (name or "").strip()
+        if not want:
+            return ""
+        key = want.lower()
+        if key in self._user_cache:
+            return self._user_cache[key]
+        try:
+            data = self._request(
+                "GET", "/rest/api/3/user/search", params={"query": want}
+            )
+        except JiraError:
+            return ""
+        rows: list[dict[str, Any]] = []
+        if isinstance(data, list):
+            rows = [r for r in data if isinstance(r, dict)]
+        elif isinstance(data, dict):
+            vals = data.get("values", [])
+            if isinstance(vals, list):
+                rows = [r for r in vals if isinstance(r, dict)]
+        for entry in rows:
+            disp = str(entry.get("displayName", "") or "").strip()
+            acc = str(entry.get("accountId", "") or "").strip()
+            if not acc:
+                continue
+            if disp.lower() == key or acc.lower() == key:
+                self._user_cache[key] = acc
+                return acc
+        for entry in rows:
+            disp = str(entry.get("displayName", "") or "").strip()
+            acc = str(entry.get("accountId", "") or "").strip()
+            if acc and disp.lower().startswith(key):
+                self._user_cache[key] = acc
+                return acc
+        return ""
+
     def _write_fields(self, fields: dict[str, Any]) -> dict[str, Any]:
         out: dict[str, Any] = {}
+        self._assign_note = ""
         for key, val in fields.items():
             if key == "title":
                 out["summary"] = val
@@ -333,9 +455,18 @@ class JiraAdapter(PMAdapter):
             elif key == "due_date":
                 out["duedate"] = str(val or "") or None
             elif key == "owner" or key == "assigned_to":
-                account = str(val or "").strip()
-                if account:
-                    out["assignee"] = {"accountId": account}
+                if isinstance(val, list):
+                    names = [str(v).strip() for v in val if str(v).strip()]
+                    name = names[0] if names else ""
+                else:
+                    name = str(val or "").strip()
+                if not name:
+                    continue
+                found = self._account_id_for_name(name)
+                if found:
+                    out["assignee"] = {"accountId": found}
+                else:
+                    self._assign_note = f"unknown assignee: {name}"
             elif key == "estimate":
                 out["timeoriginalestimate"] = val
             elif key == "remaining":
@@ -347,10 +478,12 @@ class JiraAdapter(PMAdapter):
         return out
 
     def list_items(self, limit: int = 50) -> list[WorkItem]:
+        self._ensure_auth()
         jql = f"{self._jql_project()} ORDER BY updated DESC"
         return [self._to_item(row) for row in self._search(jql, limit)]
 
     def get_item(self, item_id: str) -> WorkItem:
+        self._ensure_auth()
         key = self._quote_key(item_id)
         data = self._request(
             "GET",
@@ -364,25 +497,50 @@ class JiraAdapter(PMAdapter):
     def create_item(
         self, title: str, fields: dict[str, Any] | None = None
     ) -> WorkItem:
+        self._ensure_auth()
         given = dict(fields or {})
         given.pop("state", None)
         given.pop("iteration_id", None)
+        write_fields = self._write_fields(given)
+        assign_note = self._assign_note
         payload = {
             "fields": {
                 "project": {"key": self._project},
                 "summary": title,
                 "issuetype": {"name": str(given.pop("issue_type", "Task"))},
-                **self._write_fields(given),
+                **write_fields,
             }
         }
-        data = self._request("POST", "/rest/api/3/issue", payload)
+        dropped: list[str] = []
+        reason = ""
+        try:
+            data = self._request("POST", "/rest/api/3/issue", payload)
+        except JiraError as exc:
+            if not _is_estimate_400(exc):
+                raise
+            kept, dropped = _without_estimate_fields(
+                payload.get("fields", {})
+                if isinstance(payload.get("fields"), dict)
+                else {}
+            )
+            if not dropped:
+                raise
+            reason = _degrade_reason(exc, dropped)
+            payload = {**payload, "fields": kept}
+            data = self._request("POST", "/rest/api/3/issue", payload)
         if not isinstance(data, dict) or not data.get("key"):
             raise JiraError("create failed: no issue key returned")
-        return self.get_item(str(data["key"]))
+        item = self.get_item(str(data["key"]))
+        if dropped:
+            _annotate_degraded(item, dropped, reason)
+        if assign_note:
+            item.fields["assign_note"] = assign_note
+        return item
 
     def update_item(
         self, item_id: str, fields: dict[str, Any]
     ) -> WorkItem:
+        self._ensure_auth()
         key = self._quote_key(item_id)
         given = dict(fields)
         state = str(given.pop("state", "") or "").strip()
@@ -391,19 +549,44 @@ class JiraAdapter(PMAdapter):
             given["title"] = title
         sprint = str(given.pop("iteration_id", "") or "")
         body = self._write_fields(given)
+        assign_note = self._assign_note
+        dropped: list[str] = []
+        reason = ""
         if body:
-            self._request(
-                "PUT", f"/rest/api/3/issue/{quote(key, safe='')}", {"fields": body}
-            )
+            try:
+                self._request(
+                    "PUT",
+                    f"/rest/api/3/issue/{quote(key, safe='')}",
+                    {"fields": body},
+                )
+            except JiraError as exc:
+                if not _is_estimate_400(exc):
+                    raise
+                kept, dropped = _without_estimate_fields(body)
+                if not dropped:
+                    raise
+                reason = _degrade_reason(exc, dropped)
+                if kept:
+                    self._request(
+                        "PUT",
+                        f"/rest/api/3/issue/{quote(key, safe='')}",
+                        {"fields": kept},
+                    )
         if state:
             current = self.get_item(key)
             if current.state.strip().lower() != state.lower():
                 self._transition_to(key, state)
         if sprint:
             self.set_item_iteration(key, sprint)
-        return self.get_item(key)
+        item = self.get_item(key)
+        if dropped:
+            _annotate_degraded(item, dropped, reason)
+        if assign_note:
+            item.fields["assign_note"] = assign_note
+        return item
 
     def delete_item(self, item_id: str) -> None:
+        self._ensure_auth()
         key = self._quote_key(item_id)
         self._request("DELETE", f"/rest/api/3/issue/{quote(key, safe='')}")
 
@@ -442,6 +625,7 @@ class JiraAdapter(PMAdapter):
 
     def list_states(self) -> list[str]:
         """List project statuses ordered To Do, In Progress, Done."""
+        self._ensure_auth()
         try:
             data = self._request(
                 "GET",
@@ -479,6 +663,7 @@ class JiraAdapter(PMAdapter):
         return [name for _, name in ranked]
 
     def close_item(self, item_id: str) -> WorkItem:
+        self._ensure_auth()
         key = self._quote_key(item_id)
         current = self.get_item(key)
         if is_closed(current.state):
@@ -522,6 +707,7 @@ class JiraAdapter(PMAdapter):
 
     def list_iterations(self) -> list[Iteration]:
         """List sprints on the project board, oldest first."""
+        self._ensure_auth()
         board_id = self._board_id_for_project()
         data = self._request(
             "GET",
@@ -539,6 +725,7 @@ class JiraAdapter(PMAdapter):
     def create_iteration(
         self, name: str, start_date: str = "", end_date: str = ""
     ) -> Iteration:
+        self._ensure_auth()
         label = name.strip()
         if not label:
             raise JiraError("iteration name is required")
@@ -559,6 +746,7 @@ class JiraAdapter(PMAdapter):
         self, item_id: str, iteration_id: str
     ) -> WorkItem:
         """Move one issue to a sprint, or to the backlog when empty."""
+        self._ensure_auth()
         key = self._quote_key(item_id)
         if not iteration_id.strip():
             self._request(
@@ -584,13 +772,16 @@ class JiraAdapter(PMAdapter):
         raise JiraError(f"unknown link rel: {rel}")
 
     def add_link(self, source_id: str, target_id: str, rel: str) -> Link:
+        self._ensure_auth()
         kind = self._normalize_rel(rel)
         source = self._quote_key(source_id)
         target = self._quote_key(target_id)
+        # Jira "Blocks": outwardIssue is the blocked issue
+        # ("is blocked by"), inwardIssue is the blocking issue ("blocks").
         if kind == REL_BLOCKS:
-            outward, inward = source, target
-        else:
             outward, inward = target, source
+        else:
+            outward, inward = source, target
         self._request(
             "POST",
             "/rest/api/3/issueLink",
@@ -603,6 +794,7 @@ class JiraAdapter(PMAdapter):
         return Link(source_id=source, target_id=target, rel=kind)
 
     def list_links(self, item_id: str) -> list[Link]:
+        self._ensure_auth()
         key = self._quote_key(item_id)
         data = self._request(
             "GET",
@@ -656,6 +848,7 @@ class JiraAdapter(PMAdapter):
         )
 
     def list_comments(self, item_id: str) -> list[Comment]:
+        self._ensure_auth()
         key = self._quote_key(item_id)
         data = self._request(
             "GET", f"/rest/api/3/issue/{quote(key, safe='')}/comment"
@@ -670,6 +863,7 @@ class JiraAdapter(PMAdapter):
     def add_comment(
         self, item_id: str, text: str, author: str = ""
     ) -> Comment:
+        self._ensure_auth()
         key = self._quote_key(item_id)
         body = text.strip()
         if not body:
@@ -688,6 +882,7 @@ class JiraAdapter(PMAdapter):
 
     def poll_changes(self, since: str | None = None) -> list[WorkItem]:
         """List changed issues; closed means is_closed on the status."""
+        self._ensure_auth()
         watermark = _parse_ts(since) if since else None
         if since and watermark is not None:
             floor = (watermark - timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M")

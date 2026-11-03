@@ -328,7 +328,12 @@ class _FakeMonday:
             entry["tags"] = [str(v) for v in labels] if isinstance(labels, list) else []
         if "dependency" in values:
             raw = values["dependency"]
-            ids = raw.get("linked_item_ids", []) if isinstance(raw, dict) else []
+            ids: Any = []
+            if isinstance(raw, dict):
+                if isinstance(raw.get("item_ids"), list):
+                    ids = raw.get("item_ids", [])
+                else:
+                    ids = raw.get("linked_item_ids", [])
             entry["deps"] = {str(v) for v in ids if str(v) in self._items} if isinstance(ids, list) else set()
 
     def handle(self, request: httpx.Request) -> httpx.Response:

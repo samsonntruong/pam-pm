@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ from pam_pm.adapters.pm.base import (
     WorkItem,
     is_closed,
 )
+from pam_pm.core.secrets import env_first
 
 API_URL = "https://api.monday.com/v2"
 
@@ -155,7 +157,7 @@ class MondayAdapter(PMAdapter):
             saved_board = str(effective.get("board", "") or "")
             saved_token = str(effective.get("api_token", "") or "")
         except Exception:  # noqa: BLE001
-            saved_board = os.environ.get("MONDAY_BOARD", "")
+            saved_board = env_first("MONDAY_BOARD", "MONDAY_BOARD_ID")
             saved_token = os.environ.get("MONDAY_API_TOKEN", "")
         want_board = (board or "").strip() or saved_board.strip()
         token = saved_token.strip()
@@ -181,6 +183,8 @@ class MondayAdapter(PMAdapter):
         self._board_name = ""
         self._groups: list[dict[str, Any]] | None = None
         self._columns: list[dict[str, Any]] | None = None
+        self._user_cache: dict[str, str] = {}
+        self._assign_note: str = ""
 
     def close(self) -> None:
         self._client.close()
@@ -224,7 +228,9 @@ class MondayAdapter(PMAdapter):
             " { id name groups { id title } columns { id title type } } }"
         )
         rows = data.get("boards", [])
-        return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+        return (
+            [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+        )
 
     def _board_id_for_ref(self) -> str:
         if self._board_id:
@@ -257,7 +263,9 @@ class MondayAdapter(PMAdapter):
         groups: list[dict[str, Any]] = []
         if isinstance(rows, list) and rows and isinstance(rows[0], dict):
             raw = rows[0].get("groups", [])
-            groups = [g for g in raw if isinstance(g, dict)] if isinstance(raw, list) else []
+            groups = (
+                [g for g in raw if isinstance(g, dict)] if isinstance(raw, list) else []
+            )
         self._groups = groups
         return groups
 
@@ -274,7 +282,9 @@ class MondayAdapter(PMAdapter):
         columns: list[dict[str, Any]] = []
         if isinstance(rows, list) and rows and isinstance(rows[0], dict):
             raw = rows[0].get("columns", [])
-            columns = [c for c in raw if isinstance(c, dict)] if isinstance(raw, list) else []
+            columns = (
+                [c for c in raw if isinstance(c, dict)] if isinstance(raw, list) else []
+            )
         self._columns = columns
         return columns
 
@@ -291,7 +301,9 @@ class MondayAdapter(PMAdapter):
         columns = self._board_columns()
         if kind == "description":
             for entry in columns:
-                ctype = str(entry.get("type", "") or "").strip().lower().replace("_", "-")
+                ctype = (
+                    str(entry.get("type", "") or "").strip().lower().replace("_", "-")
+                )
                 if ctype in ("long-text", "text"):
                     return str(entry.get("id", ""))
             for entry in columns:
@@ -326,28 +338,55 @@ class MondayAdapter(PMAdapter):
                     return str(entry.get("id", ""))
         elif kind == "dependency":
             for entry in columns:
-                if str(entry.get("type", "") or "").strip().lower() == "dependency":
+                ctype = (
+                    str(entry.get("type", "") or "").strip().lower().replace("_", "-")
+                )
+                if ctype == "dependency" or ctype.replace("-", "") == "dependency":
+                    return str(entry.get("id", ""))
+            for entry in columns:
+                ctype = (
+                    str(entry.get("type", "") or "").strip().lower().replace("_", "-")
+                )
+                if ctype == "board-relation" or ctype.replace("-", "") == "boardrelation":
+                    return str(entry.get("id", ""))
+            for entry in columns:
+                if str(entry.get("type", "") or "").strip().lower() == "link":
                     return str(entry.get("id", ""))
             for entry in columns:
                 blob = f"{entry.get('id', '')} {entry.get('title', '')}".strip().lower()
                 if "depend" in blob:
                     return str(entry.get("id", ""))
+            for entry in columns:
+                title = str(entry.get("title", "") or "").strip().lower()
+                if "link" in title:
+                    return str(entry.get("id", ""))
         return ""
 
     def _user_id_for_name(self, name: str) -> str:
-        want = (name or "").strip().lower()
+        want = (name or "").strip()
         if not want:
             return ""
+        key = want.lower()
+        if key in self._user_cache:
+            return self._user_cache[key]
         try:
             data = self._graphql("query UserLookup { users(limit: 100) { id name } }")
         except MondayError:
             return ""
         rows = data.get("users", [])
-        for entry in rows if isinstance(rows, list) else []:
-            if not isinstance(entry, dict):
-                continue
-            if str(entry.get("name", "") or "").strip().lower() == want:
-                return str(entry.get("id", ""))
+        entries = [e for e in rows if isinstance(e, dict)] if isinstance(rows, list) else []
+        for entry in entries:
+            if str(entry.get("name", "") or "").strip().lower() == key:
+                uid = str(entry.get("id", "") or "").strip()
+                if uid:
+                    self._user_cache[key] = uid
+                    return uid
+        for entry in entries:
+            if str(entry.get("name", "") or "").strip().lower().startswith(key):
+                uid = str(entry.get("id", "") or "").strip()
+                if uid:
+                    self._user_cache[key] = uid
+                    return uid
         return ""
 
     @staticmethod
@@ -356,12 +395,15 @@ class MondayAdapter(PMAdapter):
             return [str(v).strip() for v in value if str(v).strip()]
         return [
             part
-            for part in (p.strip() for p in str(value or "").replace(",", ";").split(";"))
+            for part in (
+                p.strip() for p in str(value or "").replace(",", ";").split(";")
+            )
             if part
         ]
 
     def _column_values_for(self, fields: dict[str, Any]) -> dict[str, Any]:
         out: dict[str, Any] = {}
+        self._assign_note = ""
         for key, val in fields.items():
             if key == "description":
                 column = self._column_id_for("description")
@@ -382,6 +424,8 @@ class MondayAdapter(PMAdapter):
                             out[column] = {
                                 "personsAndTeams": [{"id": found, "kind": "person"}]
                             }
+                        else:
+                            self._assign_note = f"unknown assignee: {names[0]}"
                     else:
                         out[column] = {"personsAndTeams": []}
             elif key == "tags":
@@ -438,7 +482,9 @@ class MondayAdapter(PMAdapter):
                     payload = json.loads(str(values[tags_col].get("value", "") or ""))
                 except (TypeError, ValueError):
                     payload = None
-                if isinstance(payload, dict) and isinstance(payload.get("labels"), list):
+                if isinstance(payload, dict) and isinstance(
+                    payload.get("labels"), list
+                ):
                     tags = [str(v).strip() for v in payload["labels"] if str(v).strip()]
         board_id = self._board_id or ""
         item_id = str(data.get("id", ""))
@@ -484,7 +530,9 @@ class MondayAdapter(PMAdapter):
             return []
         page = rows[0].get("items_page", {})
         items = page.get("items", []) if isinstance(page, dict) else []
-        return [r for r in items if isinstance(r, dict)] if isinstance(items, list) else []
+        return (
+            [r for r in items if isinstance(r, dict)] if isinstance(items, list) else []
+        )
 
     def _fetch_item(self, item_id: str) -> dict[str, Any]:
         data = self._graphql(
@@ -531,6 +579,7 @@ class MondayAdapter(PMAdapter):
                 raise MondayError("no groups on this board")
             group_id = str(groups[0].get("id", ""))
         values = self._column_values_for(given)
+        assign_note = self._assign_note
         data = self._graphql(
             "mutation ItemCreate($boardId: ID!, $groupId: String!,"
             " $name: String!, $values: JSON!)"
@@ -547,7 +596,10 @@ class MondayAdapter(PMAdapter):
         new_id = str(created.get("id", "") or "") if isinstance(created, dict) else ""
         if not new_id:
             raise MondayError("create failed: no item id returned")
-        return self.get_item(new_id)
+        item = self.get_item(new_id)
+        if assign_note:
+            item.fields["assign_note"] = assign_note
+        return item
 
     def update_item(self, item_id: str, fields: dict[str, Any]) -> WorkItem:
         cleaned = self._require_id(item_id)
@@ -568,12 +620,16 @@ class MondayAdapter(PMAdapter):
         state = str(given.pop("state", "") or "").strip()
         if state:
             self._graphql(
-                "mutation ItemMove($boardId: ID!, $itemId: ID!, $groupId: String!)"
-                " { move_item_to_group(board_id: $boardId item_id: $itemId"
+                "mutation ItemMove($itemId: ID!, $groupId: String!)"
+                " { move_item_to_group(item_id: $itemId"
                 " group_id: $groupId) { id } }",
-                {"boardId": board_id, "itemId": cleaned, "groupId": self._group_id_for_name(state)},
+                {
+                    "itemId": cleaned,
+                    "groupId": self._group_id_for_name(state),
+                },
             )
         values = self._column_values_for(given)
+        assign_note = self._assign_note
         if values:
             self._graphql(
                 "mutation ItemColumns($boardId: ID!, $itemId: ID!, $values: JSON!)"
@@ -581,7 +637,10 @@ class MondayAdapter(PMAdapter):
                 " column_values: $values) { id } }",
                 {"boardId": board_id, "itemId": cleaned, "values": json.dumps(values)},
             )
-        return self.get_item(cleaned)
+        item = self.get_item(cleaned)
+        if assign_note:
+            item.fields["assign_note"] = assign_note
+        return item
 
     def delete_item(self, item_id: str) -> None:
         cleaned = self._require_id(item_id)
@@ -599,20 +658,23 @@ class MondayAdapter(PMAdapter):
         current = self.get_item(cleaned)
         if is_closed(current.state):
             return current
-        done_group = ""
+        by_title: dict[str, str] = {}
         for entry in self._board_groups():
-            title = str(entry.get("title", ""))
-            if title and is_closed(title):
-                done_group = str(entry.get("id", ""))
+            title = str(entry.get("title", "") or "").strip().lower()
+            if title and title not in by_title:
+                by_title[title] = str(entry.get("id", ""))
+        done_group = ""
+        for name in ("done", "completed", "closed"):
+            if name in by_title:
+                done_group = by_title[name]
                 break
         if not done_group:
             raise MondayError("no Done group on this board")
         self._graphql(
-            "mutation ItemMove($boardId: ID!, $itemId: ID!, $groupId: String!)"
-            " { move_item_to_group(board_id: $boardId item_id: $itemId"
+            "mutation ItemMove($itemId: ID!, $groupId: String!)"
+            " { move_item_to_group(item_id: $itemId"
             " group_id: $groupId) { id } }",
             {
-                "boardId": self._board_id_for_ref(),
                 "itemId": cleaned,
                 "groupId": done_group,
             },
@@ -626,13 +688,17 @@ class MondayAdapter(PMAdapter):
     def create_iteration(
         self, name: str, start_date: str = "", end_date: str = ""
     ) -> Iteration:
-        raise MondayError("Monday boards have no sprints; iterations are not supported.")
+        raise MondayError(
+            "Monday boards have no sprints; iterations are not supported."
+        )
 
     def set_item_iteration(self, item_id: str, iteration_id: str) -> WorkItem:
         """Clearing is a no-op; setting raises since sprints are unsupported."""
         if not iteration_id.strip():
             return self.get_item(item_id)
-        raise MondayError("Monday boards have no sprints; iterations are not supported.")
+        raise MondayError(
+            "Monday boards have no sprints; iterations are not supported."
+        )
 
     @staticmethod
     def _normalize_rel(rel: str) -> str:
@@ -643,18 +709,126 @@ class MondayAdapter(PMAdapter):
             return REL_BLOCKED_BY
         raise MondayError(f"unknown link rel: {rel}")
 
+    def _column_type_for(self, column_id: str) -> str:
+        for entry in self._board_columns():
+            if str(entry.get("id", "") or "") == column_id:
+                return str(entry.get("type", "") or "").strip().lower()
+        return ""
+
+    def _link_id_from_value(
+        self, raw: object, text_fallback: str = ""
+    ) -> str:
+        if raw is None or raw == "":
+            payload_text = ""
+        else:
+            payload_text = str(raw)
+        url = ""
+        text = str(text_fallback or "").strip()
+        try:
+            payload = json.loads(payload_text) if payload_text else None
+        except (TypeError, ValueError):
+            payload = None
+        if isinstance(payload, dict):
+            url = str(payload.get("url", "") or "").strip()
+            if not text:
+                text = str(payload.get("text", "") or "").strip()
+        elif payload_text:
+            url = payload_text.strip()
+        for pattern in (r"/pulses/(\d+)", r"/items/(\d+)", r"[?&]item[_-]?id=(\d+)"):
+            found = re.search(pattern, url)
+            if found:
+                return found.group(1)
+        tail = re.search(r"(\d+)\s*$", url)
+        if tail and ("/boards/" in url or "/pulses/" in url or "/items/" in url):
+            return tail.group(1)
+        if text:
+            want = text.strip().lower()
+            try:
+                rows = self._board_items()
+            except MondayError:
+                rows = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                name = str(row.get("name", "") or "").strip().lower()
+                rid = str(row.get("id", "") or "").strip()
+                if rid and name and name == want:
+                    return rid
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                name = str(row.get("name", "") or "").strip().lower()
+                rid = str(row.get("id", "") or "").strip()
+                if rid and name and (name.startswith(want) or want.startswith(name)):
+                    return rid
+        return ""
+
     def _dependency_ids(self, entry: dict[str, Any]) -> list[str]:
-        column = self._column_id_for("dependency") or "dependency"
-        for row in entry.get("column_values", []) if isinstance(entry.get("column_values"), list) else []:
+        preferred = self._column_id_for("dependency")
+        rows = entry.get("column_values", [])
+        if not isinstance(rows, list):
+            return []
+        out: list[str] = []
+        seen: set[str] = set()
+        for row in rows:
             if not isinstance(row, dict):
                 continue
             cid = str(row.get("id", "") or "")
             column_block = row.get("column", {})
-            if isinstance(column_block, dict) and column_block.get("id"):
-                cid = str(column_block.get("id", "") or cid)
-            if cid == column:
-                return _linked_from_value(row.get("value", ""))
-        return []
+            ctype = ""
+            if isinstance(column_block, dict):
+                if column_block.get("id"):
+                    cid = str(column_block.get("id", "") or cid)
+                ctype = str(column_block.get("type", "") or "").strip().lower()
+            if not cid:
+                continue
+            if not ctype:
+                ctype = self._column_type_for(cid)
+            is_link = ctype == "link"
+            is_dep = ctype.replace("_", "-") in ("dependency", "board-relation") or ctype.replace("_", "").replace("-", "") in (
+                "dependency",
+                "boardrelation",
+            )
+            if cid == preferred and not (is_link or is_dep):
+                is_dep = True
+            if not (is_link or is_dep):
+                if cid != preferred:
+                    continue
+                is_dep = True
+            if is_link:
+                resolved = self._link_id_from_value(
+                    row.get("value", ""), str(row.get("text", "") or "")
+                )
+                ids = [resolved] if resolved else []
+            else:
+                ids = _linked_from_value(row.get("value", ""))
+            for value in ids:
+                cleaned = str(value or "").strip()
+                if cleaned and cleaned not in seen:
+                    seen.add(cleaned)
+                    out.append(cleaned)
+        return out
+
+    def _dependency_column_ids(self) -> list[str]:
+        """Return link-capable column ids in preference order."""
+        columns = self._board_columns()
+        buckets: dict[str, list[str]] = {"dependency": [], "relation": [], "link": [], "named": []}
+        for entry in columns:
+            cid = str(entry.get("id", "") or "")
+            if not cid:
+                continue
+            ctype = str(entry.get("type", "") or "").strip().lower().replace("_", "-")
+            flat = ctype.replace("-", "")
+            title = str(entry.get("title", "") or "").strip().lower()
+            if ctype == "dependency" or flat == "dependency":
+                buckets["dependency"].append(cid)
+            elif ctype == "board-relation" or flat == "boardrelation":
+                buckets["relation"].append(cid)
+            elif ctype == "link":
+                buckets["link"].append(cid)
+            elif "depend" in f"{cid} {title}":
+                buckets["named"].append(cid)
+        return buckets["dependency"] + buckets["relation"] + buckets["link"] + buckets["named"]
 
     def add_link(self, source_id: str, target_id: str, rel: str) -> Link:
         kind = self._normalize_rel(rel)
@@ -670,21 +844,47 @@ class MondayAdapter(PMAdapter):
         other = self._fetch_item(blocker)
         if not other.get("id"):
             raise MondayError(f"unknown item: {blocker}")
-        column = self._column_id_for("dependency") or "dependency"
-        current = self._dependency_ids(entry)
-        if blocker not in current:
-            current.append(blocker)
-        self._graphql(
-            "mutation ItemColumns($boardId: ID!, $itemId: ID!, $values: JSON!)"
-            " { change_multiple_column_values(board_id: $boardId item_id: $itemId"
-            " column_values: $values) { id } }",
-            {
-                "boardId": self._board_id_for_ref(),
-                "itemId": blocked,
-                "values": json.dumps({column: {"linked_item_ids": current}}),
-            },
+        blocker_title = str(other.get("name", "") or blocker).strip() or blocker
+        board_id = self._board_id_for_ref()
+        blocker_url = f"https://monday.com/boards/{board_id}/pulses/{blocker}"
+        candidates: list[tuple[str, dict[str, Any]]] = []
+        for column_id in self._dependency_column_ids():
+            ctype = self._column_type_for(column_id)
+            if ctype == "link":
+                candidates.append(
+                    (column_id, {column_id: {"url": blocker_url, "text": blocker_title}})
+                )
+            else:
+                current = self._dependency_ids(entry)
+                if blocker not in current:
+                    current = current + [blocker]
+                candidates.append((column_id, {column_id: {"item_ids": current}}))
+        if not candidates:
+            raise MondayError("add a Dependency or Link column to the board")
+        last_error = ""
+        for column_id, payload in candidates:
+            self._graphql(
+                "mutation ItemColumns($boardId: ID!, $itemId: ID!, $values: JSON!)"
+                " { change_multiple_column_values(board_id: $boardId item_id: $itemId"
+                " column_values: $values) { id } }",
+                {
+                    "boardId": board_id,
+                    "itemId": blocked,
+                    "values": json.dumps(payload),
+                },
+            )
+            verified = self._fetch_item(blocked)
+            if blocker in self._dependency_ids(verified):
+                return Link(source_id=source, target_id=target, rel=kind)
+            last_error = f"column {column_id} rejected the write"
+        note = (
+            f"Blocked by {blocker_title} ({blocker}). Recorded as a note "
+            "because the link columns rejected the write."
         )
-        return Link(source_id=source, target_id=target, rel=kind)
+        self.add_comment(blocked, note)
+        raise MondayError(
+            f"{last_error}; recorded as a note on item {blocked}."
+        )
 
     def list_links(self, item_id: str) -> list[Link]:
         cleaned = self._require_id(item_id)
@@ -728,7 +928,9 @@ class MondayAdapter(PMAdapter):
         updates: list[dict[str, Any]] = []
         if isinstance(rows, list) and rows and isinstance(rows[0], dict):
             raw = rows[0].get("updates", [])
-            updates = [u for u in raw if isinstance(u, dict)] if isinstance(raw, list) else []
+            updates = (
+                [u for u in raw if isinstance(u, dict)] if isinstance(raw, list) else []
+            )
         comments = [self._to_comment(cleaned, u) for u in updates]
         comments.sort(key=lambda c: c.created)
         return comments

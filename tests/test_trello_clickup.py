@@ -124,6 +124,11 @@ class _FakeTrello:
                 200, json=[self._payload(k) for k in self._cards]
             )
         if re.search(r"/boards/[^/]+/actions$", path) and method == "GET":
+            wanted = params.get("filter", "")
+            if wanted.strip():
+                kinds = {p.strip() for p in wanted.split(",") if p.strip()}
+                rows = [a for a in self._actions if a.get("type") in kinds]
+                return httpx.Response(200, json=rows)
             return httpx.Response(200, json=list(self._actions))
         if path.endswith("/cards") and method == "POST":
             return self._create(params)
@@ -215,6 +220,19 @@ class _FakeTrello:
         }
         self._next_attach += 1
         self._attachments.setdefault(card_id, []).append(entry)
+        self._actions.append(
+            {
+                "id": f"a{self._next_action}",
+                "type": "addAttachmentToCard",
+                "date": self._stamp(),
+                "data": {
+                    "card": {"id": card_id},
+                    "attachment": dict(entry),
+                    "board": {"id": "b1"},
+                },
+            }
+        )
+        self._next_action += 1
         return httpx.Response(200, json=entry)
 
     def _comment_create(
@@ -376,7 +394,7 @@ class _FakeClickUp:
             "status": status,
             "tags": [str(t) for t in tags] if isinstance(tags, list) else [],
             "due_date": str(due) if due not in (None, "") else None,
-            "assignees": self._users_for(payload.get("assignees", [])),
+            "assignees": self._users_for((payload.get("assignees", {}) or {}).get("add", [])),
             "priority": self._priority_for(payload.get("priority")),
             "created": self._ms(),
             "updated": self._ms(),
@@ -412,7 +430,7 @@ class _FakeClickUp:
                 due = payload.get("due_date")
                 entry["due_date"] = str(due) if due not in (None, "") else None
             if "assignees" in payload:
-                entry["assignees"] = self._users_for(payload.get("assignees", []))
+                entry["assignees"] = self._users_for((payload.get("assignees", {}) or {}).get("add", []))
             if "time_estimate" in payload:
                 entry["estimate"] = payload.get("time_estimate")
             if "priority" in payload:

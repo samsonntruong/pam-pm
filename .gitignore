@@ -15,3 +15,7 @@ build/
 .agents/skills/impeccable/
 .claude/skills/impeccable/
 .tools/
+
+# secret files (never commit)
+*.secrets.env
+pam-secrets.env

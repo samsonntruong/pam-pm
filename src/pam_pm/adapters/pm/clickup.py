@@ -29,6 +29,7 @@ from pam_pm.adapters.pm.base import (
     WorkItem,
     is_closed,
 )
+from pam_pm.core.secrets import env_first
 
 API_BASE = "https://api.clickup.com/api/v2"
 
@@ -153,6 +154,22 @@ def _priority_num(value: object) -> int | None:
     return num if num in _NUM_TO_PRIORITY else None
 
 
+def _is_permission_error(exc: Exception) -> bool:
+    low = str(exc).lower()
+    return any(
+        s in low
+        for s in ("401", "403", "unauthor", "forbidden", "permission", "access denied")
+    )
+
+
+def _permission_message() -> str:
+    return (
+        "ClickUp token lacks permission to read or create Spaces and Lists. "
+        "In ClickUp, open Settings > Apps > ClickUp API and enable access "
+        "for this token, then try again."
+    )
+
+
 class ClickUpAdapter(PMAdapter):
     """PM adapter backed by the ClickUp REST API."""
 
@@ -179,14 +196,12 @@ class ClickUpAdapter(PMAdapter):
             saved_list = str(effective.get("list", "") or "")
             saved_token = str(effective.get("api_token", "") or "")
         except Exception:  # noqa: BLE001
-            saved_team = os.environ.get("CLICKUP_TEAM", "")
-            saved_list = os.environ.get("CLICKUP_LIST", "")
+            saved_team = env_first("CLICKUP_TEAM", "CLICKUP_TEAM_ID")
+            saved_list = env_first("CLICKUP_LIST", "CLICKUP_LIST_ID")
             saved_token = os.environ.get("CLICKUP_API_TOKEN", "")
         want_team = (team or "").strip() or saved_team.strip()
         want_list = (list_ref or "").strip() or saved_list.strip()
         token = saved_token.strip()
-        if not want_list:
-            raise ClickUpError("CLICKUP_LIST is required.")
         if not token:
             raise ClickUpError(
                 "CLICKUP_API_TOKEN is missing; save it in Setup or set CLICKUP_API_TOKEN."
@@ -206,6 +221,8 @@ class ClickUpAdapter(PMAdapter):
         self._team_id: str | None = None
         self._list_id: str | None = None
         self._statuses: list[dict[str, Any]] | None = None
+        self._user_cache: dict[str, str] = {}
+        self._assign_note: str = ""
 
     def close(self) -> None:
         self._client.close()
@@ -278,6 +295,11 @@ class ClickUpAdapter(PMAdapter):
     def _list_id_for_ref(self) -> str:
         if self._list_id:
             return self._list_id
+        if not self._list_ref.strip():
+            project = self._team_ref.strip()
+            resolved = self.resolve_list(project)
+            self._list_id = resolved
+            return resolved
         want = self._list_ref.strip().lower()
         team_ids = self._wanted_team_ids()
         if not team_ids:
@@ -296,6 +318,77 @@ class ClickUpAdapter(PMAdapter):
                                 self._statuses = [s for s in statuses if isinstance(s, dict)]
                             return self._list_id
         raise ClickUpError(f"unknown ClickUp list: {self._list_ref}")
+
+    def resolve_list(self, project_name: str, dry_run: bool = False) -> str:
+        """Find or create a ClickUp list named project_name; return its id."""
+        name = (project_name or "").strip()
+        if not name:
+            raise ClickUpError("project name is required")
+        want = name.lower()
+        try:
+            team_ids = self._wanted_team_ids()
+        except ClickUpError as exc:
+            if _is_permission_error(exc):
+                raise ClickUpError(_permission_message()) from exc
+            raise
+        if not team_ids:
+            raise ClickUpError(f"unknown ClickUp team: {self._team_ref or name}")
+        for team_id in team_ids:
+            try:
+                spaces = self._spaces_of(team_id)
+            except ClickUpError as exc:
+                if _is_permission_error(exc):
+                    raise ClickUpError(_permission_message()) from exc
+                raise
+            for space in spaces:
+                sid = str(space.get("id", "") or "").strip()
+                if not sid:
+                    continue
+                try:
+                    lists = self._lists_of_space(sid)
+                except ClickUpError as exc:
+                    if _is_permission_error(exc):
+                        raise ClickUpError(_permission_message()) from exc
+                    raise
+                for entry in lists:
+                    if str(entry.get("name", "") or "").strip().lower() == want:
+                        lid = str(entry.get("id", "") or "").strip()
+                        if lid:
+                            return lid
+        if dry_run:
+            return ""
+        target_team = team_ids[0]
+        try:
+            space_data = self._request(
+                "POST", f"/team/{target_team}/space", {"name": name}
+            )
+        except ClickUpError as exc:
+            if _is_permission_error(exc):
+                raise ClickUpError(_permission_message()) from exc
+            raise
+        space_id = ""
+        if isinstance(space_data, dict):
+            space_id = str(space_data.get("id", "") or "").strip()
+            if not space_id and isinstance(space_data.get("space"), dict):
+                space_id = str(space_data["space"].get("id", "") or "").strip()
+        if not space_id:
+            raise ClickUpError(f"ClickUp Space create failed for: {name}")
+        try:
+            list_data = self._request(
+                "POST", f"/space/{space_id}/list", {"name": name}
+            )
+        except ClickUpError as exc:
+            if _is_permission_error(exc):
+                raise ClickUpError(_permission_message()) from exc
+            raise
+        list_id = ""
+        if isinstance(list_data, dict):
+            list_id = str(list_data.get("id", "") or "").strip()
+            if not list_id and isinstance(list_data.get("list"), dict):
+                list_id = str(list_data["list"].get("id", "") or "").strip()
+        if not list_id:
+            raise ClickUpError(f"ClickUp List create failed for: {name}")
+        return list_id
 
     def _list_statuses(self) -> list[dict[str, Any]]:
         if self._statuses is not None:
@@ -335,21 +428,67 @@ class ClickUpAdapter(PMAdapter):
         raise ClickUpError("no completed status on this list")
 
     def _assignee_id(self, owner: str) -> str:
-        name = (owner or "").strip().lower()
-        if not name:
+        want = (owner or "").strip()
+        if not want:
             return ""
+        key = want.lower()
+        if key in self._user_cache:
+            return self._user_cache[key]
+        candidates: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        def _collect(rows: Any) -> None:
+            for entry in rows if isinstance(rows, list) else []:
+                if not isinstance(entry, dict):
+                    continue
+                user = entry.get("user", entry)
+                if not isinstance(user, dict):
+                    continue
+                uid = str(user.get("id", "") or "").strip()
+                if not uid or uid in seen:
+                    if not uid:
+                        candidates.append(user)
+                    continue
+                seen.add(uid)
+                candidates.append(user)
+
         try:
             data = self._request("GET", f"/list/{self._list_id_for_ref()}/member")
+            rows = data.get("members", []) if isinstance(data, dict) else []
+            _collect(rows)
         except ClickUpError:
-            return ""
-        rows = data.get("members", []) if isinstance(data, dict) else []
-        for entry in rows if isinstance(rows, list) else []:
-            user = entry.get("user", entry) if isinstance(entry, dict) else {}
-            if not isinstance(user, dict):
+            pass
+        try:
+            for team in self._teams():
+                if isinstance(team, dict):
+                    _collect(team.get("members", []))
+        except ClickUpError:
+            pass
+
+        def _names(user: dict[str, Any]) -> list[str]:
+            out: list[str] = []
+            for field in ("username", "email", "full_name", "name", "display_name"):
+                val = str(user.get(field, "") or "").strip()
+                if val:
+                    out.append(val)
+            return out
+
+        for user in candidates:
+            uid = str(user.get("id", "") or "").strip()
+            if not uid:
                 continue
-            for field in ("username", "email"):
-                if str(user.get(field, "") or "").strip().lower() == name:
-                    return str(user.get("id", ""))
+            for text in _names(user):
+                if text.lower() == key:
+                    self._user_cache[key] = uid
+                    return uid
+        for user in candidates:
+            uid = str(user.get("id", "") or "").strip()
+            if not uid:
+                continue
+            for text in _names(user):
+                if text.lower().startswith(key):
+                    self._user_cache[key] = uid
+                    return uid
         return ""
 
     @staticmethod
@@ -364,6 +503,7 @@ class ClickUpAdapter(PMAdapter):
 
     def _task_input(self, fields: dict[str, Any]) -> dict[str, Any]:
         out: dict[str, Any] = {}
+        self._assign_note = ""
         for key, val in fields.items():
             if key == "title":
                 out["name"] = val
@@ -380,11 +520,19 @@ class ClickUpAdapter(PMAdapter):
                 out["due_date"] = int(_ms_from_due_date(text)) if text else None
             elif key == "owner" or key == "assigned_to":
                 names = self._split_tags(val)
-                ids = [self._assignee_id(n) for n in names]
-                found = [i for i in ids if i]
-                if found:
-                    out["assignees"] = found
-                elif not names:
+                if names:
+                    ids = [self._assignee_id(n) for n in names]
+                    found = [i for i in ids if i]
+                    if found:
+                        out["assignees"] = {
+                            "add": [
+                                int(i) if str(i).isdigit() else i for i in found
+                            ]
+                        }
+                    missing = [n for n, i in zip(names, ids) if not i]
+                    if missing:
+                        self._assign_note = f"unknown assignee: {', '.join(missing)}"
+                else:
                     out["assignees"] = []
             elif key == "estimate":
                 try:
@@ -493,11 +641,16 @@ class ClickUpAdapter(PMAdapter):
     def create_item(self, title: str, fields: dict[str, Any] | None = None) -> WorkItem:
         given = dict(fields or {})
         given.pop("iteration_id", None)
-        payload = {"name": title, **self._task_input(given)}
+        task_input = self._task_input(given)
+        assign_note = self._assign_note
+        payload = {"name": title, **task_input}
         data = self._request("POST", f"/list/{self._list_id_for_ref()}/task", payload)
         if not isinstance(data, dict) or not data.get("id"):
             raise ClickUpError("create failed: no task id returned")
-        return self.get_item(str(data["id"]))
+        item = self.get_item(str(data["id"]))
+        if assign_note:
+            item.fields["assign_note"] = assign_note
+        return item
 
     def update_item(self, item_id: str, fields: dict[str, Any]) -> WorkItem:
         task_id = self._require_id(item_id)
@@ -506,9 +659,13 @@ class ClickUpAdapter(PMAdapter):
         if sprint:
             self.set_item_iteration(task_id, sprint)
         payload = self._task_input(given)
+        assign_note = self._assign_note
         if payload:
             self._request("PUT", f"/task/{task_id}", payload)
-        return self.get_item(task_id)
+        item = self.get_item(task_id)
+        if assign_note:
+            item.fields["assign_note"] = assign_note
+        return item
 
     def delete_item(self, item_id: str) -> None:
         task_id = self._require_id(item_id)
@@ -586,6 +743,9 @@ class ClickUpAdapter(PMAdapter):
         for other in _ids(data.get("dependencies", [])):
             if other and other != task_id:
                 out.append(Link(source_id=task_id, target_id=other, rel=REL_BLOCKED_BY))
+        for other in _ids(data.get("linked_tasks", [])):
+            if other and other != task_id:
+                out.append(Link(source_id=task_id, target_id=other, rel=REL_BLOCKS))
         return out
 
     @staticmethod
@@ -642,6 +802,25 @@ class ClickUpAdapter(PMAdapter):
             if changed is not None and changed > watermark:
                 out.append(item)
         return out
+
+
+def resolve_list(
+    project_name: str,
+    team: str | None = None,
+    transport: httpx.BaseTransport | None = None,
+    data_dir: str | Path | None = None,
+    dry_run: bool = False,
+    timeout: int = 30,
+) -> str:
+    """Find or create a list named project_name; return its id."""
+    adapter = ClickUpAdapter(
+        team=team, list_ref="", transport=transport, data_dir=data_dir,
+        timeout=timeout,
+    )
+    try:
+        return adapter.resolve_list(project_name, dry_run=dry_run)
+    finally:
+        adapter.close()
 
 
 ClickUpListAdapter = ClickUpAdapter
