@@ -12,4 +12,4 @@ Pam is a local-first app: console on 127.0.0.1, secrets in the local data direct
 - Never paste tokens, PATs, or private Slack content into issues, PRs, or logs. Redact anything matching `xoxb-`, `xapp-`, `github_pat_`, or Bearer tokens.
 - Masking runs before any model call; do not bypass it.
 
-Supported versions: the latest commit on the default branch (alpha, v0.1.0 unreleased).
+Supported versions: the latest commit on the default branch (1.0).

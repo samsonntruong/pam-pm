@@ -1,5 +1,7 @@
 """Pam web console: setup wizard, rules, activity stream, board."""
 
+# C4: setup Test buttons verify live (probes replace presence checks).
+
 from __future__ import annotations
 
 import asyncio
@@ -1830,6 +1832,139 @@ def _context(request: Request, active: str) -> dict[str, Any]:
     }
 
 
+META_CHECK_TRANSPORT: Any = None
+PROVIDER_CHECK_TRANSPORT: Any = None
+SLACK_CHECK_TRANSPORT: Any = None
+ADO_CHECK_TRANSPORT: Any = None
+JIRA_CHECK_TRANSPORT: Any = None  # C4b live probe transport
+TRELLO_CHECK_TRANSPORT: Any = None
+
+_CHECK_TIMEOUT = 8.0
+
+
+def _models_probe_url(base_url: str) -> str:
+    base = (base_url or "").strip().rstrip("/")
+    if base.lower().endswith("/v1"):
+        return base + "/models"
+    return base + "/v1/models"
+
+
+def _probe_models_live(
+    base_url: str, api_key: str, transport: Any
+) -> tuple[bool, str]:
+    import httpx
+
+    url = _models_probe_url(base_url)
+    client = httpx.Client(timeout=_CHECK_TIMEOUT, transport=transport)
+    try:
+        resp = client.get(url, headers={"Authorization": "Bearer " + api_key})
+    finally:
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001, S110
+            pass
+    if resp.status_code == 200:
+        return True, ""
+    if resp.status_code in (401, 403):
+        return False, "bad key"
+    return False, f"status={resp.status_code}"
+
+
+def _probe_slack_authtest(bot_token: str, transport: Any) -> tuple[bool, str]:
+    import httpx
+
+    client = httpx.Client(timeout=_CHECK_TIMEOUT, transport=transport)
+    try:
+        resp = client.post(
+            "https://slack.com/api/auth.test",
+            headers={"Authorization": "Bearer " + bot_token},
+        )
+    finally:
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001, S110
+            pass
+    if resp.status_code in (401, 403):
+        return False, "bad token"
+    try:
+        data = resp.json()
+    except ValueError:
+        return False, f"status={resp.status_code}"
+    if isinstance(data, dict) and data.get("ok") is True:
+        return True, ""
+    err = str(data.get("error", "") or "").strip().lower() if isinstance(data, dict) else ""
+    if "invalid" in err or "auth" in err or "token" in err or "revoked" in err:
+        return False, "bad token"
+    return False, err or f"status={resp.status_code}"
+
+
+def _probe_ado_connection(org_url: str, pat: str, transport: Any) -> tuple[bool, str]:
+    import base64
+
+    import httpx
+
+    basic = base64.b64encode((":" + pat).encode("utf-8")).decode("ascii")
+    url = org_url.strip().rstrip("/") + "/_apis/connectionData?api-version=7.1"
+    client = httpx.Client(timeout=_CHECK_TIMEOUT, transport=transport)
+    try:
+        resp = client.get(url, headers={"Authorization": "Basic " + basic})
+    finally:
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001, S110
+            pass
+    if resp.status_code == 200:
+        return True, ""
+    if resp.status_code in (401, 403):
+        return False, "bad pat"
+    return False, f"status={resp.status_code}"
+
+
+def _probe_trello_me(api_key: str, token: str, transport: Any) -> tuple[bool, str]:
+    import httpx
+
+    client = httpx.Client(timeout=_CHECK_TIMEOUT, transport=transport)
+    try:
+        resp = client.get(
+            "https://api.trello.com/1/members/me",
+            params={"key": api_key, "token": token},
+        )
+    finally:
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001, S110
+            pass
+    if resp.status_code == 200:
+        return True, ""
+    if resp.status_code in (401, 403):
+        return False, "bad key"
+    return False, f"status={resp.status_code}"
+
+
+def _probe_jira_myself(
+    base_url: str, email: str, api_token: str, transport: Any
+) -> tuple[bool, str]:
+    import base64
+
+    import httpx
+
+    basic = base64.b64encode((email + ":" + api_token).encode("utf-8")).decode("ascii")
+    url = base_url.strip().rstrip("/") + "/rest/api/3/myself"
+    client = httpx.Client(timeout=_CHECK_TIMEOUT, transport=transport)
+    try:
+        resp = client.get(url, headers={"Authorization": "Basic " + basic})
+    finally:
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001, S110
+            pass
+    if resp.status_code == 200:
+        return True, ""
+    if resp.status_code in (401, 403):
+        return False, "bad credentials"
+    return False, f"status={resp.status_code}"
+
+
 def _check_meta() -> tuple[bool, str, str]:
     try:
         effective = secrets_mod.effective_meta_config()
@@ -1854,11 +1989,26 @@ def _check_meta() -> tuple[bool, str, str]:
             + ", ".join(missing)
             + ", choose Save, then Test again.",
         )
-    return (
-        True,
-        "Model check passed. Pam can reach the model.",
-        "",
-    )
+    base = str(effective.get("base_url", "") or "").strip()
+    key = str(effective.get("api_key", "") or "").strip()
+    secret_vals = [key]
+    try:
+        ok, reason = _probe_models_live(base, key, META_CHECK_TRANSPORT)
+    except Exception as exc:  # noqa: BLE001
+        detail = _redact_check_text(str(exc), secret_vals)
+        low = detail.lower()
+        if "connect" in low or "timeout" in low or "timed out" in low:
+            hint = "Pam could not reach the model endpoint. Check the base URL and connection, then Test again."
+        else:
+            hint = "Open Step 1, check the base URL and API key, choose Save, then Test again."
+        return (False, "Model check failed. Pam cannot reach the model.", hint)
+    if ok:
+        return (True, "Model check passed. Pam can reach the model.", "")
+    if reason == "bad key":
+        hint = "Your model API key was rejected (401/403). Open Step 1, paste a fresh key, choose Save, then Test again."
+    else:
+        hint = "Open Step 1, check the base URL and API key, choose Save, then Test again."
+    return (False, "Model check failed. Pam cannot reach the model.", hint)
 
 
 PROVIDER_CLIENT_FACTORY: Any = None
@@ -1880,28 +2030,44 @@ def _check_provider() -> tuple[bool, str, str]:
     ok, message, hint = provider_mod.validate_custom_config(base, model, key)
     if not ok:
         return ok, message, hint
-    try:
-        if PROVIDER_CLIENT_FACTORY is not None:
-            client = PROVIDER_CLIENT_FACTORY(base, model, key)
-        else:
-            from pam_pm.models.client import ModelClient
-
-            client = ModelClient(model=model, base_url=base, api_key=key)
+    if PROVIDER_CLIENT_FACTORY is not None:
         try:
-            return provider_mod.test_with_client(client)
-        finally:
-            close = getattr(client, "close", None)
-            if callable(close):
-                try:
-                    close()
-                except Exception:  # noqa: BLE001, S110
-                    pass
+            client = PROVIDER_CLIENT_FACTORY(base, model, key)
+            try:
+                return provider_mod.test_with_client(client)
+            finally:
+                close = getattr(client, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:  # noqa: BLE001, S110
+                        pass
+        except Exception as exc:  # noqa: BLE001
+            detail = _redact_check_text(str(exc), [key])
+            low = detail.lower()
+            if "401" in low or "403" in low or "unauthor" in low or "forbidden" in low:
+                fix = "Your custom provider key was rejected (401/403). Paste a fresh key, choose Save, then Test again."
+            else:
+                fix = "Check the base URL and key, then test again."
+            return (False, "Custom provider check failed. Pam could not reach the endpoint.", fix)
+    secret_vals = [key]
+    try:
+        live_ok, reason = _probe_models_live(base, key, PROVIDER_CHECK_TRANSPORT)
     except Exception as exc:  # noqa: BLE001
-        return (
-            False,
-            "Custom provider check failed. Pam could not reach the endpoint.",
-            f"Check the base URL and key, then test again. Detail: {exc}",
-        )
+        detail = _redact_check_text(str(exc), secret_vals)
+        low = detail.lower()
+        if "connect" in low or "timeout" in low or "timed out" in low:
+            fix = "Pam could not reach the custom endpoint. Check the base URL and connection, then Test again."
+        else:
+            fix = "Check the base URL and key, then test again."
+        return (False, "Custom provider check failed. Pam could not reach the endpoint.", fix)
+    if live_ok:
+        return (True, "Custom provider check passed. Pam can reach the endpoint.", "")
+    if reason == "bad key":
+        fix = "Your custom provider key was rejected (401/403). Paste a fresh key, choose Save, then Test again."
+    else:
+        fix = "Check the base URL and key, then test again."
+    return (False, "Custom provider check failed. Pam could not reach the endpoint.", fix)
 
 
 def _check_slack() -> tuple[bool, str, str]:
@@ -1909,17 +2075,31 @@ def _check_slack() -> tuple[bool, str, str]:
         tokens = secrets_mod.effective_slack_tokens()
     except Exception:  # noqa: BLE001
         tokens = {"bot_token": os.environ.get("SLACK_BOT_TOKEN", "")}
-    if not str(tokens.get("bot_token", "") or "").strip():
+    bot = str(tokens.get("bot_token", "") or "").strip()
+    if not bot:
         return (
             False,
             "Slack check failed. Pam cannot send messages.",
             "Open Step 2, paste the bot token, choose Save, then Test again.",
         )
-    return (
-        True,
-        "Slack check passed. Pam can send messages.",
-        "",
-    )
+    secret_vals = [bot]
+    try:
+        ok, reason = _probe_slack_authtest(bot, SLACK_CHECK_TRANSPORT)
+    except Exception as exc:  # noqa: BLE001
+        detail = _redact_check_text(str(exc), secret_vals)
+        low = detail.lower()
+        if "connect" in low or "timeout" in low or "timed out" in low:
+            hint = "Pam could not reach Slack. Check your connection and Test again."
+        else:
+            hint = "Open Step 2, check the bot token, choose Save, then Test again."
+        return (False, "Slack check failed. Pam cannot send messages.", hint)
+    if ok:
+        return (True, "Slack check passed. Pam can send messages.", "")
+    if reason == "bad token":
+        hint = "Your Slack bot token was rejected. Open Step 2, paste a fresh xoxb token, choose Save, then Test again."
+    else:
+        hint = "Open Step 2, check the bot token, choose Save, then Test again."
+    return (False, "Slack check failed. Pam cannot send messages.", hint)
 
 
 def _check_teams() -> tuple[bool, str, str]:
@@ -1949,8 +2129,8 @@ def _check_teams() -> tuple[bool, str, str]:
     return (
         True,
         (
-            "Teams check passed. Pam can send messages, and polling brings "
-            "replies in with no public endpoint."
+            "Teams check passed (presence only, send tested on Save). Pam can send "
+            "messages, and polling brings replies in with no public endpoint."
         ),
         "",
     )
@@ -1981,11 +2161,26 @@ def _check_ado() -> tuple[bool, str, str]:
             + ", ".join(missing)
             + ", choose Save, then Test again.",
         )
-    return (
-        True,
-        "Azure DevOps check passed. Pam can read the project.",
-        "",
-    )
+    org = str(effective.get("org_url", "") or "").strip()
+    pat = str(effective.get("pat", "") or "").strip()
+    secret_vals = [pat]
+    try:
+        ok, reason = _probe_ado_connection(org, pat, ADO_CHECK_TRANSPORT)
+    except Exception as exc:  # noqa: BLE001
+        detail = _redact_check_text(str(exc), secret_vals)
+        low = detail.lower()
+        if "connect" in low or "timeout" in low or "timed out" in low:
+            hint = "Pam could not reach Azure DevOps. Check the org URL and connection, then Test again."
+        else:
+            hint = "Open Step 3, check the org URL, project, and token, choose Save, then Test again."
+        return (False, "Azure DevOps check failed. Pam cannot read the project.", hint)
+    if ok:
+        return (True, "Azure DevOps check passed. Pam can read the project.", "")
+    if reason == "bad pat":
+        hint = "Your Azure DevOps token was rejected (401/403). Open Step 3, paste a fresh PAT, choose Save, then Test again."
+    else:
+        hint = "Open Step 3, check the org URL, project, and token, choose Save, then Test again."
+    return (False, "Azure DevOps check failed. Pam cannot read the project.", hint)
 
 
 def _check_jira() -> tuple[bool, str, str]:
@@ -2020,6 +2215,42 @@ def _check_jira() -> tuple[bool, str, str]:
             hint,
         )
     project = str(effective.get("project", "") or "").strip()
+    if JIRA_CHECK_FACTORY is None:
+        base = str(effective.get("base_url", "") or "").strip()
+        email = str(effective.get("email", "") or "").strip()
+        token = str(effective.get("api_token", "") or "").strip()
+        secret_vals = [token]
+        try:
+            ok, reason = _probe_jira_myself(base, email, token, JIRA_CHECK_TRANSPORT)
+        except Exception as exc:  # noqa: BLE001
+            detail = _redact_check_text(str(exc), secret_vals)
+            low = detail.lower()
+            if "connect" in low or "timeout" in low or "timed out" in low:
+                hint = "Pam could not reach Jira. Check your connection and Test again."
+            else:
+                hint = "Open the Jira step, check the site, email, project, and token, choose Save, then Test again."
+            hint = _redact_check_text(hint, secret_vals)
+            _check_jira.last_extra = {"error": hint}  # type: ignore[attr-defined]
+            return (False, "Jira check failed. Pam cannot read the project.", hint)
+        if ok:
+            msg = f"Jira check passed. Pam can read the project '{project}'."
+            _check_jira.last_extra = {"name": project, "count": 0, "sprints": False}  # type: ignore[attr-defined]
+            return (True, msg, "")
+        if reason == "bad credentials":
+            hint = (
+                "Your Jira email or API token was rejected. Open the Jira "
+                "step, paste a fresh token, choose Save, then Test again. "
+                "Create a new token at "
+                "https://id.atlassian.com/manage-profile/security/api-tokens."
+            )
+        else:
+            hint = (
+                "Open the Jira step, check the site, email, project, "
+                "and token, choose Save, then Test again."
+            )
+        hint = _redact_check_text(hint, secret_vals)
+        _check_jira.last_extra = {"error": hint}  # type: ignore[attr-defined]
+        return (False, "Jira check failed. Pam cannot read the project.", hint)
     secret_vals = [str(effective.get("api_token", "") or "")]
     try:
         if JIRA_CHECK_FACTORY is not None:
@@ -2093,13 +2324,6 @@ def _check_jira() -> tuple[bool, str, str]:
         ):
             _check_jira.last_extra = {"error": hint}  # type: ignore[attr-defined]
             return (False, "Jira check failed. Pam cannot read the project.", hint)
-        if JIRA_CHECK_FACTORY is None:
-            _check_jira.last_extra = {"name": project, "count": 0, "sprints": False}  # type: ignore[attr-defined]
-            return (
-                True,
-                "Jira check passed. Pam can read the project.",
-                "",
-            )
         _check_jira.last_extra = {"error": hint}  # type: ignore[attr-defined]
         return (False, "Jira check failed. Pam cannot read the project.", hint)
     if sprints:
@@ -2256,6 +2480,40 @@ def _check_trello() -> tuple[bool, str, str]:
             hint,
         )
     board = str(effective.get("board", "") or "").strip()
+    if TRELLO_CHECK_FACTORY is None:
+        key = str(effective.get("api_key", "") or "").strip()
+        token = str(effective.get("token", "") or "").strip()
+        secret_vals = [key, token]
+        try:
+            ok, reason = _probe_trello_me(key, token, TRELLO_CHECK_TRANSPORT)
+        except Exception as exc:  # noqa: BLE001
+            detail = _redact_check_text(str(exc), secret_vals)
+            low = detail.lower()
+            if "connect" in low or "timeout" in low or "timed out" in low:
+                hint = "Pam could not reach Trello. Check your connection and Test again."
+            else:
+                hint = "Open the Trello step, check the board, key, and token, choose Save, then Test again."
+            hint = _redact_check_text(hint, secret_vals)
+            _check_trello.last_extra = {"error": hint}  # type: ignore[attr-defined]
+            return (False, "Trello check failed. Pam cannot read the board.", hint)
+        if ok:
+            msg = f"Trello check passed. Pam can read the board '{board}'."
+            _check_trello.last_extra = {"name": board, "count": 0}  # type: ignore[attr-defined]
+            return (True, msg, "")
+        if reason == "bad key":
+            hint = (
+                "Your Trello key or token was rejected. Open the Trello "
+                "step, paste a fresh key and token, choose Save, then "
+                "Test again."
+            )
+        else:
+            hint = (
+                "Open the Trello step, check the board, key, and token, "
+                "choose Save, then Test again."
+            )
+        hint = _redact_check_text(hint, secret_vals)
+        _check_trello.last_extra = {"error": hint}  # type: ignore[attr-defined]
+        return (False, "Trello check failed. Pam cannot read the board.", hint)
     secret_vals = [
         str(effective.get("api_key", "") or ""),
         str(effective.get("token", "") or ""),
@@ -2312,13 +2570,6 @@ def _check_trello() -> tuple[bool, str, str]:
                     "choose Save, then Test again."
                 )
         hint = _redact_check_text(hint, secret_vals)
-        if TRELLO_CHECK_FACTORY is None:
-            _check_trello.last_extra = {"name": board, "count": 0}  # type: ignore[attr-defined]
-            return (
-                True,
-                "Trello check passed. Pam can read the board.",
-                "",
-            )
         _check_trello.last_extra = {"error": hint}  # type: ignore[attr-defined]
         return (False, "Trello check failed. Pam cannot read the board.", hint)
     msg = f"Trello check passed. Pam can read the board '{board}' ({count} items)."
