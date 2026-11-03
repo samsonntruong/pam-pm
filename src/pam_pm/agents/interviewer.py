@@ -1176,10 +1176,16 @@ def _match_blocked_item(
     tokens = _blocker_tokens(report)
     best: Any | None = None
     best_score = 0
+    best_len = 0
     for item in mine:
-        score = _title_score(_blocker_item_title(item), tokens)
-        if score > best_score:
+        title = _blocker_item_title(item)
+        score = _title_score(title, tokens)
+        title_len = len(_blocker_tokens(title))
+        if score > best_score or (
+            score > 0 and score == best_score and title_len < best_len
+        ):
             best_score = score
+            best_len = title_len
             best = item
     if best is not None and best_score > 0:
         return best
@@ -1218,8 +1224,10 @@ def _match_blocking_item(
     tokens = _blocker_tokens(report)
     best_other: Any | None = None
     best_other_score = 0
+    best_other_len = 0
     best_mine: Any | None = None
     best_mine_score = 0
+    best_mine_len = 0
     for item in items:
         item_id = _blocker_item_id(item)
         if blocked_id and item_id == blocked_id:
@@ -1231,18 +1239,26 @@ def _match_blocking_item(
             closed = False
         if closed:
             continue
-        score = _title_score(_blocker_item_title(item), tokens)
+        title = _blocker_item_title(item)
+        score = _title_score(title, tokens)
         if score <= 0:
             continue
+        title_len = len(_blocker_tokens(title))
         owner = _blocker_item_owner(item)
         is_mine = owner in wants or owner.lower() in lowered
         if is_mine:
-            if score > best_mine_score:
+            if score > best_mine_score or (
+                score == best_mine_score and title_len < best_mine_len
+            ):
                 best_mine_score = score
+                best_mine_len = title_len
                 best_mine = item
         else:
-            if score > best_other_score:
+            if score > best_other_score or (
+                score == best_other_score and title_len < best_other_len
+            ):
                 best_other_score = score
+                best_other_len = title_len
                 best_other = item
     if best_other is not None:
         return best_other
