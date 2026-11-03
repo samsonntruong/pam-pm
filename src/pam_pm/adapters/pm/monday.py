@@ -615,11 +615,10 @@ class MondayAdapter(PMAdapter):
         state = str(given.pop("state", "") or "").strip()
         if state:
             self._graphql(
-                "mutation ItemMove($boardId: ID!, $itemId: ID!, $groupId: String!)"
-                " { move_item_to_group(board_id: $boardId item_id: $itemId"
+                "mutation ItemMove($itemId: ID!, $groupId: String!)"
+                " { move_item_to_group(item_id: $itemId"
                 " group_id: $groupId) { id } }",
                 {
-                    "boardId": board_id,
                     "itemId": cleaned,
                     "groupId": self._group_id_for_name(state),
                 },
@@ -667,11 +666,10 @@ class MondayAdapter(PMAdapter):
         if not done_group:
             raise MondayError("no Done group on this board")
         self._graphql(
-            "mutation ItemMove($boardId: ID!, $itemId: ID!, $groupId: String!)"
-            " { move_item_to_group(board_id: $boardId item_id: $itemId"
+            "mutation ItemMove($itemId: ID!, $groupId: String!)"
+            " { move_item_to_group(item_id: $itemId"
             " group_id: $groupId) { id } }",
             {
-                "boardId": self._board_id_for_ref(),
                 "itemId": cleaned,
                 "groupId": done_group,
             },
