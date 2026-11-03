@@ -97,6 +97,13 @@ def _ensure_httpx_redaction() -> None:
 _ensure_httpx_redaction()
 
 
+def _sleep(seconds: float) -> None:
+    """Sleep hook for 429 backoff; monkeypatch in tests."""
+    import time
+
+    time.sleep(seconds)
+
+
 class TrelloError(RuntimeError):
     """Trello call failure with secrets already redacted."""
 
@@ -180,6 +187,7 @@ class TrelloAdapter(PMAdapter):
         )
         self._board_id: str | None = None
         self._board_url = ""
+        self._sleeper = _sleep
 
     def close(self) -> None:
         self._client.close()
@@ -204,21 +212,42 @@ class TrelloAdapter(PMAdapter):
                 else:
                     query[name] = val
         url = API_BASE + path
-        try:
-            resp = self._client.request(method, url, params=query)
-        except httpx.HTTPError as exc:
-            raise TrelloError(self._clean(f"request failed: {exc}")) from exc
-        if resp.status_code == 204 or not resp.text.strip():
-            return {}
-        if resp.status_code >= 400:
-            detail = resp.text[:500]
-            raise TrelloError(
-                self._clean(f"{method} {path} status={resp.status_code}: {detail}")
-            )
-        try:
-            return resp.json()
-        except ValueError:
-            return {"raw": resp.text[:2000]}
+        for attempt in range(5):
+            try:
+                resp = self._client.request(method, url, params=query)
+            except httpx.HTTPError as exc:
+                raise TrelloError(self._clean(f"request failed: {exc}")) from exc
+            if resp.status_code == 429:
+                if attempt >= 4:
+                    detail = resp.text[:500]
+                    raise TrelloError(
+                        self._clean(
+                            f"{method} {path} status={resp.status_code}: {detail}"
+                        )
+                    )
+                delay = float(min(2**attempt, 8))
+                raw = resp.headers.get("Retry-After", "")
+                try:
+                    candidate = float(str(raw).strip())
+                except (TypeError, ValueError):
+                    candidate = -1.0
+                if candidate >= 0:
+                    delay = max(delay, candidate)
+                sleeper = getattr(self, "_sleeper", _sleep)
+                sleeper(delay)
+                continue
+            if resp.status_code == 204 or not resp.text.strip():
+                return {}
+            if resp.status_code >= 400:
+                detail = resp.text[:500]
+                raise TrelloError(
+                    self._clean(f"{method} {path} status={resp.status_code}: {detail}")
+                )
+            try:
+                return resp.json()
+            except ValueError:
+                return {"raw": resp.text[:2000]}
+        raise TrelloError(self._clean(f"{method} {path} status=429: rate limited"))
 
     def _board_id_for_ref(self) -> str:
         if self._board_id:
