@@ -284,13 +284,13 @@ def main(argv: list[str] | None = None) -> None:
         parser.print_help()
 
 
-if __name__ == "__main__":
-    main()
-
-
 def configure_server_logging() -> None:
     """Configure console logging for server runs at INFO level."""
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
     logging.getLogger().setLevel(logging.INFO)
+
+
+if __name__ == "__main__":
+    main()

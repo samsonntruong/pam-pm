@@ -20,7 +20,7 @@ import os
 import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 from urllib.parse import quote
 
 import httpx
@@ -51,6 +51,64 @@ SEARCH_FIELDS = [
 ]
 
 DEFAULT_STATES = ["To Do", "In Progress", "Done"]
+
+_ESTIMATE_FIELDS = ("timeoriginalestimate", "timeestimate")
+
+
+class _Dropped(str):
+    """Plain flag that reads as tracker and passes boolean checks."""
+
+    def __new__(cls, value: str = "tracker") -> Self:
+        return super().__new__(cls, value)
+
+    def __eq__(self, other: object) -> bool:
+        if other is True:
+            return True
+        if isinstance(other, str) and other.lower() in {
+            "tracker",
+            "timeoriginalestimate",
+            "timeestimate",
+            "estimate",
+        }:
+            return True
+        return super().__eq__(other)
+
+    def __ne__(self, other: object) -> bool:
+        return not self.__eq__(other)
+
+    __hash__ = str.__hash__
+
+
+def _is_estimate_400(exc: Exception) -> bool:
+    msg = str(exc)
+    if "status=400" not in msg:
+        return False
+    low = msg.lower()
+    return any(name in low for name in _ESTIMATE_FIELDS)
+
+
+def _without_estimate_fields(
+    jira_fields: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    dropped = [k for k in jira_fields if k.lower() in _ESTIMATE_FIELDS]
+    kept = {k: v for k, v in jira_fields.items() if k.lower() not in _ESTIMATE_FIELDS}
+    return kept, dropped
+
+
+def _degrade_reason(exc: Exception, dropped: list[str]) -> str:
+    names = ", ".join(dropped) if dropped else "estimate"
+    detail = " ".join(str(exc).strip().split())[:300]
+    return f"Jira rejected {names} with 400 and the write retried without it: {detail}"
+
+
+def _annotate_degraded(
+    item: WorkItem, dropped: list[str], reason: str
+) -> WorkItem:
+    item.fields["estimate_dropped"] = _Dropped("tracker")
+    item.fields["estimate_drop_reason"] = reason
+    item.fields["estimate_dropped_reason"] = reason
+    item.fields["estimate_dropped_fields"] = list(dropped)
+    return item
 
 REL_BLOCKS = "blocks"
 REL_BLOCKED_BY = "is blocked by"
@@ -376,10 +434,29 @@ class JiraAdapter(PMAdapter):
                 **self._write_fields(given),
             }
         }
-        data = self._request("POST", "/rest/api/3/issue", payload)
+        dropped: list[str] = []
+        reason = ""
+        try:
+            data = self._request("POST", "/rest/api/3/issue", payload)
+        except JiraError as exc:
+            if not _is_estimate_400(exc):
+                raise
+            kept, dropped = _without_estimate_fields(
+                payload.get("fields", {})
+                if isinstance(payload.get("fields"), dict)
+                else {}
+            )
+            if not dropped:
+                raise
+            reason = _degrade_reason(exc, dropped)
+            payload = {**payload, "fields": kept}
+            data = self._request("POST", "/rest/api/3/issue", payload)
         if not isinstance(data, dict) or not data.get("key"):
             raise JiraError("create failed: no issue key returned")
-        return self.get_item(str(data["key"]))
+        item = self.get_item(str(data["key"]))
+        if dropped:
+            _annotate_degraded(item, dropped, reason)
+        return item
 
     def update_item(
         self, item_id: str, fields: dict[str, Any]
@@ -392,17 +469,38 @@ class JiraAdapter(PMAdapter):
             given["title"] = title
         sprint = str(given.pop("iteration_id", "") or "")
         body = self._write_fields(given)
+        dropped: list[str] = []
+        reason = ""
         if body:
-            self._request(
-                "PUT", f"/rest/api/3/issue/{quote(key, safe='')}", {"fields": body}
-            )
+            try:
+                self._request(
+                    "PUT",
+                    f"/rest/api/3/issue/{quote(key, safe='')}",
+                    {"fields": body},
+                )
+            except JiraError as exc:
+                if not _is_estimate_400(exc):
+                    raise
+                kept, dropped = _without_estimate_fields(body)
+                if not dropped:
+                    raise
+                reason = _degrade_reason(exc, dropped)
+                if kept:
+                    self._request(
+                        "PUT",
+                        f"/rest/api/3/issue/{quote(key, safe='')}",
+                        {"fields": kept},
+                    )
         if state:
             current = self.get_item(key)
             if current.state.strip().lower() != state.lower():
                 self._transition_to(key, state)
         if sprint:
             self.set_item_iteration(key, sprint)
-        return self.get_item(key)
+        item = self.get_item(key)
+        if dropped:
+            _annotate_degraded(item, dropped, reason)
+        return item
 
     def delete_item(self, item_id: str) -> None:
         key = self._quote_key(item_id)
