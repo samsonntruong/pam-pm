@@ -1653,6 +1653,32 @@ def resume_interview(
             return _handle_blocker_confirmation(
                 person_id, answer, chat, board, db, early_pending
             )
+        try:
+            from pam_pm.rules.templates import blocker_plan as _owner_plan_mod
+        except Exception:  # noqa: BLE001
+            _owner_plan_mod = None
+        if _owner_plan_mod is not None:
+            try:
+                pending_plan = _owner_plan_mod.load_owner_plan(
+                    db, person_id, chat
+                )
+            except Exception:  # noqa: BLE001
+                pending_plan = None
+            if pending_plan is not None:
+                try:
+                    plan_out = _owner_plan_mod.resume_owner_plan(
+                        answer,
+                        chat,
+                        board,
+                        db,
+                        pending_plan,
+                        sender=person_id,
+                        message_id=marker,
+                    )
+                except Exception:  # noqa: BLE001
+                    plan_out = None
+                if plan_out is not None:
+                    return plan_out
 
     def _send(text: str) -> str:
         try:

@@ -26,6 +26,7 @@ uncertainty is phrased as a question.
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -443,6 +444,596 @@ def _is_uncertain(cause: str) -> bool:
     )
 
 
+OWNER_PLAN_KIND = "blocker"
+
+STEP_AWAITING_CAUSE = "awaiting_cause"
+STEP_AWAITING_EDIT = "awaiting_edit"
+STEP_AWAITING_ESTIMATES = "awaiting_estimates"
+STEP_AWAITING_CONFIRM = "awaiting_confirm"
+
+
+def owner_plan_thread_key(owner: str, blocking_id: str) -> str:
+    """Return the durable thread key for one owner's plan."""
+    from pam_pm.core import recovery as recovery_mod
+
+    what = f"plan:{blocking_id}" if str(blocking_id or "") else "plan"
+    return recovery_mod.thread_key(str(owner), what, kind=OWNER_PLAN_KIND)
+
+
+def save_owner_plan(
+    db: Any,
+    owner: str,
+    blocking_id: str,
+    state: dict[str, Any],
+    last_seen: str = "",
+) -> str:
+    """Persist one pending owner plan, returning its thread key."""
+    from pam_pm.core import recovery as recovery_mod
+
+    key = owner_plan_thread_key(owner, blocking_id)
+    body = dict(state)
+    body["pending_owner_plan"] = True
+    body["owner"] = str(owner)
+    body["blocking_id"] = str(blocking_id or "")
+    recovery_mod.save_conversation(
+        db,
+        key,
+        str(owner),
+        str(blocking_id or ""),
+        [{"role": "system", "content": json.dumps(body)}],
+        str(last_seen or ""),
+        "open",
+    )
+    return key
+
+
+def _owner_plan_candidates(chat: Any, sender: str) -> list[str]:
+    wants = [str(sender or "")]
+    try:
+        from pam_pm.agents.interviewer import resolve_display_name as _res
+
+        got = _res(chat, str(sender or ""))
+        if got and got not in wants:
+            wants.append(got)
+    except Exception:  # noqa: BLE001, S110
+        pass
+    return wants
+
+
+def load_owner_plan(
+    db: Any, sender: str, chat: Any = None
+) -> dict[str, Any] | None:
+    """Return the newest pending owner plan for a sender, or None."""
+    if db is None or not str(sender or "").strip():
+        return None
+    try:
+        from pam_pm.core import recovery as recovery_mod
+
+        wants = _owner_plan_candidates(chat, sender)
+        lowered = {str(entry).lower() for entry in wants}
+        found: dict[str, Any] | None = None
+        for conv in recovery_mod.list_open_conversations(db):
+            if ":plan:" not in str(conv.get("thread_key", "") or ""):
+                continue
+            person = str(conv.get("person", "") or "")
+            for turn in conv.get("turns", []) or []:
+                if not isinstance(turn, dict):
+                    continue
+                content = str(turn.get("content", "") or "")
+                if not content.strip().startswith("{"):
+                    continue
+                try:
+                    data = json.loads(content)
+                except ValueError:
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                if not data.get("pending_owner_plan"):
+                    continue
+                who = str(data.get("owner", "") or person)
+                if (
+                    who in wants
+                    or who.lower() in lowered
+                    or person in wants
+                    or person.lower() in lowered
+                ):
+                    data["_thread_key"] = str(conv.get("thread_key", ""))
+                    data["_person"] = person or who
+                    data["_last_seen"] = str(conv.get("last_seen", "") or "")
+                    found = data
+        return found
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def clear_owner_plan(
+    db: Any,
+    owner: str = "",
+    blocking_id: str = "",
+    thread_key: str = "",
+) -> None:
+    """Mark pending owner plan threads as finished."""
+    if db is None:
+        return
+    try:
+        from pam_pm.core import recovery as recovery_mod
+
+        keys: list[str] = []
+        if thread_key:
+            keys.append(str(thread_key))
+        elif owner and blocking_id:
+            keys.append(owner_plan_thread_key(owner, blocking_id))
+        elif owner:
+            want = str(owner)
+            for conv in recovery_mod.list_open_conversations(db):
+                tkey = str(conv.get("thread_key", "") or "")
+                if ":plan:" not in tkey:
+                    continue
+                person = str(conv.get("person", "") or "")
+                if person == want or person.lower() == want.lower():
+                    keys.append(tkey)
+        for key in keys:
+            conv = recovery_mod.load_conversation(db, key)
+            if conv is None:
+                continue
+            recovery_mod.save_conversation(
+                db,
+                key,
+                str(conv.get("person", "") or owner),
+                str(conv.get("item_id", "") or blocking_id),
+                list(conv.get("turns", []) or []),
+                str(conv.get("last_seen", "") or ""),
+                "finished",
+            )
+    except Exception:  # noqa: BLE001, S110
+        pass
+
+
+def resume_owner_plan(
+    answer: str,
+    chat: Any,
+    board: Any,
+    db: Any = None,
+    pending: dict[str, Any] | None = None,
+    *,
+    sender: str = "",
+    message_id: str = "",
+    writes: WriteService | None = None,
+    dry_run: bool | None = None,
+) -> dict[str, Any] | None:
+    """Continue one persisted owner plan with a late answer.
+
+    Each call sends exactly one DM: the next owner question, or the
+    waiter ETA once the owner confirms. The thread is re-persisted
+    after every question and cleared on confirmation, decline, or
+    the turn cap. Returns None when no plan is pending.
+    """
+    state = dict(pending or {})
+    if not state.get("pending_owner_plan"):
+        loaded = load_owner_plan(db, sender, chat) if sender else None
+        if loaded is None:
+            return None
+        state = loaded
+    owner = str(state.get("owner", "") or sender)
+    waiter = str(state.get("waiter", "") or "")
+    blocking_id = str(state.get("blocking_id", "") or "")
+    blocked_id = str(state.get("blocked_id", "") or "")
+    step = str(state.get("step", "") or "")
+    marker = str(message_id or "").strip()
+    seen = str(state.get("_last_seen", "") or "")
+    if marker and seen and marker == seen:
+        return {
+            "kind": "duplicate",
+            "replied": False,
+            "person": owner,
+            "item_id": blocking_id,
+        }
+    text = str(answer or "").strip()
+    if not text:
+        return {"kind": "ignored", "replied": False, "person": owner}
+    try:
+        turns = int(state.get("turns", 0) or 0)
+    except (TypeError, ValueError):
+        turns = 0
+    try:
+        cap = int(state.get("max_turns", MAX_TURNS) or MAX_TURNS)
+    except (TypeError, ValueError):
+        cap = MAX_TURNS
+    cap = max(1, cap)
+    try:
+        model_calls = int(state.get("model_calls", 0) or 0)
+    except (TypeError, ValueError):
+        model_calls = 0
+    owner_dms = list(state.get("owner_dms", []) or [])
+    conversation = [
+        dict(entry)
+        for entry in (state.get("conversation", []) or [])
+        if isinstance(entry, dict)
+    ]
+    tz = str(state.get("tz", "") or "UTC")
+    try:
+        work_start = int(state.get("work_start", 9))
+    except (TypeError, ValueError):
+        work_start = 9
+    try:
+        work_end = int(state.get("work_end", 17))
+    except (TypeError, ValueError):
+        work_end = 17
+    title = str(state.get("title", "") or "")
+    description = str(state.get("description", "") or "")
+    if board is not None and blocking_id:
+        try:
+            current = board.get_item(blocking_id)
+        except Exception:  # noqa: BLE001
+            current = None
+        if current is not None:
+            title = _item_title(current) or title
+            description = _item_description(current) or description
+    if not title:
+        title = "blocking item"
+    service = writes
+    if service is None and db is not None:
+        want_dry = state.get("dry_run", True) if dry_run is None else dry_run
+        try:
+            service = WriteService(db, dry_run=bool(want_dry))
+        except Exception:  # noqa: BLE001
+            service = None
+
+    def _send(text_dm: str) -> str | None:
+        nonlocal turns
+        if turns >= cap:
+            return None
+        mid = str(chat.send_dm(owner, text_dm))
+        owner_dms.append(mid)
+        turns += 1
+        conversation.append({"role": "assistant", "content": text_dm})
+        return mid
+
+    def _keep(step_name: str, extra: dict[str, Any]) -> None:
+        if db is None:
+            return
+        body = dict(state)
+        body.update(extra)
+        body["waiter"] = waiter
+        body["blocked_id"] = blocked_id
+        body["step"] = step_name
+        body["turns"] = turns
+        body["model_calls"] = model_calls
+        body["owner_dms"] = list(owner_dms)
+        body["conversation"] = [dict(entry) for entry in conversation]
+        body["title"] = title
+        body["description"] = str(description or "")[:500]
+        try:
+            save_owner_plan(db, owner, blocking_id, body, marker)
+        except Exception:  # noqa: BLE001, S110
+            pass
+
+    def _finish() -> None:
+        try:
+            clear_owner_plan(
+                db,
+                owner,
+                blocking_id,
+                thread_key=str(state.get("_thread_key", "") or ""),
+            )
+        except Exception:  # noqa: BLE001, S110
+            pass
+
+    def _capped() -> dict[str, Any]:
+        _finish()
+        return {
+            "kind": "owner_plan_max_turns",
+            "status": "max_turns",
+            "replied": False,
+            "person": owner,
+            "item_id": blocking_id,
+            "blocking_item_id": blocking_id,
+            "blocked_item_id": blocked_id,
+            "turns": turns,
+        }
+
+    if step == STEP_AWAITING_CAUSE:
+        cause = text
+        conversation.append({"role": "user", "content": cause})
+        steps = propose_steps(cause, title, description)
+        numbered = "\n".join(
+            f"{idx + 1}. {entry}" for idx, entry in enumerate(steps)
+        )
+        proposal = (
+            f"Thanks. Based on what you said plus '{title}', here is a draft plan:\n"
+            f"{numbered}\n"
+            "Reply in plain language to change, add, or drop steps "
+            "(for example: drop 2, add verify on staging, "
+            "change step 1 to restart the worker). "
+            "Reply keep or ok if it looks right."
+        )
+        if _is_uncertain(cause):
+            proposal += (
+                f" Your note was short, so is the main cause '{_cause_phrase(cause)}' "
+                "or something else? Tell me and I will adjust the steps."
+            )
+        mid = _send(proposal)
+        if mid is None:
+            return _capped()
+        _keep(STEP_AWAITING_EDIT, {"cause": cause, "steps": list(steps)})
+        return {
+            "kind": "owner_plan_proposal",
+            "replied": True,
+            "person": owner,
+            "item_id": blocking_id,
+            "blocking_item_id": blocking_id,
+            "blocked_item_id": blocked_id,
+            "message_id": mid,
+            "question": proposal,
+            "cause": cause,
+            "steps": steps,
+            "turns": turns,
+            "model_calls": model_calls,
+        }
+    if step == STEP_AWAITING_EDIT:
+        edit_reply = text
+        conversation.append({"role": "user", "content": edit_reply})
+        steps = [str(entry) for entry in (state.get("steps", []) or [])]
+        if not steps:
+            steps = propose_steps(
+                str(state.get("cause", "") or text), title, description
+            )
+        steps, _ = apply_step_edits(steps, edit_reply)
+        est_numbered = "\n".join(
+            f"{idx + 1}. {entry}" for idx, entry in enumerate(steps)
+        )
+        est_q = (
+            "Rough estimate per step in hours?\n"
+            f"{est_numbered}\n"
+            "Reply like: 2h, 1h, 3h (one number per step)."
+        )
+        mid = _send(est_q)
+        if mid is None:
+            return _capped()
+        _keep(
+            STEP_AWAITING_ESTIMATES,
+            {"steps": list(steps), "edit_reply": edit_reply},
+        )
+        return {
+            "kind": "owner_plan_estimates",
+            "replied": True,
+            "person": owner,
+            "item_id": blocking_id,
+            "blocking_item_id": blocking_id,
+            "blocked_item_id": blocked_id,
+            "message_id": mid,
+            "question": est_q,
+            "steps": steps,
+            "turns": turns,
+            "model_calls": model_calls,
+        }
+    if step == STEP_AWAITING_ESTIMATES:
+        est_reply = text
+        conversation.append({"role": "user", "content": est_reply})
+        steps = [str(entry) for entry in (state.get("steps", []) or [])]
+        if not steps:
+            steps = propose_steps(
+                str(state.get("cause", "") or text), title, description
+            )
+        estimates = parse_estimates(est_reply, len(steps))
+        total = round(float(sum(estimates)), 2)
+        moment = datetime.now(UTC)
+        from types import SimpleNamespace as _hours_ns
+
+        sched = _hours_ns(work_start=work_start, work_end=work_end)
+        eta_date, _ = compute_eta(total, moment, sched, tz)
+        summary = plan_summary(steps)
+        confirm_dm = (
+            f"Plan ({total:g}h total, ETA {eta_date}): {summary}. "
+            "Does this ETA work? Reply yes to confirm and I will create "
+            "the steps as child tasks."
+        )
+        mid = _send(confirm_dm)
+        if mid is None:
+            return _capped()
+        _keep(
+            STEP_AWAITING_CONFIRM,
+            {
+                "est_reply": est_reply,
+                "estimates": list(estimates),
+                "total_hours": total,
+                "eta": eta_date,
+                "summary": summary,
+            },
+        )
+        return {
+            "kind": "owner_plan_confirm",
+            "replied": True,
+            "person": owner,
+            "item_id": blocking_id,
+            "blocking_item_id": blocking_id,
+            "blocked_item_id": blocked_id,
+            "message_id": mid,
+            "question": confirm_dm,
+            "steps": steps,
+            "estimates": estimates,
+            "total_hours": total,
+            "eta": eta_date,
+            "summary": summary,
+            "turns": turns,
+            "model_calls": model_calls,
+        }
+    if step == STEP_AWAITING_CONFIRM:
+        confirm_reply = text
+        conversation.append({"role": "user", "content": confirm_reply})
+        steps = [str(entry) for entry in (state.get("steps", []) or [])]
+        raw_est = list(state.get("estimates", []) or [])
+        estimates = [float(entry) for entry in raw_est]
+        if len(estimates) != len(steps):
+            estimates = parse_estimates(
+                str(state.get("est_reply", "") or ""), len(steps)
+            )
+        try:
+            total = float(state.get("total_hours", round(sum(estimates), 2)))
+        except (TypeError, ValueError):
+            total = round(float(sum(estimates)), 2)
+        eta_date = str(state.get("eta", "") or "")
+        summary = str(state.get("summary", "") or plan_summary(steps))
+        cause = str(state.get("cause", "") or "")
+        edit_reply = str(state.get("edit_reply", "") or "")
+        est_reply = str(state.get("est_reply", "") or "")
+        if not is_confirmed(confirm_reply):
+            _finish()
+            return {
+                "kind": "owner_plan_declined",
+                "status": "declined",
+                "replied": False,
+                "person": owner,
+                "item_id": blocking_id,
+                "blocking_item_id": blocking_id,
+                "blocked_item_id": blocked_id,
+                "steps": steps,
+                "estimates": estimates,
+                "total_hours": total,
+                "eta": eta_date,
+                "summary": summary,
+                "cause": cause,
+                "confirm_reply": confirm_reply,
+                "turns": turns,
+                "model_calls": model_calls,
+                "owner_dms": list(owner_dms),
+            }
+        if board is None:
+            note = (
+                "I could not create the plan as child tasks: "
+                "no board access right now."
+            )
+            mid = _send(note)
+            _finish()
+            return {
+                "kind": "owner_plan_write_failed",
+                "replied": bool(mid),
+                "person": owner,
+                "item_id": blocking_id,
+                "blocking_item_id": blocking_id,
+                "blocked_item_id": blocked_id,
+                "reason": "no board configured",
+            }
+        evidence = "; ".join(
+            part
+            for part in (
+                cause.strip(),
+                edit_reply.strip(),
+                est_reply.strip(),
+                confirm_reply.strip(),
+            )
+            if part
+        )[:500] or f"owner confirmed plan for {title}"[:500]
+        write_ids: list[int] = []
+
+        def _log(operation: str, item_id: str, detail: str) -> None:
+            if service is None:
+                return
+            try:
+                wid = service.propose(
+                    {
+                        "operation": operation,
+                        "item_id": str(item_id),
+                        "evidence_quote": evidence,
+                        "status": "proposed",
+                        "detail": detail[:500],
+                    }
+                )
+                write_ids.append(int(wid))
+                if not service.dry_run:
+                    service.apply(int(wid))
+            except Exception:  # noqa: BLE001
+                return
+
+        children: list[Any] = []
+        links: list[Any] = []
+        open_state = _open_state(board)
+        for step_text, est in zip(steps, estimates):
+            child = board.create_item(
+                step_text[:200],
+                {
+                    "state": open_state,
+                    "assigned_to": owner,
+                    "owner": owner,
+                    "estimate": float(est),
+                    "remaining": float(est),
+                },
+            )
+            children.append(child)
+            _log("create_item", _item_id(child), f"child step for {blocking_id}")
+            try:
+                link = board.add_link(
+                    blocking_id, _item_id(child), CHILD_FORWARD
+                )
+            except Exception:  # noqa: BLE001
+                try:
+                    link = board.add_link(
+                        _item_id(child), blocking_id, CHILD_REVERSE
+                    )
+                except Exception:  # noqa: BLE001
+                    link = None
+            if link is not None:
+                links.append(link)
+                _log(
+                    "add_link",
+                    blocking_id,
+                    f"Child {_item_id(child)} of {blocking_id}",
+                )
+        try:
+            board.update_item(
+                blocking_id, {"remaining": total, "estimate": total}
+            )
+            _log("update_remaining", blocking_id, f"remaining {total:g}h")
+        except Exception:  # noqa: BLE001, S110
+            pass
+        try:
+            board.add_comment(
+                blocking_id,
+                f"Action plan ({total:g}h, ETA {eta_date}): {summary}. "
+                f"Evidence: \"{cause.strip()[:200]}\"",
+                author="Pam",
+            )
+            _log("add_comment", blocking_id, f"plan ETA {eta_date}")
+        except Exception:  # noqa: BLE001, S110
+            pass
+        waiter_dm: str | None = None
+        if waiter:
+            try:
+                waiter_dm = str(
+                    chat.send_dm(
+                        waiter, f"ETA {eta_date} for '{title}': {summary}."
+                    )
+                )
+            except Exception:  # noqa: BLE001
+                waiter_dm = None
+        _finish()
+        return {
+            "kind": "owner_plan_confirmed",
+            "status": "confirmed",
+            "replied": bool(waiter_dm),
+            "person": owner,
+            "item_id": blocking_id,
+            "blocking_item_id": blocking_id,
+            "blocked_item_id": blocked_id,
+            "steps": steps,
+            "estimates": estimates,
+            "total_hours": total,
+            "eta": eta_date,
+            "summary": summary,
+            "cause": cause,
+            "children": children,
+            "links": links,
+            "write_ids": write_ids,
+            "evidence_quote": evidence,
+            "owner_dms": list(owner_dms),
+            "waiter_dm": waiter_dm,
+            "turns": turns,
+            "model_calls": model_calls,
+        }
+    _finish()
+    return None
+
+
 def blocker_action_plan(
     owner: str,
     waiter: str,
@@ -466,7 +1057,7 @@ def blocker_action_plan(
     blocking = board.get_item(blocking_item_id)
     title = _item_title(blocking)
     description = _item_description(blocking)
-    _ = blocked_item_id
+    blocked_id = str(blocked_item_id or "")
     service = writes
     if service is None and db is not None:
         service = WriteService(db, dry_run=dry_run)
@@ -476,6 +1067,53 @@ def blocker_action_plan(
     turns = 0
     model_calls = 0
     owner_dms: list[str] = []
+    _plan_db = db if db is not None else getattr(service, "_db", None)
+    try:
+        _plan_work_start = int(getattr(scheduler, "work_start", 9))
+    except (TypeError, ValueError):
+        _plan_work_start = 9
+    try:
+        _plan_work_end = int(getattr(scheduler, "work_end", 17))
+    except (TypeError, ValueError):
+        _plan_work_end = 17
+    _plan_dry = service.dry_run if service is not None else bool(dry_run)
+
+    def _persist_plan(step_name: str, extra: dict[str, Any]) -> None:
+        if _plan_db is None:
+            return
+        try:
+            body = dict(extra)
+            body.update(
+                {
+                    "waiter": waiter,
+                    "blocked_id": blocked_id,
+                    "step": step_name,
+                    "turns": turns,
+                    "model_calls": model_calls,
+                    "owner_dms": list(owner_dms),
+                    "conversation": [dict(t) for t in conversation],
+                    "title": title,
+                    "description": str(description or "")[:500],
+                    "tz": tz,
+                    "work_start": _plan_work_start,
+                    "work_end": _plan_work_end,
+                    "dry_run": bool(_plan_dry),
+                    "max_turns": cap,
+                }
+            )
+            save_owner_plan(
+                _plan_db, owner, str(blocking_item_id or ""), body
+            )
+        except Exception:  # noqa: BLE001, S110
+            pass
+
+    def _clear_plan() -> None:
+        if _plan_db is None:
+            return
+        try:
+            clear_owner_plan(_plan_db, owner, str(blocking_item_id or ""))
+        except Exception:  # noqa: BLE001, S110
+            pass
 
     def call_model(volatile: dict[str, Any]) -> Any:
         nonlocal model_calls
@@ -489,6 +1127,7 @@ def blocker_action_plan(
     def send_owner(text: str) -> str | None:
         nonlocal turns
         if turns >= cap:
+            _clear_plan()
             return None
         mid = str(chat.send_dm(owner, text))
         owner_dms.append(mid)
@@ -526,6 +1165,7 @@ def blocker_action_plan(
             "estimates": [],
             "owner_dms": owner_dms,
         }
+    _persist_plan(STEP_AWAITING_CAUSE, {})
     cause = hear_owner()
     if cause is None or not cause.strip():
         return {
@@ -562,6 +1202,9 @@ def blocker_action_plan(
             "cause": cause,
             "owner_dms": owner_dms,
         }
+    _persist_plan(
+        STEP_AWAITING_EDIT, {"cause": cause, "steps": list(steps)}
+    )
     edit_reply = hear_owner()
     if edit_reply is None:
         return {
@@ -609,6 +1252,10 @@ def blocker_action_plan(
             "cause": cause,
             "owner_dms": owner_dms,
         }
+    _persist_plan(
+        STEP_AWAITING_ESTIMATES,
+        {"cause": cause, "steps": list(steps), "edit_reply": edit_reply},
+    )
     est_reply = hear_owner()
     if est_reply is None or not est_reply.strip():
         return {
@@ -646,6 +1293,19 @@ def blocker_action_plan(
             "cause": cause,
             "owner_dms": owner_dms,
         }
+    _persist_plan(
+        STEP_AWAITING_CONFIRM,
+        {
+            "cause": cause,
+            "steps": list(steps),
+            "edit_reply": edit_reply,
+            "est_reply": est_reply,
+            "estimates": list(estimates),
+            "total_hours": total,
+            "eta": eta_date,
+            "summary": summary,
+        },
+    )
     confirm_reply = hear_owner()
     if confirm_reply is None:
         return {
@@ -662,6 +1322,7 @@ def blocker_action_plan(
             "owner_dms": owner_dms,
         }
     if not is_confirmed(confirm_reply):
+        _clear_plan()
         return {
             "status": "declined",
             "turns": turns,
@@ -760,6 +1421,7 @@ def blocker_action_plan(
         )
     except Exception:  # noqa: BLE001
         waiter_dm = None
+    _clear_plan()
     return {
         "status": "confirmed",
         "turns": turns,
