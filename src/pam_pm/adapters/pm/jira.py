@@ -52,6 +52,12 @@ SEARCH_FIELDS = [
 
 DEFAULT_STATES = ["To Do", "In Progress", "Done"]
 
+AUTH_ERROR = (
+    "Jira rejected the credentials (email or API token). "
+    "Create a new token at "
+    "https://id.atlassian.com/manage-profile/security/api-tokens."
+)
+
 _ESTIMATE_FIELDS = ("timeoriginalestimate", "timeestimate")
 
 
@@ -258,12 +264,30 @@ class JiraAdapter(PMAdapter):
         self._board_id: str | None = None
         self._user_cache: dict[str, str] = {}
         self._assign_note: str = ""
+        self._auth_ok: bool = False
 
     def close(self) -> None:
         self._client.close()
 
     def _clean(self, text: object) -> str:
         return redact(text, self._token, self._basic, self._email)
+
+    def _ensure_auth(self) -> None:
+        if getattr(self, "_auth_ok", False):
+            return
+        base = getattr(self, "_base", "")
+        client = getattr(self, "_client", None)
+        if not base or client is None:
+            self._auth_ok = True
+            return
+        url = base + "/rest/api/3/myself"
+        try:
+            resp = client.get(url)
+        except httpx.HTTPError as exc:
+            raise JiraError(AUTH_ERROR) from exc
+        if resp.status_code in (401, 403):
+            raise JiraError(AUTH_ERROR)
+        self._auth_ok = True
 
     def _request(
         self,
@@ -454,10 +478,12 @@ class JiraAdapter(PMAdapter):
         return out
 
     def list_items(self, limit: int = 50) -> list[WorkItem]:
+        self._ensure_auth()
         jql = f"{self._jql_project()} ORDER BY updated DESC"
         return [self._to_item(row) for row in self._search(jql, limit)]
 
     def get_item(self, item_id: str) -> WorkItem:
+        self._ensure_auth()
         key = self._quote_key(item_id)
         data = self._request(
             "GET",
@@ -471,6 +497,7 @@ class JiraAdapter(PMAdapter):
     def create_item(
         self, title: str, fields: dict[str, Any] | None = None
     ) -> WorkItem:
+        self._ensure_auth()
         given = dict(fields or {})
         given.pop("state", None)
         given.pop("iteration_id", None)
@@ -513,6 +540,7 @@ class JiraAdapter(PMAdapter):
     def update_item(
         self, item_id: str, fields: dict[str, Any]
     ) -> WorkItem:
+        self._ensure_auth()
         key = self._quote_key(item_id)
         given = dict(fields)
         state = str(given.pop("state", "") or "").strip()
@@ -558,6 +586,7 @@ class JiraAdapter(PMAdapter):
         return item
 
     def delete_item(self, item_id: str) -> None:
+        self._ensure_auth()
         key = self._quote_key(item_id)
         self._request("DELETE", f"/rest/api/3/issue/{quote(key, safe='')}")
 
@@ -596,6 +625,7 @@ class JiraAdapter(PMAdapter):
 
     def list_states(self) -> list[str]:
         """List project statuses ordered To Do, In Progress, Done."""
+        self._ensure_auth()
         try:
             data = self._request(
                 "GET",
@@ -633,6 +663,7 @@ class JiraAdapter(PMAdapter):
         return [name for _, name in ranked]
 
     def close_item(self, item_id: str) -> WorkItem:
+        self._ensure_auth()
         key = self._quote_key(item_id)
         current = self.get_item(key)
         if is_closed(current.state):
@@ -676,6 +707,7 @@ class JiraAdapter(PMAdapter):
 
     def list_iterations(self) -> list[Iteration]:
         """List sprints on the project board, oldest first."""
+        self._ensure_auth()
         board_id = self._board_id_for_project()
         data = self._request(
             "GET",
@@ -693,6 +725,7 @@ class JiraAdapter(PMAdapter):
     def create_iteration(
         self, name: str, start_date: str = "", end_date: str = ""
     ) -> Iteration:
+        self._ensure_auth()
         label = name.strip()
         if not label:
             raise JiraError("iteration name is required")
@@ -713,6 +746,7 @@ class JiraAdapter(PMAdapter):
         self, item_id: str, iteration_id: str
     ) -> WorkItem:
         """Move one issue to a sprint, or to the backlog when empty."""
+        self._ensure_auth()
         key = self._quote_key(item_id)
         if not iteration_id.strip():
             self._request(
@@ -738,6 +772,7 @@ class JiraAdapter(PMAdapter):
         raise JiraError(f"unknown link rel: {rel}")
 
     def add_link(self, source_id: str, target_id: str, rel: str) -> Link:
+        self._ensure_auth()
         kind = self._normalize_rel(rel)
         source = self._quote_key(source_id)
         target = self._quote_key(target_id)
@@ -759,6 +794,7 @@ class JiraAdapter(PMAdapter):
         return Link(source_id=source, target_id=target, rel=kind)
 
     def list_links(self, item_id: str) -> list[Link]:
+        self._ensure_auth()
         key = self._quote_key(item_id)
         data = self._request(
             "GET",
@@ -812,6 +848,7 @@ class JiraAdapter(PMAdapter):
         )
 
     def list_comments(self, item_id: str) -> list[Comment]:
+        self._ensure_auth()
         key = self._quote_key(item_id)
         data = self._request(
             "GET", f"/rest/api/3/issue/{quote(key, safe='')}/comment"
@@ -826,6 +863,7 @@ class JiraAdapter(PMAdapter):
     def add_comment(
         self, item_id: str, text: str, author: str = ""
     ) -> Comment:
+        self._ensure_auth()
         key = self._quote_key(item_id)
         body = text.strip()
         if not body:
@@ -844,6 +882,7 @@ class JiraAdapter(PMAdapter):
 
     def poll_changes(self, since: str | None = None) -> list[WorkItem]:
         """List changed issues; closed means is_closed on the status."""
+        self._ensure_auth()
         watermark = _parse_ts(since) if since else None
         if since and watermark is not None:
             floor = (watermark - timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M")

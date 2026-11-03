@@ -2044,10 +2044,21 @@ def _check_jira() -> tuple[bool, str, str]:
     except Exception as exc:  # noqa: BLE001
         detail = _redact_check_text(str(exc), secret_vals)
         low = detail.lower()
-        if "401" in low or "unauthor" in low or "invalid" in low:
+        if (
+            "401" in low
+            or "403" in low
+            or "unauthor" in low
+            or "forbidden" in low
+            or "invalid" in low
+            or "rejected" in low
+            or "credentials" in low
+            or "api-tokens" in low
+        ):
             hint = (
                 "Your Jira email or API token was rejected. Open the Jira "
-                "step, paste a fresh token, choose Save, then Test again."
+                "step, paste a fresh token, choose Save, then Test again. "
+                "Create a new token at "
+                "https://id.atlassian.com/manage-profile/security/api-tokens."
             )
         elif "unknown" in low or "not found" in low or "404" in low:
             hint = (
@@ -2071,6 +2082,17 @@ def _check_jira() -> tuple[bool, str, str]:
                     "and token, choose Save, then Test again."
                 )
         hint = _redact_check_text(hint, secret_vals)
+        if (
+            "rejected" in low
+            or "credentials" in low
+            or "api-tokens" in low
+            or "401" in low
+            or "403" in low
+            or "unauthor" in low
+            or "forbidden" in low
+        ):
+            _check_jira.last_extra = {"error": hint}  # type: ignore[attr-defined]
+            return (False, "Jira check failed. Pam cannot read the project.", hint)
         if JIRA_CHECK_FACTORY is None:
             _check_jira.last_extra = {"name": project, "count": 0, "sprints": False}  # type: ignore[attr-defined]
             return (
@@ -2130,7 +2152,16 @@ def _check_linear() -> tuple[bool, str, str]:
     except Exception as exc:  # noqa: BLE001
         detail = _redact_check_text(str(exc), secret_vals)
         low = detail.lower()
-        if "401" in low or "unauthor" in low or "invalid" in low:
+        if (
+            "401" in low
+            or "403" in low
+            or "unauthor" in low
+            or "forbidden" in low
+            or "invalid" in low
+            or "rejected" in low
+            or "credentials" in low
+            or "api-tokens" in low
+        ):
             hint = (
                 "Your Linear API key was rejected. Open the Linear step, "
                 "paste a fresh key, choose Save, then Test again."
@@ -2244,7 +2275,16 @@ def _check_trello() -> tuple[bool, str, str]:
     except Exception as exc:  # noqa: BLE001
         detail = _redact_check_text(str(exc), secret_vals)
         low = detail.lower()
-        if "401" in low or "unauthor" in low or "invalid" in low:
+        if (
+            "401" in low
+            or "403" in low
+            or "unauthor" in low
+            or "forbidden" in low
+            or "invalid" in low
+            or "rejected" in low
+            or "credentials" in low
+            or "api-tokens" in low
+        ):
             hint = (
                 "Your Trello key or token was rejected. Open the Trello "
                 "step, paste a fresh key and token, choose Save, then "
@@ -2404,7 +2444,16 @@ def _check_clickup(project_name: str = "default") -> tuple[bool, str, str]:
     except Exception as exc:  # noqa: BLE001
         detail = _redact_check_text(str(exc), secret_vals)
         low = detail.lower()
-        if "401" in low or "unauthor" in low or "invalid" in low:
+        if (
+            "401" in low
+            or "403" in low
+            or "unauthor" in low
+            or "forbidden" in low
+            or "invalid" in low
+            or "rejected" in low
+            or "credentials" in low
+            or "api-tokens" in low
+        ):
             hint = (
                 "Your ClickUp token was rejected. Open the ClickUp step, "
                 "paste a fresh token starting with pk_, choose Save, then "
@@ -2487,7 +2536,16 @@ def _check_asana() -> tuple[bool, str, str]:
     except Exception as exc:  # noqa: BLE001
         detail = _redact_check_text(str(exc), secret_vals)
         low = detail.lower()
-        if "401" in low or "unauthor" in low or "invalid" in low:
+        if (
+            "401" in low
+            or "403" in low
+            or "unauthor" in low
+            or "forbidden" in low
+            or "invalid" in low
+            or "rejected" in low
+            or "credentials" in low
+            or "api-tokens" in low
+        ):
             hint = (
                 "Your Asana token was rejected. Open the Asana step, paste "
                 "a fresh token, choose Save, then Test again."
@@ -2569,7 +2627,16 @@ def _check_monday() -> tuple[bool, str, str]:
     except Exception as exc:  # noqa: BLE001
         detail = _redact_check_text(str(exc), secret_vals)
         low = detail.lower()
-        if "401" in low or "unauthor" in low or "invalid" in low:
+        if (
+            "401" in low
+            or "403" in low
+            or "unauthor" in low
+            or "forbidden" in low
+            or "invalid" in low
+            or "rejected" in low
+            or "credentials" in low
+            or "api-tokens" in low
+        ):
             hint = (
                 "Your Monday token was rejected. Open the Monday step, "
                 "paste a fresh token, choose Save, then Test again."
