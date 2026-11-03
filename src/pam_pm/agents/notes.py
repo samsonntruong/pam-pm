@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import re
 from typing import Any
@@ -11,19 +12,25 @@ NOTES_MAX_TOKENS = 4000
 _SENT_SPLIT = re.compile(r"(?<=[.!?])\s+")
 _OWNER_PREFIX = re.compile(r"^\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s*:\s*(.+)$")
 _OWNER_VOCATIVE_RE = re.compile(
-    r"^\s*[A-Z][a-z]+\s*,\s*(can you|could you|please|will you|need you to)\s+",
+    r"^\s*[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\s*,\s*(can you|could you|please|will you|need you to|would you)\s+",
+    re.IGNORECASE,
+)
+_VOCATIVE_OWNER_RE = re.compile(r"^\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s*,")
+_LEAD_REQUEST_RE = re.compile(
+    r"^(can you|could you|will you|would you|need you to|please)\s+",
     re.IGNORECASE,
 )
 _NAME_WILL = re.compile(r"\b([A-Z][a-z]+)\s+will\b")
 _DUE_RE = re.compile(
     r"\b(by|due)\s+([A-Za-z]+\s+\d{1,2}(?:,\s*\d{4})?|"
-    r"\d{4}-\d{2}-\d{2}|Friday|Monday|Tuesday|Wednesday|Thursday|"
+    r"\d{4}-\d{2}-\d{2}|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|"
     r"tomorrow|next\s+week|end\s+of\s+week)\b",
     re.IGNORECASE,
 )
 _DECISION_RE = re.compile(r"\b(decided|decision|agreed|agreement|chose|choice)\b", re.IGNORECASE)
 _ACTION_RE = re.compile(
-    r"\b(will|shall|todo|to-do|action\s+item|follow\s*up|assign|owner|due)\b",
+    r"\b(will|shall|todo|to-do|action\s+item|follow\s*up|assign|owner|due|"
+    r"can you|could you|will you|would you|need you to|please)\b",
     re.IGNORECASE,
 )
 _RAID_RES = {
@@ -46,17 +53,64 @@ def _guess_owner(sentence: str) -> str:
     match = _OWNER_PREFIX.match(sentence)
     if match:
         return match.group(1).strip()
+    voc = _VOCATIVE_OWNER_RE.match(sentence)
+    if voc:
+        return voc.group(1).strip()
     found = _NAME_WILL.search(sentence)
     if found:
         return found.group(1).strip()
     return ""
 
 
+_WEEKDAY_IDX = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+    "friday": 4, "saturday": 5, "sunday": 6,
+}
+_ISO_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
+_WEEKDAY_FIND_RE = re.compile(
+    r"\b(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b",
+    re.IGNORECASE,
+)
+
+
+def _coming_weekday(name: str, today: _dt.date | None = None) -> str:
+    day = (today or _dt.date.today())
+    target = _WEEKDAY_IDX[name.strip().lower()]
+    delta = (target - day.weekday()) % 7
+    if delta == 0:
+        delta = 7
+    return (day + _dt.timedelta(days=delta)).isoformat()
+
+
+def resolve_due_date(phrase: str, today: _dt.date | None = None) -> str:
+    text = str(phrase or "")
+    if not text.strip():
+        return ""
+    iso = _ISO_RE.search(text)
+    if iso:
+        return iso.group(1)
+    low = text.lower()
+    if "tomorrow" in low:
+        day = (today or _dt.date.today()) + _dt.timedelta(days=1)
+        return day.isoformat()
+    if "next week" in low:
+        day = (today or _dt.date.today()) + _dt.timedelta(days=7)
+        return day.isoformat()
+    if "end of week" in low:
+        return _coming_weekday("friday", today)
+    found = _WEEKDAY_FIND_RE.search(text)
+    if found:
+        return _coming_weekday(found.group(1), today)
+    return ""
+
+
 def _guess_due(sentence: str) -> str:
     match = _DUE_RE.search(sentence)
     if not match:
+        match = _BEFORE_DUE_RE.search(sentence)
+    if not match:
         return ""
-    return " ".join(match.group(0).split())
+    return resolve_due_date(match.group(0))
 
 _OWNER_WILL_RE = re.compile(r"^[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\s+will\s+", re.IGNORECASE)
 _TEAM_WILL_RE = re.compile(r"^(the\s+team|someone|we)\s+will\s+", re.IGNORECASE)
@@ -72,24 +126,33 @@ _AGREE_TAIL_RE = re.compile(
     re.IGNORECASE,
 )
 _BEFORE_DUE_RE = re.compile(
-    r"\bbefore\s+(Friday|Monday|Tuesday|Wednesday|Thursday|tomorrow|next\s+week|end\s+of\s+week)\b",
+    r"\bbefore\s+(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|tomorrow|next\s+week|end\s+of\s+week)\b",
     re.IGNORECASE,
 )
 
 
 def concise_title(sentence: str, limit: int = 80) -> str:
-    """Derive a short card title from one evidence sentence.
+    """Derive a short imperative card title from one evidence sentence.
 
-    Strips speaker prefixes, will/needs wrappers, and due phrases so
-    the card reads like "Rate limiting on login endpoint" instead of
-    the full transcript sentence. The full sentence stays in the
-    evidence quote.
+    Strips speaker prefixes, leading addressees, request wrappers, and
+    trailing deadline clauses so the card reads like "Add rate limiting
+    to the login endpoint" instead of the full sentence. The full
+    sentence stays in the evidence quote.
     """
     text = " ".join(str(sentence or "").split()).strip()
     owned = _OWNER_PREFIX.match(text)
     if owned:
         text = owned.group(2).strip()
     text = _OWNER_VOCATIVE_RE.sub("", text).strip()
+    voc = _VOCATIVE_OWNER_RE.match(text)
+    if voc:
+        text = text[voc.end():].strip()
+    for _ in range(3):
+        cleaned = _LEAD_REQUEST_RE.sub("", text).strip()
+        cleaned = _LABEL_RE.sub("", cleaned).strip()
+        if cleaned == text:
+            break
+        text = cleaned
     for pattern in (_OWNER_WILL_RE, _TEAM_WILL_RE, _NEEDS_TO_RE):
         text = pattern.sub("", text).strip()
     due = _DUE_RE.search(text)
@@ -97,12 +160,15 @@ def concise_title(sentence: str, limit: int = 80) -> str:
         due = _BEFORE_DUE_RE.search(text)
     if due:
         text = (text[:due.start()] + text[due.end():]).strip()
+        text = re.sub(r"\s+", " ", text).strip()
     text = _LABEL_RE.sub("", text).strip()
     text = _AGREE_TAIL_RE.sub("", text).strip()
-    text = text.rstrip(" .")
+    text = re.sub(r"\s*[?!.;,]+\s*$", "", text).strip()
+    text = re.sub(r"\s+", " ", text).strip()
     if len(text) > limit:
         cut = text[:limit].rsplit(" ", 1)[0].strip()
         text = cut or text[:limit].strip()
+        text = re.sub(r"\s*[?!.;,]+\s*$", "", text).strip()
     if not text:
         return "Meeting action"
     return text[0].upper() + text[1:]
@@ -303,16 +369,27 @@ def _normalize_actions(value: Any) -> list[dict[str, Any]]:
                 }
             )
         elif isinstance(draft, dict):
-            title = str(draft.get("title", "") or "")[:200] or "Action item"
+            raw_title = str(draft.get("title", "") or "")
+            evidence = str(draft.get("evidence_quote", "") or "")[:300]
+            title = (concise_title(raw_title)[:200] if raw_title.strip() else "") or "Action item"
             owner = draft.get("owner") or None
             if isinstance(owner, str) and not owner.strip():
                 owner = None
+            if owner is None and evidence:
+                guessed = _guess_owner(evidence)
+                owner = guessed or None
+            raw_due = str(draft.get("due_date", "") or "").strip()
+            due = resolve_due_date(raw_due) if raw_due else ""
+            if not due and evidence:
+                due = _guess_due(evidence)
+            if not due and raw_title:
+                due = _guess_due(raw_title)
             out.append(
                 {
                     "title": title,
                     "owner": str(owner).strip() if owner else None,
-                    "due_date": str(draft.get("due_date", "") or "")[:120],
-                    "evidence_quote": str(draft.get("evidence_quote", "") or "")[:300],
+                    "due_date": due[:120],
+                    "evidence_quote": evidence,
                     "confidence": float(draft.get("confidence", 0.5) or 0.5),
                 }
             )

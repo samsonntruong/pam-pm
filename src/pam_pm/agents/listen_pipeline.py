@@ -90,7 +90,8 @@ def suggest_owner(
 
 _HOURS_WORDS = {
     "one": 1.0, "two": 2.0, "three": 3.0, "four": 4.0, "five": 5.0,
-    "six": 6.0, "seven": 7.0, "eight": 8.0,
+    "six": 6.0, "seven": 7.0, "eight": 8.0, "nine": 9.0, "ten": 10.0,
+    "eleven": 11.0, "twelve": 12.0,
 }
 
 
@@ -99,12 +100,22 @@ def stated_hours(*texts: str) -> float | None:
     import re as _re
 
     hay = " ".join(str(t or "") for t in texts).lower()
+    if _re.search(r"\bhalf\s+(an?\s+)?hours?\b", hay):
+        return 0.5
     match = _re.search(r"(\d+(?:\.\d+)?)\s*hours?", hay)
     if match:
         try:
             return float(match.group(1))
         except ValueError:
             return None
+    match = _re.search(r"(\d+(?:\.\d+)?)\s*h\b", hay)
+    if match:
+        try:
+            return float(match.group(1))
+        except ValueError:
+            return None
+    if _re.search(r"\b(an?\s+hour)\b", hay):
+        return 1.0
     for word, val in _HOURS_WORDS.items():
         if _re.search(r"\b" + word + r"\s+hours?\b", hay):
             return val
@@ -122,20 +133,18 @@ def estimate_hours(title: str) -> float:
 
 
 def _short_title(title: str, limit: int = 80) -> str:
-    """Condense a long evidence sentence to a short card title.
+    """Condense an evidence sentence to a short imperative card title.
 
-    Short titles pass through. Longer ones use the notes condenser
-    so cards read like "Rate limiting on login endpoint" instead of
-    the full transcript sentence.
+    Uses the shared notes condenser so local and proposal paths agree.
     """
     text = " ".join(str(title or "").split()).strip()
-    if len(text) <= limit:
-        return text
     try:
         from pam_pm.agents.notes import concise_title
 
         return concise_title(text, limit)[:200]
     except Exception:  # noqa: BLE001
+        if len(text) <= limit:
+            return text
         cut = text[:limit].rsplit(" ", 1)[0].strip()
         return cut or text[:limit].strip()
 
@@ -192,13 +201,22 @@ def propose_listen_tasks(
                 owner = suggest_owner(title, people, board_owners)
         quote = str(action.get("evidence_quote", "") or "")[:300] or title[:300]
         title = _short_title(title)
+        hours = stated_hours(quote, title, str(transcript or "")) or estimate_hours(title)
+        due = str(action.get("due_date", "") or "")[:120]
+        if not due and quote:
+            try:
+                from pam_pm.agents.notes import _guess_due as _notes_guess_due
+
+                due = _notes_guess_due(quote)[:120]
+            except Exception:  # noqa: BLE001
+                due = ""
         proposals.append(
             {
                 "title": title,
                 "owner": owner,
-                "estimate": estimate_hours(title),
+                "estimate": hours,
                 "evidence_quote": quote,
-                "due_date": str(action.get("due_date", "") or "")[:120],
+                "due_date": due,
                 "meeting_id": str(session_id),
             }
         )
