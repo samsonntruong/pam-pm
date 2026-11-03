@@ -861,6 +861,15 @@ class ADOAdapter(PMAdapter):
         items = self._batch_get(self._wiql(query))
         for item in items:
             item.fields.setdefault("is_closed", is_closed(item.state))
+        if since:
+            mark = str(since)
+            items = [
+                item for item in items
+                if str(
+                    (item.fields or {}).get("System.ChangedDate", "")
+                    or getattr(item, "changed", "")
+                ) > mark
+            ]
         return items
 
 
