@@ -14,7 +14,7 @@ Screenshots for each console screen live in `docs/images/`.
 
 ## Quickstart
 
-You need nothing installed: no Python, no git, no admin rights. You will need a Meta Model API key, a Slack workspace where you can create an app, and either the built-in Pam board (no account needed) or an Azure DevOps project with a PAT for the wizard steps.
+You need nothing installed: no Python, no git, no admin rights. You will need a Meta Model API key, a Slack workspace where you can create an app, and a board backend for the wizard steps (built-in Pam board with no account needed, or Azure DevOps, Jira, Linear, Trello, ClickUp, Asana, or Monday).
 
 Windows (PowerShell):
 
@@ -29,8 +29,6 @@ curl -LsSf https://raw.githubusercontent.com/samsonntruong/pam-pm/main/install.s
 ```
 
 Your browser opens the Pam setup console. Follow the wizard.
-
-Note: the one-liner works once the repo is public. While private, run `git clone https://github.com/samsonntruong/pam-pm.git` then run install.ps1 or install.sh from the checkout.
 
 Prefer to read the script first? Download `install.ps1` (Windows) or `install.sh` (macOS or Linux) from the repo root, read it, then run it:
 
@@ -118,7 +116,7 @@ The blocker loop, end to end:
 
 ## Built with Meta (hackathon)
 
-Pam runs on Muse Spark 1.3 through the Meta Model API: teammate interviews with pushback, blocker intake questions, structured status extraction, and sprint review and retro synthesis. Planning photos use SAM 3.1 segmentation with a Muse Spark vision read as fallback. Meeting capture uses the Meta realtime transcription endpoint. The code was written with Muse Code as the coding harness under an orchestrator running on Muse Spark 1.3. See the Meta usage table in [DEVLOG.md](DEVLOG.md) for the full per-task log.
+Pam runs on Muse Spark 1.3 through the Meta Model API for teammate interviews, blocker intake, status extraction, and review synthesis, with SAM 3.1 for planning photo segmentation and the Meta realtime endpoint for meeting transcription. The code was written with Muse Code as the coding harness under an orchestrator running on Muse Spark 1.3.
 
 Console visual quality was checked with [Impeccable](https://github.com/pbakaus/impeccable).
 
@@ -140,12 +138,12 @@ One internal Slack app per team, created once from the manifest at the repo root
 
 ## Roadmap
 
-Near term: PyPI release, daily lead digest, per-person snooze and quiet hours polish, Teams stub, MCP connectors for Jira, Linear, and Asana (design notes only today). Longer term: agent teammates, multi-project dashboards, plain-English rule creation, packaged desktop app, and a hosted multi-tenant version. Full list: [docs/roadmap.md](docs/roadmap.md).
+Live now: eight board backends over direct REST (Pam board, Azure DevOps, Jira, Linear, Trello, ClickUp, Asana, Monday). Near term: PyPI release, daily lead digest, snooze and quiet hours, Teams two-way. Longer term: agent teammates, multi-project dashboards, plain-English rule creation, hosted multi-tenant version. Full list: [docs/roadmap.md](docs/roadmap.md).
 
 ## Contributing, license, and status
 
 Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Security reports: [SECURITY.md](SECURITY.md). License: MIT, see [LICENSE](LICENSE).
 
-Status: alpha. The API, console screens, and rule templates may change without notice. See [CHANGELOG.md](CHANGELOG.md).
+Status: 1.0. The console, API, and rule templates are stable; breaking changes will bump the major version. See [CHANGELOG.md](CHANGELOG.md).
 
 All trademarks are property of their respective owners; marks identify the services only.

@@ -1,6 +1,6 @@
 # MCP adapter
 
-Design note only for MVP. Pam ships Slack plus Azure DevOps; this page records how Jira, Linear, and Asana connectors would plug in later.
+Superseded in 1.0: Jira, Linear, Trello, ClickUp, Asana, and Monday now ship as direct REST connectors. This page keeps the original design note for history.
 
 ## Idea
 

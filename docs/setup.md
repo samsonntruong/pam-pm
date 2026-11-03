@@ -36,16 +36,17 @@ The wizard has seven short steps. Each step has Save plus Test. Fill the fields,
 
 Where values live: non-secret settings are stored as plain JSON in the app data dir. Tokens and keys are stored one per file with 0600 permissions. Wizard progress stores only yes or no flags for secrets, never the values. Logs never include secret values.
 
-Env override: if you set META_MODEL, META_BASE_URL, META_API_KEY, SLACK_BOT_TOKEN, SLACK_APP_TOKEN, ADO_ORG_URL, ADO_PROJECT, ADO_TEAM, or ADO_PAT in the environment, that value wins over the saved value. This is for servers and CI. On a laptop, leave them unset and use the wizard.
+Env override: if you set a wizard value in the environment (see .env.example for the full list), that value wins over the saved value. This is for servers and CI. On a laptop, leave them unset and use the wizard.
 
 ## 3. Work the wizard
 
 Pick a board backend first, then work the numbered steps.
 
-- Backend choice: Pam board (built in, nothing to configure) or Azure DevOps. Saved per project, so different projects can use different backends. See [native-board.md](native-board.md).
+- Backend choice: Pam board (built in, nothing to configure), Azure DevOps, Jira, Linear, Trello, ClickUp, Asana, or Monday. Saved per project, so different projects can use different backends. See [native-board.md](native-board.md).
 - Step 1, Model provider: pick Meta (default, recommended) or Custom OpenAI-compatible. For Meta, enter the model name, base URL, and API key, then Save and Test. For Custom, enter its base URL, model name, and key. Test uses plain words. Keep the Standard tier for real team text; Contributor is for development with fake data only. See [provider.md](provider.md).
 - Step 2, Slack: the team lead or a workspace admin creates the one internal app once from `slack-app-manifest.yaml` (Socket Mode); everyone else installs nothing. Paste the bot token and app token, then Save and Test. Test checks that Pam can send messages. Full steps: [slack-setup.md](slack-setup.md). Keep the Tell your team note on that step.
-- Step 3, Azure DevOps: shown only when Azure DevOps is chosen above. Enter the org URL, project, team (optional), and access token, then Save and Test. Test checks that Pam can read the project. Full steps: [azure-devops-setup.md](azure-devops-setup.md).
+- Step 2b, Teams (optional): two-way via Graph polling with Entra device code sign-in. Save the App ID, client secret, and Tenant ID, then Save and Test. See [teams-adapter.md](teams-adapter.md).
+- Step 3, Board backend: shown only when your backend needs credentials (everything except Pam board). Enter the values shown for your backend, then Save and Test. Test checks that Pam can read the project. Full steps for ADO: [azure-devops-setup.md](azure-devops-setup.md).
 - Step 4, People: add teammates who will get the morning message, one name per line. Choose Save, then Test.
 - Step 5, Rules: choose which automatic messages you want on the Rules page, then Test.
 - Step 6, Safety: dry run stays on by default. Review the daily spend cap, then Test.
@@ -55,13 +56,13 @@ Pick a board backend first, then work the numbered steps.
 
 One machine hosts the Pam board and teammates open it in a browser. Nothing for them to install: they join the same Wi-Fi or network, open the LAN link from the Share section of the wizard, enter the console password, and land on the Board.
 
-Use share mode for a quick co-located review or a small team on one trusted network. Use a shared backend (Azure DevOps or Jira) for real teams that need remote access, per-user permissions, and history outside one laptop. With a shared backend each person works in the system of record and Pam stays on the host machine.
+Use share mode for a quick co-located review or a small team on one trusted network. Use a shared backend (Azure DevOps, Jira, Linear, Trello, ClickUp, Asana, or Monday) for real teams that need remote access, per-user permissions, and history outside one laptop. With a shared backend each person works in the system of record and Pam stays on the host machine.
 
 Security limits: share mode works on the same Wi-Fi or network only and has no encryption, so only use it on a network you trust. A console password is required to start shared mode, and anyone with the URL plus the password gets in. Keep the host machine on and Pam running while the team uses the board.
 
 ## Provider limits
 
-Meta is the default transport and uses the Responses API. A custom OpenAI-compatible endpoint works for chat, tools, structured output, and image input when the endpoint supports them. SAM 3.1 planning is Meta only: with a custom provider the planner skips segmentation and reads the whole photo as one image. This choice is independent of the board backend and works with both the Pam board and Azure DevOps.
+Meta is the default transport and uses the Responses API. A custom OpenAI-compatible endpoint works for chat, tools, structured output, and image input when the endpoint supports them. SAM 3.1 planning is Meta only: with a custom provider the planner skips segmentation and reads the whole photo as one image. This choice is independent of the board backend and works with all eight board backends.
 
 ## 4. Confirm in the console
 
@@ -71,7 +72,7 @@ Left navigation: Setup, Rules, Triage, Board, Activity, Plan, Kickoff, Add task,
 
 - Rules: toggle templates per project.
 - Triage: daily board scan findings with proposed fixes and Approve buttons.
-- Board: ADO or Pam board with dependency links, updating live. Pam board items are editable.
+- Board: your chosen backend with dependency links, updating live. Pam board items are editable.
 - Activity: live feed of agent actions with evidence quotes and an Undo button for board writes.
 - Plan: upload a sticky-note photo, inspect masks and readings, Approve to create items.
 - Kickoff: paste a brief or upload a file, review owner suggestions with reasons on one approval card, Approve to create items.
