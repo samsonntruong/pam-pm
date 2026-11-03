@@ -10,6 +10,10 @@ NOTES_MAX_TOKENS = 4000
 
 _SENT_SPLIT = re.compile(r"(?<=[.!?])\s+")
 _OWNER_PREFIX = re.compile(r"^\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s*:\s*(.+)$")
+_OWNER_VOCATIVE_RE = re.compile(
+    r"^\s*[A-Z][a-z]+\s*,\s*(can you|could you|please|will you|need you to)\s+",
+    re.IGNORECASE,
+)
 _NAME_WILL = re.compile(r"\b([A-Z][a-z]+)\s+will\b")
 _DUE_RE = re.compile(
     r"\b(by|due)\s+([A-Za-z]+\s+\d{1,2}(?:,\s*\d{4})?|"
@@ -77,6 +81,7 @@ def concise_title(sentence: str, limit: int = 80) -> str:
     owned = _OWNER_PREFIX.match(text)
     if owned:
         text = owned.group(2).strip()
+    text = _OWNER_VOCATIVE_RE.sub("", text).strip()
     for pattern in (_OWNER_WILL_RE, _TEAM_WILL_RE, _NEEDS_TO_RE):
         text = pattern.sub("", text).strip()
     due = _DUE_RE.search(text)
