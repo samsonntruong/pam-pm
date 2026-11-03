@@ -624,26 +624,46 @@ class TrelloAdapter(PMAdapter):
             if key not in seen:
                 seen.add(key)
                 out.append(Link(source_id=card_id, target_id=other, rel=REL_BLOCKS))
-        for other_id in sorted(short_of):
-            if other_id == card_id:
+        bid = self._board_id_for_ref()
+        actions = self._request(
+            "GET",
+            f"/boards/{quote(bid, safe='')}/actions",
+            {"filter": "addAttachmentToCard", "limit": 1000},
+        )
+        canonical = by_ref.get(card_id, card_id)
+        blockers: set[str] = set()
+        for action in actions if isinstance(actions, list) else []:
+            if not isinstance(action, dict):
                 continue
-            rows = self._request(
-                "GET", f"/cards/{quote(other_id, safe='')}/attachments"
-            )
-            points_here = False
-            for entry in rows if isinstance(rows, list) else []:
-                if not isinstance(entry, dict):
-                    continue
-                if _card_ref_from_url(entry.get("url", "")) in refs:
-                    points_here = True
-                    break
-            if points_here:
-                key = (card_id, other_id, REL_BLOCKED_BY)
-                if key not in seen:
-                    seen.add(key)
-                    out.append(
-                        Link(source_id=card_id, target_id=other_id, rel=REL_BLOCKED_BY)
-                    )
+            inner = action.get("data", {})
+            if not isinstance(inner, dict):
+                continue
+            card = inner.get("card", {})
+            att = inner.get("attachment", {})
+            if not isinstance(card, dict) or not isinstance(att, dict):
+                continue
+            raw_other = str(card.get("id", "") or "")
+            if not raw_other:
+                raw_other = str(card.get("shortLink", "") or "")
+            if not raw_other:
+                continue
+            other_id = by_ref.get(raw_other, raw_other)
+            if other_id == card_id or other_id == canonical:
+                continue
+            if other_id not in short_of:
+                continue
+            ref = _card_ref_from_url(att.get("url", ""))
+            if not ref:
+                continue
+            if ref in refs or by_ref.get(ref, ref) == canonical:
+                blockers.add(other_id)
+        for other_id in sorted(blockers):
+            key = (card_id, other_id, REL_BLOCKED_BY)
+            if key not in seen:
+                seen.add(key)
+                out.append(
+                    Link(source_id=card_id, target_id=other_id, rel=REL_BLOCKED_BY)
+                )
         return out
 
     @staticmethod
