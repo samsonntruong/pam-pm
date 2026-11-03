@@ -1680,12 +1680,8 @@ def resume_interview(
             )
         if _looks_like_blocker(answer):
             candidates = _candidate_identities(chat, person_id)
-            if _has_checkin_history(db, candidates):
-                return _handle_blocker_clarify(
-                    person_id, answer, chat, board, db, candidates
-                )
-            return _handle_blocker_without_state(
-                person_id, answer, chat, board, db, candidates,
+            return _handle_blocker_clarify(
+                person_id, answer, chat, board, db, candidates
             )
         mid = _send(NO_OPEN_STATE_REPLY)
         return {
