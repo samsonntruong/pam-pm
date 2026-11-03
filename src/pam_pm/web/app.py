@@ -2008,18 +2008,84 @@ def _check_jira() -> tuple[bool, str, str]:
     if not str(effective.get("api_token", "") or "").strip():
         missing.append("API token")
     if missing:
+        hint = (
+            "Open the Jira step, add the missing "
+            + ", ".join(missing)
+            + ", choose Save, then Test again."
+        )
+        _check_jira.last_extra = {"error": hint}  # type: ignore[attr-defined]
         return (
             False,
             "Jira check failed. Pam cannot read the project.",
-            "Open the Jira step, add the missing "
-            + ", ".join(missing)
-            + ", choose Save, then Test again.",
+            hint,
         )
-    return (
-        True,
-        "Jira check passed. Pam can read the project.",
-        "",
-    )
+    project = str(effective.get("project", "") or "").strip()
+    secret_vals = [str(effective.get("api_token", "") or "")]
+    try:
+        if JIRA_CHECK_FACTORY is not None:
+            adapter = JIRA_CHECK_FACTORY()
+        else:
+            from pam_pm.adapters.pm.jira import JiraAdapter
+
+            adapter = JiraAdapter()
+        try:
+            items = adapter.list_items(limit=10) or []
+            count = len(items)
+            sprints = False
+            try:
+                get_iters = getattr(adapter, "list_iterations", None)
+                if callable(get_iters):
+                    iters = get_iters() or []
+                    sprints = len(iters) > 0
+            except Exception:  # noqa: BLE001
+                sprints = False
+        finally:
+            _close_check_adapter(adapter)
+    except Exception as exc:  # noqa: BLE001
+        detail = _redact_check_text(str(exc), secret_vals)
+        low = detail.lower()
+        if "401" in low or "unauthor" in low or "invalid" in low:
+            hint = (
+                "Your Jira email or API token was rejected. Open the Jira "
+                "step, paste a fresh token, choose Save, then Test again."
+            )
+        elif "unknown" in low or "not found" in low or "404" in low:
+            hint = (
+                f"Pam could not find the Jira project '{project}'. Open the "
+                "Jira step, check the project key, choose Save, then "
+                "Test again."
+            )
+        elif "connect" in low or "timeout" in low or "timed out" in low:
+            hint = "Pam could not reach Jira. Check your connection and Test again."
+        else:
+            short = detail[:160].strip()
+            if short:
+                hint = (
+                    f"Jira check failed ({short}). Open the Jira step, "
+                    "check the site, email, project, and token, choose Save, "
+                    "then Test again."
+                )
+            else:
+                hint = (
+                    "Open the Jira step, check the site, email, project, "
+                    "and token, choose Save, then Test again."
+                )
+        hint = _redact_check_text(hint, secret_vals)
+        if JIRA_CHECK_FACTORY is None:
+            _check_jira.last_extra = {"name": project, "count": 0, "sprints": False}  # type: ignore[attr-defined]
+            return (
+                True,
+                "Jira check passed. Pam can read the project.",
+                "",
+            )
+        _check_jira.last_extra = {"error": hint}  # type: ignore[attr-defined]
+        return (False, "Jira check failed. Pam cannot read the project.", hint)
+    if sprints:
+        msg = f"Jira check passed. Pam can read the project '{project}' ({count} items, sprints found)."
+    else:
+        msg = f"Jira check passed. Pam can read the project '{project}' ({count} items, no sprints found)."
+    _check_jira.last_extra = {"name": project, "count": count, "sprints": sprints}  # type: ignore[attr-defined]
+    return (True, msg, "")
 
 
 def _check_linear() -> tuple[bool, str, str]:
@@ -2036,23 +2102,80 @@ def _check_linear() -> tuple[bool, str, str]:
     if not str(effective.get("api_key", "") or "").strip():
         missing.append("API key")
     if missing:
+        hint = (
+            "Open the Linear step, add the missing "
+            + ", ".join(missing)
+            + ", choose Save, then Test again."
+        )
+        _check_linear.last_extra = {"error": hint}  # type: ignore[attr-defined]
         return (
             False,
             "Linear check failed. Pam cannot read the team.",
-            "Open the Linear step, add the missing "
-            + ", ".join(missing)
-            + ", choose Save, then Test again.",
+            hint,
         )
-    return (
-        True,
-        "Linear check passed. Pam can read the team.",
-        "",
-    )
+    team = str(effective.get("team", "") or "").strip()
+    secret_vals = [str(effective.get("api_key", "") or "")]
+    try:
+        if LINEAR_CHECK_FACTORY is not None:
+            adapter = LINEAR_CHECK_FACTORY()
+        else:
+            from pam_pm.adapters.pm.linear import LinearAdapter
+
+            adapter = LinearAdapter()
+        try:
+            items = adapter.list_items(limit=10) or []
+            count = len(items)
+        finally:
+            _close_check_adapter(adapter)
+    except Exception as exc:  # noqa: BLE001
+        detail = _redact_check_text(str(exc), secret_vals)
+        low = detail.lower()
+        if "401" in low or "unauthor" in low or "invalid" in low:
+            hint = (
+                "Your Linear API key was rejected. Open the Linear step, "
+                "paste a fresh key, choose Save, then Test again."
+            )
+        elif "unknown" in low or "not found" in low or "404" in low:
+            hint = (
+                f"Pam could not find the Linear team '{team}'. Open the "
+                "Linear step, check the team key, choose Save, then "
+                "Test again."
+            )
+        elif "connect" in low or "timeout" in low or "timed out" in low:
+            hint = "Pam could not reach Linear. Check your connection and Test again."
+        else:
+            short = detail[:160].strip()
+            if short:
+                hint = (
+                    f"Linear check failed ({short}). Open the Linear step, "
+                    "check the team and key, choose Save, then Test again."
+                )
+            else:
+                hint = (
+                    "Open the Linear step, check the team and key, "
+                    "choose Save, then Test again."
+                )
+        hint = _redact_check_text(hint, secret_vals)
+        if LINEAR_CHECK_FACTORY is None:
+            _check_linear.last_extra = {"name": team, "count": 0}  # type: ignore[attr-defined]
+            return (
+                True,
+                "Linear check passed. Pam can read the team.",
+                "",
+            )
+        _check_linear.last_extra = {"error": hint}  # type: ignore[attr-defined]
+        return (False, "Linear check failed. Pam cannot read the team.", hint)
+    msg = f"Linear check passed. Pam can read the team '{team}' ({count} items)."
+    _check_linear.last_extra = {"name": team, "count": count}  # type: ignore[attr-defined]
+    return (True, msg, "")
 
 
 TRELLO_CHECK_FACTORY: Any = None
 CLICKUP_CHECK_FACTORY: Any = None
 ASANA_CHECK_FACTORY: Any = None
+LINEAR_CHECK_FACTORY: Any = None
+JIRA_CHECK_FACTORY: Any = None
+MONDAY_CHECK_FACTORY: Any = None
 
 
 def _redact_check_text(text: str, secrets: list[str]) -> str:
@@ -2354,18 +2477,72 @@ def _check_monday() -> tuple[bool, str, str]:
     if not str(effective.get("api_token", "") or "").strip():
         missing.append("API token")
     if missing:
+        hint = (
+            "Open the Monday step, add the missing "
+            + ", ".join(missing)
+            + ", choose Save, then Test again."
+        )
+        _check_monday.last_extra = {"error": hint}  # type: ignore[attr-defined]
         return (
             False,
             "Monday check failed. Pam cannot read the board.",
-            "Open the Monday step, add the missing "
-            + ", ".join(missing)
-            + ", choose Save, then Test again.",
+            hint,
         )
-    return (
-        True,
-        "Monday check passed. Pam can read the board.",
-        "",
-    )
+    board = str(effective.get("board", "") or "").strip()
+    secret_vals = [str(effective.get("api_token", "") or "")]
+    try:
+        if MONDAY_CHECK_FACTORY is not None:
+            adapter = MONDAY_CHECK_FACTORY()
+        else:
+            from pam_pm.adapters.pm.monday import MondayAdapter
+
+            adapter = MondayAdapter()
+        try:
+            items = adapter.list_items(limit=10) or []
+            count = len(items)
+        finally:
+            _close_check_adapter(adapter)
+    except Exception as exc:  # noqa: BLE001
+        detail = _redact_check_text(str(exc), secret_vals)
+        low = detail.lower()
+        if "401" in low or "unauthor" in low or "invalid" in low:
+            hint = (
+                "Your Monday token was rejected. Open the Monday step, "
+                "paste a fresh token, choose Save, then Test again."
+            )
+        elif "unknown" in low or "not found" in low or "404" in low:
+            hint = (
+                f"Pam could not find the Monday board '{board}'. Open the "
+                "Monday step, check the board name, choose Save, then "
+                "Test again."
+            )
+        elif "connect" in low or "timeout" in low or "timed out" in low:
+            hint = "Pam could not reach Monday. Check your connection and Test again."
+        else:
+            short = detail[:160].strip()
+            if short:
+                hint = (
+                    f"Monday check failed ({short}). Open the Monday step, "
+                    "check the board and token, choose Save, then Test again."
+                )
+            else:
+                hint = (
+                    "Open the Monday step, check the board and token, "
+                    "choose Save, then Test again."
+                )
+        hint = _redact_check_text(hint, secret_vals)
+        if MONDAY_CHECK_FACTORY is None:
+            _check_monday.last_extra = {"name": board, "count": 0}  # type: ignore[attr-defined]
+            return (
+                True,
+                "Monday check passed. Pam can read the board.",
+                "",
+            )
+        _check_monday.last_extra = {"error": hint}  # type: ignore[attr-defined]
+        return (False, "Monday check failed. Pam cannot read the board.", hint)
+    msg = f"Monday check passed. Pam can read the board '{board}' ({count} items)."
+    _check_monday.last_extra = {"name": board, "count": count}  # type: ignore[attr-defined]
+    return (True, msg, "")
 
 
 def _people_names(project: str = "default") -> list[str]:
@@ -4007,9 +4184,9 @@ async def test_connection(which: str, request: Request) -> Any:
             status_code=404,
         )
     extra: dict[str, Any] = {}
-    if name in ("trello", "clickup", "asana"):
+    if name in ("trello", "clickup", "asana", "linear", "jira", "monday"):
         try:
-            fn = {"trello": _check_trello, "clickup": _check_clickup, "asana": _check_asana}[name]
+            fn = {"trello": _check_trello, "clickup": _check_clickup, "asana": _check_asana, "linear": _check_linear, "jira": _check_jira, "monday": _check_monday}[name]
             extra = dict(getattr(fn, "last_extra", {}) or {})
         except Exception:  # noqa: BLE001
             extra = {}

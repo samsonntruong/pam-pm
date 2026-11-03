@@ -178,14 +178,30 @@
 <section class="card" id="step-3-jira" {% if not show_jira %}hidden{% endif %}>
   <h2>Step 3: Jira</h2>
   <p>Only needed when Jira is chosen above. Paste the values below, choose Save, then Test.</p>
-  <label for="jira-base">Site URL</label>
-  <input id="jira-base" name="base_url" type="url" value="{{ jira_base_url }}" placeholder="https://your-site.atlassian.net" autocomplete="off">
-  <label for="jira-email">Email</label>
-  <input id="jira-email" name="email" type="email" value="{{ jira_email }}" placeholder="you@example.com" autocomplete="off">
-  <label for="jira-project">Project key</label>
-  <input id="jira-project" name="project_key" type="text" value="{{ jira_project }}" placeholder="PROJ" autocomplete="off">
-  <label for="jira-token">API token</label>
-  <input id="jira-token" name="api_token" type="password" value="" placeholder="{% if jira_has_token %}Saved on this machine{% else %}Paste token here{% endif %}" autocomplete="off">
+  <details>
+    <summary>Where do I find this?</summary>
+    <ol>
+      <li>Open <a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank" rel="noopener">id.atlassian.com/manage-profile/security/api-tokens</a> while logged in.</li>
+      <li>Choose Create API token, name it Pam, then copy the token shown once.</li>
+      <li>Copy your site URL from the browser address bar when Jira is open. It looks like https://your-site.atlassian.net.</li>
+      <li>Copy the project key from any issue in that project. It is the letters before the dash, such as PROJ in PROJ-123.</li>
+    </ol>
+    <p class="muted">Shapes, not real values: site like https://acme.atlassian.net, email like you@example.com, key like PROJ, token like ATATT... (long).</p>
+  </details>
+  <label for="jira-base">Site URL <span class="pill">Required</span></label>
+  <input id="jira-base" name="base_url" type="url" value="{{ jira_base_url }}" placeholder="https://your-site.atlassian.net" autocomplete="off" oninput="b2JiraBase()">
+  <p class="field-error" id="jira-base-error" hidden>Site URL is required.</p>
+  <p class="field-error" id="jira-base-format" hidden>Site URL must look like https://your-site.atlassian.net.</p>
+  <label for="jira-email">Email <span class="pill">Required</span></label>
+  <input id="jira-email" name="email" type="email" value="{{ jira_email }}" placeholder="you@example.com" autocomplete="off" oninput="b2CheckBlank('jira-email', 'jira-email-error')">
+  <p class="field-error" id="jira-email-error" hidden>Email is required.</p>
+  <label for="jira-project">Project key <span class="pill">Required</span></label>
+  <input id="jira-project" name="project_key" type="text" value="{{ jira_project }}" placeholder="PROJ" autocomplete="off" oninput="b2CheckBlank('jira-project', 'jira-project-error')">
+  <p class="field-error" id="jira-project-error" hidden>Project key is required.</p>
+  <label for="jira-token">API token <span class="pill">Required</span></label>
+  <input id="jira-token" name="api_token" type="password" value="" placeholder="{% if jira_has_token %}Saved on this machine{% else %}Paste token here{% endif %}" autocomplete="off" oninput="b2CheckBlank('jira-token', 'jira-token-error')">
+  <button type="button" onclick="b2Toggle('jira-token', this)">Show</button>
+  <p class="field-error" id="jira-token-error" hidden>API token is required.</p>
   <div>
     <button type="button" onclick="saveJira()">Save</button>
     <button hx-post="/api/test/jira?project={{ project }}" hx-target="#jira-result" hx-swap="innerHTML">Test</button>
@@ -197,10 +213,22 @@
 <section class="card" id="step-3-linear" {% if not show_linear %}hidden{% endif %}>
   <h2>Step 3: Linear</h2>
   <p>Only needed when Linear is chosen above. Paste the values below, choose Save, then Test.</p>
-  <label for="linear-team">Team key</label>
-  <input id="linear-team" name="team" type="text" value="{{ linear_team }}" placeholder="ENG" autocomplete="off">
-  <label for="linear-key">API key</label>
-  <input id="linear-key" name="api_key" type="password" value="" placeholder="{% if linear_has_key %}Saved on this machine{% else %}Paste key here{% endif %}" autocomplete="off">
+  <details>
+    <summary>Where do I find this?</summary>
+    <ol>
+      <li>Open <a href="https://linear.app/settings/api" target="_blank" rel="noopener">linear.app/settings/api</a> while logged in.</li>
+      <li>Choose Create key, name it Pam, then copy the key shown once.</li>
+      <li>Copy the team key from any issue in that team. It is the letters before the dash, such as ENG in ENG-123.</li>
+    </ol>
+    <p class="muted">Shapes, not real values: team like ENG, key like lin_api_abc... (starts with lin_api_).</p>
+  </details>
+  <label for="linear-team">Team key <span class="pill">Required</span></label>
+  <input id="linear-team" name="team" type="text" value="{{ linear_team }}" placeholder="ENG" autocomplete="off" oninput="b2CheckBlank('linear-team', 'linear-team-error')">
+  <p class="field-error" id="linear-team-error" hidden>Team key is required.</p>
+  <label for="linear-key">API key <span class="pill">Required</span></label>
+  <input id="linear-key" name="api_key" type="password" value="" placeholder="{% if linear_has_key %}Saved on this machine{% else %}Paste key here{% endif %}" autocomplete="off" oninput="b2CheckBlank('linear-key', 'linear-key-error')">
+  <button type="button" onclick="b2Toggle('linear-key', this)">Show</button>
+  <p class="field-error" id="linear-key-error" hidden>API key is required.</p>
   <div>
     <button type="button" onclick="saveLinear()">Save</button>
     <button hx-post="/api/test/linear?project={{ project }}" hx-target="#linear-result" hx-swap="innerHTML">Test</button>
@@ -326,15 +354,75 @@
     if (v && v.indexOf("pk_") !== 0) { err.removeAttribute("hidden"); }
     else { err.setAttribute("hidden", ""); }
   }
+  function b2Toggle(inputId, btn) {
+    const el = document.getElementById(inputId);
+    if (!el) return;
+    const show = el.type === "password";
+    el.type = show ? "text" : "password";
+    if (btn) btn.textContent = show ? "Hide" : "Show";
+  }
+  function b2CheckBlank(inputId, errorId) {
+    const el = document.getElementById(inputId);
+    const err = document.getElementById(errorId);
+    if (!err) return true;
+    const blank = !el || !el.value.trim();
+    if (blank) { err.removeAttribute("hidden"); } else { err.setAttribute("hidden", ""); }
+    return !blank;
+  }
+  function b2JiraBase() {
+    const el = document.getElementById("jira-base");
+    const blankErr = document.getElementById("jira-base-error");
+    const formatErr = document.getElementById("jira-base-format");
+    if (!el) return;
+    let v = el.value.trim();
+    const m = v.match(/https:\/\/[A-Za-z0-9-]+\.atlassian\.net/);
+    if (m && m[0] && v !== m[0]) {
+      el.value = m[0];
+      v = m[0];
+    }
+    b2CheckBlank("jira-base", "jira-base-error");
+    if (!formatErr) return;
+    if (!v) { formatErr.setAttribute("hidden", ""); return; }
+    let ok = false;
+    try {
+      const u = new URL(v);
+      ok = u.protocol === "https:" && /\.atlassian\.net$/i.test(u.hostname) && u.pathname.replace(/\/+$/, "") === "";
+    } catch (err) { ok = false; }
+    if (ok) { formatErr.setAttribute("hidden", ""); }
+    else { formatErr.removeAttribute("hidden"); }
+    if (blankErr && v) { blankErr.setAttribute("hidden", ""); }
+  }
+  function b2ExtractMonday() {
+    const url = document.getElementById("monday-url");
+    const board = document.getElementById("monday-board");
+    if (!url || !board) return;
+    const m = url.value.match(/\/boards\/(\d+)/);
+    if (m && m[1]) { board.value = m[1]; b2CheckBlank("monday-board", "monday-board-error"); }
+  }
 </script>
 
 <section class="card" id="step-3-monday" {% if not show_monday %}hidden{% endif %}>
   <h2>Step 3: Monday</h2>
   <p>Only needed when Monday is chosen above. Paste the values below, choose Save, then Test.</p>
-  <label for="monday-board">Board</label>
-  <input id="monday-board" name="board" type="text" value="{{ monday_board }}" placeholder="My board" autocomplete="off">
-  <label for="monday-token">API token</label>
-  <input id="monday-token" name="api_token" type="password" value="" placeholder="{% if monday_has_token %}Saved on this machine{% else %}Paste token here{% endif %}" autocomplete="off">
+  <details>
+    <summary>Where do I find this?</summary>
+    <ol>
+      <li>Open <a href="https://developer.monday.com/api-reference/docs/authentication" target="_blank" rel="noopener">developer.monday.com/api-reference/docs/authentication</a> and follow the personal token steps.</li>
+      <li>In Monday, open your avatar, then Developers, then My access tokens.</li>
+      <li>Copy the personal API token shown there (a long mix of letters and numbers).</li>
+      <li>Copy the board id from the board URL. It is the number after /boards/, such as 1234567.</li>
+    </ol>
+    <p class="muted">Shapes, not real values: board like 1234567 or My board, token like eyJh... (long).</p>
+  </details>
+  <label for="monday-board">Board <span class="pill">Required</span></label>
+  <input id="monday-board" name="board" type="text" value="{{ monday_board }}" placeholder="My board" autocomplete="off" oninput="b2CheckBlank('monday-board', 'monday-board-error')">
+  <p class="field-error" id="monday-board-error" hidden>Board is required.</p>
+  <label for="monday-url">Board URL (optional, paste to fill Board)</label>
+  <input id="monday-url" name="board_url" type="url" value="" placeholder="https://acme.monday.com/boards/1234567" autocomplete="off" oninput="b2ExtractMonday()">
+  <label for="monday-token">API token <span class="pill">Required</span></label>
+  <input id="monday-token" name="api_token" type="password" value="" placeholder="{% if monday_has_token %}Saved on this machine{% else %}Paste token here{% endif %}" autocomplete="off" oninput="b2CheckBlank('monday-token', 'monday-token-error')">
+  <button type="button" onclick="b2Toggle('monday-token', this)">Show</button>
+  <p class="field-error" id="monday-token-error" hidden>API token is required.</p>
   <div>
     <button type="button" onclick="saveMonday()">Save</button>
     <button hx-post="/api/test/monday?project={{ project }}" hx-target="#monday-result" hx-swap="innerHTML">Test</button>
