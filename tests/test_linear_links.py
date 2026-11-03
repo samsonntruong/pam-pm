@@ -1,4 +1,4 @@
-"""Linear links by UUID with no self-loops, on a fake transport."""
+"""Linear links from forward team edges only, on a fake transport."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from pam_pm.adapters.pm.linear import LinearAdapter
 
 TEAM = "SAM"
 KEY = "lin_api_testkey1"
+TEAM_ID = "team-uuid-sam"
 
 UUID_27 = "11111111-1111-1111-1111-111111111111"
 UUID_31 = "22222222-2222-2222-2222-222222222222"
@@ -26,8 +27,10 @@ class _FakeLinks:
         self.by_uuid = {v: k for k, v in self.by_ident.items()}
         self.relations: list[tuple[str, str]] = [(UUID_31, UUID_27)]
         self.sent_inputs: list[dict[str, Any]] = []
-        self.sent_ids: list[str] = []
+        self.queries: list[str] = []
         self.issue_get_calls = 0
+        self.team_lookup_calls = 0
+        self.team_issues_calls = 0
         self.inject_self_loop = False
 
     def _node(self, ident: str) -> dict[str, Any]:
@@ -56,6 +59,45 @@ class _FakeLinks:
         body = json.loads(request.content.decode("utf-8")) if request.content else {}
         query = str(body.get("query", ""))
         variables = body.get("variables", {})
+        self.queries.append(query)
+        if "TeamLookup" in query:
+            self.team_lookup_calls += 1
+            nodes = [{"id": TEAM_ID, "key": TEAM, "name": TEAM}]
+            return httpx.Response(200, json={"data": {"teams": {"nodes": nodes}}})
+        if "TeamIssueLinks" in query:
+            self.team_issues_calls += 1
+            assert variables.get("teamId") == TEAM_ID
+            assert "issues(first: 250)" in query
+            assert "relations(first: 50)" in query
+            assert "inverseRelations" not in query
+            nodes: list[dict[str, Any]] = []
+            for ident, uuid in self.by_ident.items():
+                rels: list[dict[str, Any]] = []
+                for blocker, blocked in self.relations:
+                    if blocker == uuid and blocked in self.by_uuid:
+                        other = self.by_uuid[blocked]
+                        rels.append(
+                            {
+                                "type": "blocks",
+                                "relatedIssue": {"id": blocked, "identifier": other},
+                            }
+                        )
+                if self.inject_self_loop and ident == "SAM-27":
+                    rels.append(
+                        {
+                            "type": "blocks",
+                            "relatedIssue": {"id": uuid, "identifier": ident},
+                        }
+                    )
+                nodes.append(
+                    {
+                        "id": uuid,
+                        "identifier": ident,
+                        "relations": {"nodes": rels},
+                    }
+                )
+            data = {"team": {"issues": {"nodes": nodes}}}
+            return httpx.Response(200, json={"data": data})
         if "IssueGet" in query:
             self.issue_get_calls += 1
             ident = self._resolve(str(variables.get("id", "")))
@@ -69,44 +111,6 @@ class _FakeLinks:
             )
             inner = {"success": True, "issueRelation": {"id": "R1"}}
             return httpx.Response(200, json={"data": {"issueRelationCreate": inner}})
-        if "IssueRelations" in query:
-            raw = str(variables.get("id", ""))
-            self.sent_ids.append(raw)
-            ident = self._resolve(raw)
-            uuid = self.by_ident.get(ident, raw)
-            rels = []
-            inverse = []
-            for blocker, blocked in self.relations:
-                if blocker == uuid and blocked in self.by_uuid:
-                    other = self.by_uuid[blocked]
-                    rels.append(
-                        {
-                            "type": "blocks",
-                            "relatedIssue": {"id": blocked, "identifier": other},
-                        }
-                    )
-                if blocked == uuid and blocker in self.by_uuid:
-                    other = self.by_uuid[blocker]
-                    inverse.append(
-                        {
-                            "type": "blocks",
-                            "relatedIssue": {"id": blocker, "identifier": other},
-                        }
-                    )
-            if self.inject_self_loop and ident:
-                inverse.append(
-                    {
-                        "type": "blocks",
-                        "relatedIssue": {"id": uuid, "identifier": ident},
-                    }
-                )
-            data = {
-                "issue": {
-                    "relations": {"nodes": rels},
-                    "inverseRelations": {"nodes": inverse},
-                }
-            }
-            return httpx.Response(200, json={"data": data})
         return httpx.Response(200, json={"errors": [{"message": "unknown op"}]})
 
 
@@ -135,16 +139,38 @@ def test_add_link_sends_uuids(linear_env) -> None:
         adapter.close()
 
 
-def test_list_links_both_directions(linear_env) -> None:
+def test_list_links_both_directions_from_forward_only(linear_env) -> None:
     fake = _FakeLinks()
     adapter = _adapter(fake)
     try:
         forward = adapter.list_links("SAM-31")
-        assert [(e.target_id, e.rel) for e in forward] == [("SAM-27", "blocks")]
+        assert [(e.source_id, e.target_id, e.rel) for e in forward] == [
+            ("SAM-31", "SAM-27", "blocks")
+        ]
         back = adapter.list_links("SAM-27")
-        assert [(e.target_id, e.rel) for e in back] == [("SAM-31", "is blocked by")]
-        assert fake.sent_ids
-        assert all(v in (UUID_27, UUID_31) for v in fake.sent_ids)
+        assert [(e.source_id, e.target_id, e.rel) for e in back] == [
+            ("SAM-31", "SAM-27", "blocks")
+        ]
+        assert all("inverseRelations" not in q for q in fake.queries)
+        assert any("TeamIssueLinks" in q for q in fake.queries)
+        assert fake.team_lookup_calls == 1
+        assert fake.team_issues_calls == 2
+        assert fake.issue_get_calls == 0
+    finally:
+        adapter.close()
+
+
+def test_list_links_uuid_resolves_without_fetch(linear_env) -> None:
+    fake = _FakeLinks()
+    adapter = _adapter(fake)
+    try:
+        by_uuid = adapter.list_links(UUID_27)
+        assert [(e.source_id, e.target_id, e.rel) for e in by_uuid] == [
+            ("SAM-31", "SAM-27", "blocks")
+        ]
+        assert fake.issue_get_calls == 0
+        assert fake.team_lookup_calls == 1
+        assert fake.team_issues_calls == 1
     finally:
         adapter.close()
 
@@ -156,6 +182,7 @@ def test_list_links_drops_self_loop(linear_env) -> None:
     adapter = _adapter(fake)
     try:
         assert adapter.list_links("SAM-27") == []
+        assert adapter.list_links(UUID_27) == []
     finally:
         adapter.close()
 

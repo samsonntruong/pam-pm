@@ -443,6 +443,10 @@ class _FakeLinear:
             return httpx.Response(
                 200, json={"data": {"issue": {"comments": {"nodes": nodes}}}}
             )
+        if "TeamIssueLinks" in query:
+            return httpx.Response(
+                200, json={"data": self._team_issue_links_data()}
+            )
         if "IssueRelations" in query:
             ident = str(variables.get("id", ""))
             return httpx.Response(
@@ -565,6 +569,35 @@ class _FakeLinear:
                     }
                 )
         return {"relations": {"nodes": rels}, "inverseRelations": {"nodes": inverse}}
+
+    def _team_issue_links_data(self) -> dict[str, Any]:
+        nodes: list[dict[str, Any]] = []
+        for ident, entry in self._issues.items():
+            rels: list[dict[str, Any]] = []
+            for blocker, blocked in self._relations:
+                blocker_ident = self._find(blocker) or blocker
+                blocked_ident = self._find(blocked) or blocked
+                if blocker_ident != ident:
+                    continue
+                if blocked_ident not in self._issues:
+                    continue
+                rels.append(
+                    {
+                        "type": "blocks",
+                        "relatedIssue": {
+                            "id": self._issues[blocked_ident]["uid"],
+                            "identifier": blocked_ident,
+                        },
+                    }
+                )
+            nodes.append(
+                {
+                    "id": entry["uid"],
+                    "identifier": ident,
+                    "relations": {"nodes": rels},
+                }
+            )
+        return {"team": {"issues": {"nodes": nodes}}}
 
 
 @pytest.fixture()
@@ -797,10 +830,10 @@ def test_linear_links(linear_env) -> None:
             second.id,
             "blocks",
         )
-        rels = [(e.target_id, e.rel) for e in adapter.list_links(first.id)]
-        assert rels == [(second.id, "blocks")]
-        back = [(e.target_id, e.rel) for e in adapter.list_links(second.id)]
-        assert back == [(first.id, "is blocked by")]
+        rels = [(e.source_id, e.target_id, e.rel) for e in adapter.list_links(first.id)]
+        assert rels == [(first.id, second.id, "blocks")]
+        back = [(e.source_id, e.target_id, e.rel) for e in adapter.list_links(second.id)]
+        assert back == [(first.id, second.id, "blocks")]
         with pytest.raises(LinearError):
             adapter.add_link(first.id, second.id, "Not-A-Rel")
     finally:

@@ -632,41 +632,74 @@ class LinearAdapter(PMAdapter):
         key = (item_id or "").strip()
         if not key:
             raise LinearError("issue id is required")
-        uuid = self._uuid_for(key)
+        team_id = self._team_id_for_key()
         data = self._graphql(
-            "query IssueRelations($id: String!) { issue(id: $id) {"
-            " relations(first: 50)"
-            " { nodes { type relatedIssue { id identifier } } }"
-            " inverseRelations(first: 50)"
-            " { nodes { type relatedIssue { id identifier } } } } }",
-            {"id": uuid},
+            "query TeamIssueLinks($teamId: String!) {"
+            " team(id: $teamId) { issues(first: 250)"
+            " { nodes { id identifier relations(first: 50)"
+            " { nodes { type relatedIssue { id identifier } } } } } } }",
+            {"teamId": team_id},
         )
-        issue = data.get("issue", {})
-        if not isinstance(issue, dict):
+        team = data.get("team", {})
+        issues = team.get("issues", {}) if isinstance(team, dict) else {}
+        nodes = issues.get("nodes", []) if isinstance(issues, dict) else []
+        if not isinstance(nodes, list):
             return []
+        current_ids: set[str] = {key}
+        for entry in nodes:
+            if not isinstance(entry, dict):
+                continue
+            eid = str(entry.get("id", "") or "").strip()
+            eident = str(entry.get("identifier", "") or "").strip()
+            if key == eid or (eident and key == eident):
+                if eid:
+                    current_ids.add(eid)
+                if eident:
+                    current_ids.add(eident)
+                break
         out: list[Link] = []
-        for field, rel in (("relations", REL_BLOCKS), ("inverseRelations", REL_BLOCKED_BY)):
-            block = issue.get(field, {})
-            nodes = block.get("nodes", []) if isinstance(block, dict) else []
-            for entry in nodes if isinstance(nodes, list) else []:
-                if not isinstance(entry, dict):
+        for entry in nodes:
+            if not isinstance(entry, dict):
+                continue
+            blocker_id = str(entry.get("id", "") or "").strip()
+            blocker_ident = str(entry.get("identifier", "") or "").strip()
+            blocker_label = blocker_ident or blocker_id
+            if not blocker_label:
+                continue
+            block = entry.get("relations", {})
+            rel_nodes = block.get("nodes", []) if isinstance(block, dict) else []
+            for rel_entry in rel_nodes if isinstance(rel_nodes, list) else []:
+                if not isinstance(rel_entry, dict):
                     continue
-                if str(entry.get("type", "")).strip().lower() != "blocks":
+                if str(rel_entry.get("type", "")).strip().lower() != "blocks":
                     continue
-                related = entry.get("relatedIssue", {})
+                related = rel_entry.get("relatedIssue", {})
                 if not isinstance(related, dict):
                     continue
-                related_id = str(related.get("id", "") or "").strip()
-                other = str(
-                    related.get("identifier", "") or related_id
-                ).strip()
-                if not other:
+                blocked_id = str(related.get("id", "") or "").strip()
+                blocked_ident = str(related.get("identifier", "") or "").strip()
+                blocked_label = blocked_ident or blocked_id
+                if not blocked_label:
                     continue
-                if related_id and uuid and related_id == uuid:
+                if blocker_id and blocked_id and blocker_id == blocked_id:
                     continue
-                if other == key or other == uuid:
+                if blocker_label == blocked_label:
                     continue
-                out.append(Link(source_id=key, target_id=other, rel=rel))
+                blocker_match = (
+                    blocker_id in current_ids or blocker_ident in current_ids
+                )
+                blocked_match = (
+                    blocked_id in current_ids or blocked_ident in current_ids
+                )
+                if not (blocker_match or blocked_match):
+                    continue
+                out.append(
+                    Link(
+                        source_id=blocker_label,
+                        target_id=blocked_label,
+                        rel=REL_BLOCKS,
+                    )
+                )
         return out
 
     @staticmethod
