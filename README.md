@@ -6,7 +6,11 @@ Pam is an async project manager that replaces status meetings. It checks in with
 
 ## Video
 
-Watch the live run (2:30, recorded on real Slack, real Azure DevOps, and the real console): YouTube link will be posted here.
+Watch the live run (recorded on real Slack, real Azure DevOps, and the real console):
+
+[![Pam live demo](https://img.youtube.com/vi/zG6MJRIsHkA/maxresdefault.jpg)](https://www.youtube.com/watch?v=zG6MJRIsHkA)
+
+<video src="https://github.com/samsonntruong/pam-pm/releases/download/v1.0.0/pam-demo.mp4" width="100%" controls></video>
 
 ![Pam board console, dark theme](docs/images/board-dark.png)
 
