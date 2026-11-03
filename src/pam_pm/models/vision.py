@@ -530,7 +530,13 @@ def plan_from_photo(
             )
             crops = None
         if crops:
-            readings = client.read_crops(list(crops))
+            raw_readings = client.read_crops(list(crops))
+            readings = [
+                line.strip()
+                for text in raw_readings
+                for line in str(text or "").splitlines()
+                if line.strip()
+            ]
             logger.info("vision path used: sam (%d crops)", len(readings))
             router_mod.log_route(
                 router_mod.CAP_VISION_READ, read_model, f"planner path=sam crops={len(readings)}"
@@ -553,7 +559,13 @@ def plan_from_photo(
         except Exception:  # noqa: BLE001
             api_crops, api_boxes = [], []
         if api_crops and api_boxes:
-            readings = client.read_crops(list(api_crops))
+            api_raw = client.read_crops(list(api_crops))
+            readings = [
+                line.strip()
+                for text in api_raw
+                for line in str(text or "").splitlines()
+                if line.strip()
+            ]
             logger.info("vision path used: sam (%d boxes)", len(api_boxes))
             router_mod.log_route(
                 router_mod.CAP_VISION_READ,
@@ -572,7 +584,13 @@ def plan_from_photo(
             }
         found = client.segment(image_bytes)
         if found:
-            readings = client.read_crops(found)
+            seg_raw = client.read_crops(found)
+            readings = [
+                line.strip()
+                for text in seg_raw
+                for line in str(text or "").splitlines()
+                if line.strip()
+            ]
             logger.info("vision path used: sam (%d crops)", len(readings))
             router_mod.log_route(
                 router_mod.CAP_VISION_READ, read_model, f"planner path=sam crops={len(readings)}"
