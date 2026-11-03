@@ -125,6 +125,15 @@ def has_secret(name: str, data_dir: str | Path | None = None) -> bool:
         return False
 
 
+def env_first(*names: str) -> str:
+    """Return the first non-blank value among env names, else ''."""
+    for name in names:
+        value = os.environ.get((name or "").strip(), "").strip()
+        if value:
+            return value
+    return ""
+
+
 def effective_secret(name: str, data_dir: str | Path | None = None) -> str:
     """Return env value when set, else saved value.
 
@@ -381,9 +390,13 @@ def effective_jira_config(
     data_dir: str | Path | None = None,
 ) -> dict[str, str]:
     saved = load_jira_config(data_dir)
-    base = os.environ.get("JIRA_BASE_URL", "").strip().rstrip("/") or saved["base_url"]
+    base = (
+        env_first("JIRA_BASE_URL", "JIRA_SITE_URL").rstrip("/") or saved["base_url"]
+    )
     mail = os.environ.get("JIRA_EMAIL", "").strip() or saved["email"]
-    proj = os.environ.get("JIRA_PROJECT", "").strip().upper() or saved["project"]
+    proj = (
+        env_first("JIRA_PROJECT", "JIRA_PROJECT_KEY").upper() or saved["project"]
+    )
     token = effective_secret("JIRA_API_TOKEN", data_dir)
     return {"base_url": base, "email": mail, "project": proj, "api_token": token}
 
@@ -421,7 +434,7 @@ def effective_linear_config(
     data_dir: str | Path | None = None,
 ) -> dict[str, str]:
     saved = load_linear_config(data_dir)
-    team = os.environ.get("LINEAR_TEAM", "").strip() or saved["team"]
+    team = env_first("LINEAR_TEAM", "LINEAR_TEAM_KEY") or saved["team"]
     key = effective_secret("LINEAR_API_KEY", data_dir)
     return {"team": team, "api_key": key}
 
@@ -508,8 +521,8 @@ def effective_clickup_config(
     data_dir: str | Path | None = None,
 ) -> dict[str, str]:
     saved = load_clickup_config(data_dir)
-    team = os.environ.get("CLICKUP_TEAM", "").strip() or saved["team"]
-    wanted = os.environ.get("CLICKUP_LIST", "").strip() or saved["list"]
+    team = env_first("CLICKUP_TEAM", "CLICKUP_TEAM_ID") or saved["team"]
+    wanted = env_first("CLICKUP_LIST", "CLICKUP_LIST_ID") or saved["list"]
     token = effective_secret("CLICKUP_API_TOKEN", data_dir)
     return {"team": team, "list": wanted, "api_token": token}
 
@@ -547,7 +560,7 @@ def effective_asana_config(
     data_dir: str | Path | None = None,
 ) -> dict[str, str]:
     saved = load_asana_config(data_dir)
-    project = os.environ.get("ASANA_PROJECT", "").strip() or saved["project"]
+    project = env_first("ASANA_PROJECT", "ASANA_PROJECT_ID") or saved["project"]
     token = effective_secret("ASANA_API_TOKEN", data_dir)
     return {"project": project, "api_token": token}
 
@@ -585,6 +598,6 @@ def effective_monday_config(
     data_dir: str | Path | None = None,
 ) -> dict[str, str]:
     saved = load_monday_config(data_dir)
-    board = os.environ.get("MONDAY_BOARD", "").strip() or saved["board"]
+    board = env_first("MONDAY_BOARD", "MONDAY_BOARD_ID") or saved["board"]
     token = effective_secret("MONDAY_API_TOKEN", data_dir)
     return {"board": board, "api_token": token}

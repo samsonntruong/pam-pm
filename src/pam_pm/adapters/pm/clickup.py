@@ -29,6 +29,7 @@ from pam_pm.adapters.pm.base import (
     WorkItem,
     is_closed,
 )
+from pam_pm.core.secrets import env_first
 
 API_BASE = "https://api.clickup.com/api/v2"
 
@@ -179,8 +180,8 @@ class ClickUpAdapter(PMAdapter):
             saved_list = str(effective.get("list", "") or "")
             saved_token = str(effective.get("api_token", "") or "")
         except Exception:  # noqa: BLE001
-            saved_team = os.environ.get("CLICKUP_TEAM", "")
-            saved_list = os.environ.get("CLICKUP_LIST", "")
+            saved_team = env_first("CLICKUP_TEAM", "CLICKUP_TEAM_ID")
+            saved_list = env_first("CLICKUP_LIST", "CLICKUP_LIST_ID")
             saved_token = os.environ.get("CLICKUP_API_TOKEN", "")
         want_team = (team or "").strip() or saved_team.strip()
         want_list = (list_ref or "").strip() or saved_list.strip()

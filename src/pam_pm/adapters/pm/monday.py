@@ -30,6 +30,7 @@ from pam_pm.adapters.pm.base import (
     WorkItem,
     is_closed,
 )
+from pam_pm.core.secrets import env_first
 
 API_URL = "https://api.monday.com/v2"
 
@@ -155,7 +156,7 @@ class MondayAdapter(PMAdapter):
             saved_board = str(effective.get("board", "") or "")
             saved_token = str(effective.get("api_token", "") or "")
         except Exception:  # noqa: BLE001
-            saved_board = os.environ.get("MONDAY_BOARD", "")
+            saved_board = env_first("MONDAY_BOARD", "MONDAY_BOARD_ID")
             saved_token = os.environ.get("MONDAY_API_TOKEN", "")
         want_board = (board or "").strip() or saved_board.strip()
         token = saved_token.strip()

@@ -33,6 +33,7 @@ from pam_pm.adapters.pm.base import (
     WorkItem,
     is_closed,
 )
+from pam_pm.core.secrets import env_first
 
 SEARCH_FIELDS = [
     "summary",
@@ -164,9 +165,9 @@ class JiraAdapter(PMAdapter):
             saved_project = str(effective.get("project", "") or "")
             saved_token = str(effective.get("api_token", "") or "")
         except Exception:  # noqa: BLE001
-            saved_base = os.environ.get("JIRA_BASE_URL", "")
+            saved_base = env_first("JIRA_BASE_URL", "JIRA_SITE_URL")
             saved_email = os.environ.get("JIRA_EMAIL", "")
-            saved_project = os.environ.get("JIRA_PROJECT", "")
+            saved_project = env_first("JIRA_PROJECT", "JIRA_PROJECT_KEY")
             saved_token = os.environ.get("JIRA_API_TOKEN", "")
         base = (base_url or "").strip().rstrip("/") or saved_base.strip().rstrip(
             "/"

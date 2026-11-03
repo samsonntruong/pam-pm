@@ -31,6 +31,7 @@ from pam_pm.adapters.pm.base import (
     WorkItem,
     is_closed,
 )
+from pam_pm.core.secrets import env_first
 
 API_BASE = "https://app.asana.com/api/1.0"
 
@@ -134,7 +135,7 @@ class AsanaAdapter(PMAdapter):
             saved_project = str(effective.get("project", "") or "")
             saved_token = str(effective.get("api_token", "") or "")
         except Exception:  # noqa: BLE001
-            saved_project = os.environ.get("ASANA_PROJECT", "")
+            saved_project = env_first("ASANA_PROJECT", "ASANA_PROJECT_ID")
             saved_token = os.environ.get("ASANA_API_TOKEN", "")
         want_project = (project or "").strip() or saved_project.strip()
         token = saved_token.strip()

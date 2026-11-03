@@ -28,6 +28,7 @@ from pam_pm.adapters.pm.base import (
     WorkItem,
     is_closed,
 )
+from pam_pm.core.secrets import env_first
 
 API_URL = "https://api.linear.app/graphql"
 
@@ -120,7 +121,7 @@ class LinearAdapter(PMAdapter):
             saved_team = str(effective.get("team", "") or "")
             saved_key = str(effective.get("api_key", "") or "")
         except Exception:  # noqa: BLE001
-            saved_team = os.environ.get("LINEAR_TEAM", "")
+            saved_team = env_first("LINEAR_TEAM", "LINEAR_TEAM_KEY")
             saved_key = os.environ.get("LINEAR_API_KEY", "")
         want_team = (team or "").strip() or saved_team.strip()
         key = saved_key.strip()
