@@ -741,10 +741,12 @@ class JiraAdapter(PMAdapter):
         kind = self._normalize_rel(rel)
         source = self._quote_key(source_id)
         target = self._quote_key(target_id)
+        # Jira "Blocks": outwardIssue is the blocked issue
+        # ("is blocked by"), inwardIssue is the blocking issue ("blocks").
         if kind == REL_BLOCKS:
-            outward, inward = source, target
-        else:
             outward, inward = target, source
+        else:
+            outward, inward = source, target
         self._request(
             "POST",
             "/rest/api/3/issueLink",
