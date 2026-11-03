@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -340,9 +341,13 @@ class MondayAdapter(PMAdapter):
                 ctype = (
                     str(entry.get("type", "") or "").strip().lower().replace("_", "-")
                 )
-                if ctype in ("dependency", "board-relation"):
+                if ctype == "dependency" or ctype.replace("-", "") == "dependency":
                     return str(entry.get("id", ""))
-                if ctype.replace("-", "") in ("dependency", "boardrelation"):
+            for entry in columns:
+                ctype = (
+                    str(entry.get("type", "") or "").strip().lower().replace("_", "-")
+                )
+                if ctype == "board-relation" or ctype.replace("-", "") == "boardrelation":
                     return str(entry.get("id", ""))
             for entry in columns:
                 if str(entry.get("type", "") or "").strip().lower() == "link":
@@ -704,24 +709,105 @@ class MondayAdapter(PMAdapter):
             return REL_BLOCKED_BY
         raise MondayError(f"unknown link rel: {rel}")
 
+    def _column_type_for(self, column_id: str) -> str:
+        for entry in self._board_columns():
+            if str(entry.get("id", "") or "") == column_id:
+                return str(entry.get("type", "") or "").strip().lower()
+        return ""
+
+    def _link_id_from_value(
+        self, raw: object, text_fallback: str = ""
+    ) -> str:
+        if raw is None or raw == "":
+            payload_text = ""
+        else:
+            payload_text = str(raw)
+        url = ""
+        text = str(text_fallback or "").strip()
+        try:
+            payload = json.loads(payload_text) if payload_text else None
+        except (TypeError, ValueError):
+            payload = None
+        if isinstance(payload, dict):
+            url = str(payload.get("url", "") or "").strip()
+            if not text:
+                text = str(payload.get("text", "") or "").strip()
+        elif payload_text:
+            url = payload_text.strip()
+        for pattern in (r"/pulses/(\d+)", r"/items/(\d+)", r"[?&]item[_-]?id=(\d+)"):
+            found = re.search(pattern, url)
+            if found:
+                return found.group(1)
+        tail = re.search(r"(\d+)\s*$", url)
+        if tail and ("/boards/" in url or "/pulses/" in url or "/items/" in url):
+            return tail.group(1)
+        if text:
+            want = text.strip().lower()
+            try:
+                rows = self._board_items()
+            except MondayError:
+                rows = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                name = str(row.get("name", "") or "").strip().lower()
+                rid = str(row.get("id", "") or "").strip()
+                if rid and name and name == want:
+                    return rid
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                name = str(row.get("name", "") or "").strip().lower()
+                rid = str(row.get("id", "") or "").strip()
+                if rid and name and (name.startswith(want) or want.startswith(name)):
+                    return rid
+        return ""
+
     def _dependency_ids(self, entry: dict[str, Any]) -> list[str]:
-        column = self._column_id_for("dependency")
-        if not column:
+        preferred = self._column_id_for("dependency")
+        rows = entry.get("column_values", [])
+        if not isinstance(rows, list):
             return []
-        for row in (
-            entry.get("column_values", [])
-            if isinstance(entry.get("column_values"), list)
-            else []
-        ):
+        out: list[str] = []
+        seen: set[str] = set()
+        for row in rows:
             if not isinstance(row, dict):
                 continue
             cid = str(row.get("id", "") or "")
             column_block = row.get("column", {})
-            if isinstance(column_block, dict) and column_block.get("id"):
-                cid = str(column_block.get("id", "") or cid)
-            if cid == column:
-                return _linked_from_value(row.get("value", ""))
-        return []
+            ctype = ""
+            if isinstance(column_block, dict):
+                if column_block.get("id"):
+                    cid = str(column_block.get("id", "") or cid)
+                ctype = str(column_block.get("type", "") or "").strip().lower()
+            if not cid:
+                continue
+            if not ctype:
+                ctype = self._column_type_for(cid)
+            is_link = ctype == "link"
+            is_dep = ctype.replace("_", "-") in ("dependency", "board-relation") or ctype.replace("_", "").replace("-", "") in (
+                "dependency",
+                "boardrelation",
+            )
+            if cid == preferred and not (is_link or is_dep):
+                is_dep = True
+            if not (is_link or is_dep):
+                if cid != preferred:
+                    continue
+                is_dep = True
+            if is_link:
+                resolved = self._link_id_from_value(
+                    row.get("value", ""), str(row.get("text", "") or "")
+                )
+                ids = [resolved] if resolved else []
+            else:
+                ids = _linked_from_value(row.get("value", ""))
+            for value in ids:
+                cleaned = str(value or "").strip()
+                if cleaned and cleaned not in seen:
+                    seen.add(cleaned)
+                    out.append(cleaned)
+        return out
 
     def add_link(self, source_id: str, target_id: str, rel: str) -> Link:
         kind = self._normalize_rel(rel)
@@ -740,9 +826,19 @@ class MondayAdapter(PMAdapter):
         column = self._column_id_for("dependency")
         if not column:
             raise MondayError("add a Dependency or Link column to the board")
-        current = self._dependency_ids(entry)
-        if blocker not in current:
-            current.append(blocker)
+        ctype = self._column_type_for(column)
+        if ctype == "link":
+            blocker_title = str(other.get("name", "") or blocker).strip() or blocker
+            board_id = self._board_id_for_ref()
+            blocker_url = f"https://monday.com/boards/{board_id}/pulses/{blocker}"
+            payload: dict[str, Any] = {
+                column: {"url": blocker_url, "text": blocker_title}
+            }
+        else:
+            current = self._dependency_ids(entry)
+            if blocker not in current:
+                current.append(blocker)
+            payload = {column: {"item_ids": current}}
         self._graphql(
             "mutation ItemColumns($boardId: ID!, $itemId: ID!, $values: JSON!)"
             " { change_multiple_column_values(board_id: $boardId item_id: $itemId"
@@ -750,7 +846,7 @@ class MondayAdapter(PMAdapter):
             {
                 "boardId": self._board_id_for_ref(),
                 "itemId": blocked,
-                "values": json.dumps({column: {"item_ids": current}}),
+                "values": json.dumps(payload),
             },
         )
         verified = self._fetch_item(blocked)

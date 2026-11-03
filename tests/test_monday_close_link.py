@@ -25,8 +25,20 @@ class _FakeMonday:
         self.columns = columns
         self.drop_dependency_writes = drop_dependency_writes
         self.items: dict[str, dict[str, Any]] = {
-            "1": {"id": "1", "name": "one", "group": dict(groups[0]), "deps": []},
-            "2": {"id": "2", "name": "two", "group": dict(groups[0]), "deps": []},
+            "1": {
+                "id": "1",
+                "name": "one",
+                "group": dict(groups[0]),
+                "deps": [],
+                "links": {},
+            },
+            "2": {
+                "id": "2",
+                "name": "two",
+                "group": dict(groups[0]),
+                "deps": [],
+                "links": {},
+            },
         }
         self.last_values: dict[str, Any] = {}
         self.updates: list[dict[str, str]] = []
@@ -36,14 +48,24 @@ class _FakeMonday:
         entry = self.items[item_id]
         values = []
         for col in self.columns:
-            if col["type"] in ("dependency", "board_relation", "link"):
+            text = ""
+            if col["type"] in ("dependency", "board_relation"):
                 raw = json.dumps({"linked_item_ids": entry["deps"]})
+            elif col["type"] == "link":
+                link = entry.get("links", {}).get(col["id"])
+                if isinstance(link, dict) and link.get("url"):
+                    raw = json.dumps(
+                        {"url": link.get("url", ""), "text": link.get("text", "")}
+                    )
+                    text = str(link.get("text", "") or "")
+                else:
+                    raw = "null"
             else:
                 raw = json.dumps("")
             values.append(
                 {
                     "id": col["id"],
-                    "text": "",
+                    "text": text,
                     "value": raw,
                     "column": {
                         "id": col["id"],
@@ -95,6 +117,23 @@ class _FakeMonday:
             return httpx.Response(
                 200, json={"data": {"boards": [{"columns": self.columns}]}}
             )
+        if "BoardItems" in query:
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "boards": [
+                            {
+                                "items_page": {
+                                    "items": [
+                                        self._payload(k) for k in self.items
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                },
+            )
         if "ItemGet" in query:
             item_id = str(variables.get("itemId", ""))
             if item_id in self.items:
@@ -114,9 +153,9 @@ class _FakeMonday:
         if "ItemColumns" in query:
             raw = variables.get("values", {})
             values = json.loads(raw) if isinstance(raw, str) else dict(raw)
-            known = {c["id"] for c in self.columns}
+            by_id = {c["id"]: c for c in self.columns}
             for key in values:
-                if key not in known:
+                if key not in by_id:
                     return httpx.Response(
                         200,
                         json={
@@ -129,16 +168,27 @@ class _FakeMonday:
                     )
             self.last_values = values
             item_id = str(variables.get("itemId", ""))
-            if not self.drop_dependency_writes:
-                for val in values.values():
+            if item_id in self.items:
+                for key, val in values.items():
                     if not isinstance(val, dict):
+                        continue
+                    ctype = str(by_id[key].get("type", "") or "")
+                    if ctype == "link":
+                        url = str(val.get("url", "") or "").strip()
+                        if url:
+                            self.items[item_id].setdefault("links", {})[key] = {
+                                "url": url,
+                                "text": str(val.get("text", "") or ""),
+                            }
+                        continue
+                    if self.drop_dependency_writes:
                         continue
                     ids: Any = None
                     if isinstance(val.get("item_ids"), list):
                         ids = val["item_ids"]
                     elif isinstance(val.get("linked_item_ids"), list):
                         ids = val["linked_item_ids"]
-                    if ids is not None and item_id in self.items:
+                    if ids is not None:
                         self.items[item_id]["deps"] = [str(v) for v in ids]
             return httpx.Response(
                 200, json={"data": {"change_multiple_column_values": {"id": item_id}}}
@@ -260,5 +310,57 @@ def test_add_link_dropped_write_posts_note_and_raises(
             "Blocked by two (2). Recorded as a note "
             "because the Dependency column rejected the write."
         )
+    finally:
+        adapter.close()
+
+
+def test_add_link_uses_link_column_stand_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeMonday(
+        groups=[{"id": "g1", "title": "To-Do"}, {"id": "g2", "title": "Completed"}],
+        columns=[
+            {"id": "name", "title": "Name", "type": "name"},
+            {"id": "link_1", "title": "Link", "type": "link"},
+        ],
+    )
+    adapter = _adapter(fake, monkeypatch)
+    try:
+        link = adapter.add_link("1", "2", "is blocked by")
+        assert (link.source_id, link.target_id, link.rel) == ("1", "2", "is blocked by")
+        assert "link_1" in fake.last_values
+        written = fake.last_values["link_1"]
+        assert written["url"] == "https://monday.com/boards/B1/pulses/2"
+        assert written["text"] == "two"
+        assert fake.updates == []
+        stored = fake.items["1"]["links"]["link_1"]
+        assert stored["url"].endswith("/pulses/2")
+        rels = [(e.target_id, e.rel) for e in adapter.list_links("1")]
+        assert ("2", "is blocked by") in rels
+        back = [(e.target_id, e.rel) for e in adapter.list_links("2")]
+        assert ("1", "blocks") in back
+    finally:
+        adapter.close()
+
+
+def test_dependency_preferred_when_both_columns_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeMonday(
+        groups=[{"id": "g1", "title": "To-Do"}, {"id": "g2", "title": "Completed"}],
+        columns=[
+            {"id": "name", "title": "Name", "type": "name"},
+            {"id": "link_1", "title": "Link", "type": "link"},
+            {"id": "dep_abc", "title": "Blocked by", "type": "dependency"},
+        ],
+    )
+    adapter = _adapter(fake, monkeypatch)
+    try:
+        link = adapter.add_link("1", "2", "is blocked by")
+        assert link.rel == "is blocked by"
+        assert "dep_abc" in fake.last_values
+        assert "link_1" not in fake.last_values
+        assert fake.items["1"]["deps"] == ["2"]
+        assert fake.items["1"]["links"] == {}
     finally:
         adapter.close()
