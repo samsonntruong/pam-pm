@@ -247,13 +247,15 @@ class GraphClient:
     def list_chat_messages(
         self, chat_id: str, since: str | None = None, limit: int = 50
     ) -> list[dict[str, Any]]:
-        """Return chat messages, only newer than since when given."""
+        """Return chat messages, only newer than since when given.
+
+        One-on-one chat message lists reject server-side filters, so
+        callers always receive the latest page and compare the
+        watermark in memory.
+        """
         params: dict[str, str] = {
             "$top": str(max(1, min(int(limit), 50))),
-            "$orderby": "createdDateTime",
         }
-        if (since or "").strip():
-            params["$filter"] = f"createdDateTime gt '{since.strip()}'"
         payload = self._get(f"/chats/{chat_id}/messages", params)
         items = payload.get("value", []) if isinstance(payload, dict) else []
         return [item for item in items if isinstance(item, dict)]
@@ -268,7 +270,6 @@ class GraphClient:
         """Return channel messages, only newer than since when given."""
         params: dict[str, str] = {
             "$top": str(max(1, min(int(limit), 50))),
-            "$orderby": "createdDateTime",
         }
         if (since or "").strip():
             params["$filter"] = f"createdDateTime gt '{since.strip()}'"

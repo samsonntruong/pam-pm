@@ -498,7 +498,7 @@ def test_poller_reuses_shared_poll_interval(clean_env, tmp_path) -> None:
     assert TeamsPoller(StubGraph({}), db_path, []).interval == 42
 
 
-def test_graph_client_sends_filter_and_bearer(clean_env) -> None:
+def test_graph_client_skips_server_filters_and_bearer(clean_env) -> None:
     seen: dict[str, Any] = {}
 
     class Tokens:
@@ -522,7 +522,7 @@ def test_graph_client_sends_filter_and_bearer(clean_env) -> None:
         from pam_pm.adapters.chat.teams_poll import redact as poll_redact
 
         assert poll_redact(seen["auth"]) == "Bearer " + "[REDACTED]"
-        assert "2026-11-02T07:00:00Z" in seen["filter"]
+        assert seen["filter"] == ""
         no_filter = client.list_chat_messages("chat-1")
         assert len(no_filter) == 1
         assert seen["filter"] == ""
