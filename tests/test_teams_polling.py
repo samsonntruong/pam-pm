@@ -711,8 +711,8 @@ def test_wizard_device_start_and_poll(device_client) -> None:
     assert APP_PASSWORD not in blob
     page = client.get("/setup?project=teamsdev").text
     assert REFRESH not in page
-    assert "two-way via polling, not bot callbacks" in page
-    assert "No public endpoint needed" in page
+    assert "Step 2: Download package." in page
+    assert "Manage your apps" in page
     assert "Admin consent note" in page
     assert "microsoft.com/devicelogin" in page
     assert "Teams polling is signed in" in page

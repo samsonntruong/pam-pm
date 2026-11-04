@@ -1,5 +1,8 @@
 # Teams adapter
 
+Supported path: use the setup wizard Teams step. Save keys, run Test,
+then download the generated app package from the wizard and sideload it.
+
 Teams is two-way via Microsoft Graph polling, not bot callbacks. Pam
 checks watched 1:1 chats and channels on the shared poll interval, so
 no public endpoint and no inbound ports are needed.

@@ -125,35 +125,40 @@
 
 <section class="card" id="step-2-teams">
   <h2>Step 2: Microsoft Teams (optional)</h2>
-  <p><img src="/static/icons/teams.svg" alt="" width="16" height="16"> Slack is the recommended path. Teams is two-way via polling, not bot callbacks: Pam checks your watched 1:1 chats and channels on the poll interval from Settings. No public endpoint needed and no inbound ports.</p>
-  <p class="muted">Admin consent note: before you sign in below, your Microsoft 365 admin must consent once to the Chat and Channel message permissions on the app registration. Without that consent, sign-in succeeds but polling returns nothing.</p>
   <label for="teams-app-id">Teams App ID</label>
   <input id="teams-app-id" name="app_id" type="password" value="" placeholder="{% if teams_has_app_id %}Saved on this machine{% else %}Paste app ID here{% endif %}" autocomplete="off">
-  <p class="muted">Find it on the app registration Overview page as Application (client) ID.</p>
   <label for="teams-password">App Password (client secret)</label>
   <input id="teams-password" name="app_password" type="password" value="" placeholder="{% if teams_has_password %}Saved on this machine{% else %}Paste client secret here{% endif %}" autocomplete="off">
-  <p class="muted">Find it under Certificates and secrets. Copy the secret Value right after you create it. Only used for token calls that need it.</p>
   <label for="teams-tenant">Tenant ID</label>
   <input id="teams-tenant" name="tenant_id" type="password" value="" placeholder="{% if teams_has_tenant %}Saved on this machine{% else %}Paste tenant ID here{% endif %}" autocomplete="off">
-  <p class="muted">Find it on the app registration Overview page as Directory (tenant) ID.</p>
   <div>
     <button type="button" onclick="saveTeams()">Save</button>
     <button hx-post="/api/test/teams?project={{ project }}" hx-target="#teams-result" hx-swap="innerHTML">Test</button>
   </div>
   <div id="teams-save-result" class="result" aria-live="polite"></div>
   <div id="teams-result" class="result" aria-live="polite"></div>
-  <h3>Sign in for polling</h3>
-  {% if teams_signed_in %}
-  <p><span class="pill pill-ok">Pass: Teams polling is signed in</span></p>
-  <p class="muted">Pam mints a fresh access token silently each hour from the stored sign-in. Start a new sign-in below only to switch accounts.</p>
-  {% else %}
-  <p class="muted">After saving the App ID and Tenant ID above, start sign-in, open the link on any device, enter the shown code, then check status.</p>
-  {% endif %}
-  <div>
-    <button type="button" onclick="startTeamsDevice()">Start sign-in</button>
-    <button type="button" onclick="pollTeamsDevice()">I signed in, check status</button>
-  </div>
-  <div id="teams-device-result" class="result" aria-live="polite"></div>
+  <ol>
+    <li><strong>Step 1: Save keys.</strong> Paste the App ID, client secret and Tenant ID above then choose Save. Continue when Test is green.</li>
+    <li><strong>Step 2: Download package.</strong> Choose Download app package to get the zip built from your saved App ID. Keep the zip as downloaded.
+      <div>
+        <a href="/api/setup/teams/package?project={{ project }}"><button type="button">Download app package</button></a>
+      </div>
+    </li>
+    <li><strong>Step 3: Upload the zip.</strong> Open Teams Apps then Manage your apps and choose Upload a custom app. Pick the zip you downloaded.</li>
+    <li><strong>Step 4: Use one tenant.</strong> Use the same Entra tenant for the app registration, the Teams client and sign-in.</li>
+    <li><strong>Step 5: Sign in.</strong> Choose Start sign-in then open the shown link on any device. Enter the code and choose check status.
+      {% if teams_signed_in %}
+      <p><span class="pill pill-ok">Pass: Teams polling is signed in</span></p>
+      {% endif %}
+      <div>
+        <button type="button" onclick="startTeamsDevice()">Start sign-in</button>
+        <button type="button" onclick="pollTeamsDevice()">I signed in, check status</button>
+      </div>
+      <div id="teams-device-result" class="result" aria-live="polite"></div>
+    </li>
+    <li><strong>Step 6: Name the test chat.</strong> Open Pam in Teams and start a 1:1 test chat. Send a hello and confirm Pam replies.</li>
+  </ol>
+  <p class="muted">Admin consent note: before you sign in, your Microsoft 365 admin must consent once to the Chat and Channel message permissions. Without that consent, sign-in succeeds but polling returns nothing.</p>
 </section>
 
 <section class="card" id="step-3" {% if not show_ado %}hidden{% endif %}>

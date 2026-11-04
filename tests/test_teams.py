@@ -338,3 +338,49 @@ def test_check_teams_names_each_missing_piece(tmp_path, monkeypatch) -> None:
     secrets_mod.save_secret("TEAMS_REFRESH_TOKEN", "r-1", tmp_path)
     ok, msg, _hint = app_mod._check_teams()
     assert ok is True
+
+
+def test_teams_package_zip_contents(teams_client) -> None:
+    import io
+    import zipfile
+
+    import pam_pm
+
+    client, _home, _ = teams_client
+    saved = client.post(
+        "/api/setup/teams",
+        json={
+            "token": "teams-test-setup-token-1",
+            "project": "teampkg",
+            "app_id": APP_ID,
+            "app_password": APP_PASSWORD,
+            "tenant_id": TENANT_ID,
+        },
+    )
+    assert saved.json()["ok"] is True
+    resp = client.get("/api/setup/teams/package?project=teampkg")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/zip"
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+        assert sorted(zf.namelist()) == ["color.png", "manifest.json", "outline.png"]
+        manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+        color = zf.read("color.png")
+        outline = zf.read("outline.png")
+    assert manifest["id"] == APP_ID
+    assert manifest["bots"][0]["botId"] == APP_ID
+    assert manifest["bots"][0]["notificationOnly"] is False
+    assert manifest["bots"][0]["supportsChannelFeatures"] == "tier1"
+    assert manifest["bots"][0]["scopes"] == ["personal", "team"]
+    assert manifest["version"] == pam_pm.__version__
+    assert manifest["icons"] == {"color": "color.png", "outline": "outline.png"}
+    assert color[:8] == b"\x89PNG\r\n\x1a\n"
+    assert outline[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_teams_package_missing_app_id_errors_cleanly(teams_client) -> None:
+    client, _home, _ = teams_client
+    resp = client.get("/api/setup/teams/package?project=nopkg")
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["ok"] is False
+    assert "App ID" in body["message"]

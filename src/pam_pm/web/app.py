@@ -5556,6 +5556,87 @@ async def teams_device_status(request: Request) -> Any:
     }
 
 
+@app.get("/api/setup/teams/package")
+async def teams_package(request: Request) -> Any:
+    """Return the Teams app package zip built in memory.
+
+    The zip holds manifest.json plus color.png and outline.png. The
+    manifest app id comes from the saved TEAMS_APP_ID. Nothing about
+    the package is logged.
+    """
+    import zipfile
+
+    from pam_pm import __version__ as _app_version
+
+    project = _safe_project(request.query_params.get("project", "default"))
+    try:
+        effective = secrets_mod.effective_teams_config(Config().ensure_data_dir())
+    except Exception:  # noqa: BLE001
+        effective = {"app_id": os.environ.get("TEAMS_APP_ID", "")}
+    app_id = str((effective or {}).get("app_id", "") or "").strip()
+    if not app_id:
+        return JSONResponse(
+            {
+                "ok": False,
+                "message": (
+                    "Teams App ID (TEAMS_APP_ID) is missing. "
+                    "Save it in the wizard Teams step first."
+                ),
+            },
+            status_code=400,
+        )
+    try:
+        color_bytes = (STATIC_DIR / "teams" / "color.png").read_bytes()
+        outline_bytes = (STATIC_DIR / "teams" / "outline.png").read_bytes()
+    except OSError:
+        return JSONResponse(
+            {"ok": False, "message": "Teams icons are missing on the server."},
+            status_code=500,
+        )
+    manifest = {
+        "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.23/MicrosoftTeams.schema.json",
+        "manifestVersion": "1.23",
+        "version": str(_app_version),
+        "id": app_id,
+        "packageName": "com.pam.pm",
+        "developer": {
+            "name": "Pam",
+            "websiteUrl": "https://example.com",
+            "privacyUrl": "https://example.com/privacy",
+            "termsOfUseUrl": "https://example.com/terms",
+        },
+        "name": {"short": "Pam", "full": "Pam PM Assistant"},
+        "description": {
+            "short": "Pam project assistant in Teams.",
+            "full": "Pam sends morning check-ins and follows up on project work in Teams.",
+        },
+        "icons": {"color": "color.png", "outline": "outline.png"},
+        "accentColor": "#3768dc",
+        "bots": [
+            {
+                "botId": app_id,
+                "scopes": ["personal", "team"],
+                "notificationOnly": False,
+                "isNotificationOnly": False,
+                "supportsChannelFeatures": "tier1",
+            }
+        ],
+        "permissions": ["identity", "messageTeamMembers"],
+        "validDomains": [],
+    }
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.json", json.dumps(manifest, indent=2))
+        zf.writestr("color.png", color_bytes)
+        zf.writestr("outline.png", outline_bytes)
+    filename = f"pam-teams-{project}.zip"
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.post("/api/setup/ado")
 async def save_setup_ado(request: Request) -> Any:
     if not await _setup_token_ok(request):
