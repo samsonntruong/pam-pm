@@ -138,27 +138,17 @@
   <div id="teams-save-result" class="result" aria-live="polite"></div>
   <div id="teams-result" class="result" aria-live="polite"></div>
   <ol>
-    <li><strong>Step 1: Save keys.</strong> Paste the App ID, client secret and Tenant ID above then choose Save. Continue when Test is green.</li>
-    <li><strong>Step 2: Download package.</strong> Choose Download app package to get the zip built from your saved App ID. Keep the zip as downloaded.
+    <li><strong>Step 1: Save keys.</strong> Paste the App ID, client secret and Tenant ID above then choose Save. Continue when the fields are saved.</li>
+    <li><strong>Step 2: Add permissions.</strong> In Entra ID add Chat.Read.All and ChannelMessage.Read.All as application permissions then choose Grant admin consent. Without consent polling returns nothing.</li>
+    <li><strong>Step 3: Download package.</strong> Choose Download app package to get the zip built from your saved App ID. Sideload the zip in Teams.
       <div>
         <a href="/api/setup/teams/package?project={{ project }}"><button type="button">Download app package</button></a>
       </div>
     </li>
-    <li><strong>Step 3: Upload the zip.</strong> Open Teams Apps then Manage your apps and choose Upload a custom app. Pick the zip you downloaded.</li>
-    <li><strong>Step 4: Use one tenant.</strong> Use the same Entra tenant for the app registration, the Teams client and sign-in.</li>
-    <li><strong>Step 5: Sign in.</strong> Choose Start sign-in then open the shown link on any device. Enter the code and choose check status.
-      {% if teams_signed_in %}
-      <p><span class="pill pill-ok">Pass: Teams polling is signed in</span></p>
-      {% endif %}
-      <div>
-        <button type="button" onclick="startTeamsDevice()">Start sign-in</button>
-        <button type="button" onclick="pollTeamsDevice()">I signed in, check status</button>
-      </div>
-      <div id="teams-device-result" class="result" aria-live="polite"></div>
-    </li>
-    <li><strong>Step 6: Name the test chat.</strong> Open Pam in Teams and start a 1:1 test chat. Send a hello and confirm Pam replies.</li>
+    <li><strong>Step 4: Use one tenant.</strong> Use the same Entra tenant for the app registration and the Teams client. Tokens do not cross tenants.</li>
+    <li><strong>Step 5: Name the test chat or channel.</strong> Open Pam in Teams and note the 1:1 chat or channel to watch. Use this name when configuring watched chats.</li>
+    <li><strong>Step 6: Test.</strong> Choose Test above and confirm it passes. When green, polling can read the watched chats.</li>
   </ol>
-  <p class="muted">Admin consent note: before you sign in, your Microsoft 365 admin must consent once to the Chat and Channel message permissions. Without that consent, sign-in succeeds but polling returns nothing.</p>
 </section>
 
 <section class="card" id="step-3" {% if not show_ado %}hidden{% endif %}>
@@ -599,63 +589,6 @@
       if (tenant) tenant.value = "";
       await saveStep("teams", {data: {}});
     } catch (err) { saveResult("teams-save-result", false, "Save failed. Check your connection and try again."); }
-  }
-  async function startTeamsDevice() {
-    const project = projectName();
-    const box = document.getElementById("teams-device-result");
-    try {
-      const resp = await fetch("/api/setup/teams/device/start", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({project: project, token: setupToken()})
-      });
-      const data = await resp.json().catch(function () { return {}; });
-      if (!resp.ok || data.ok === false || !data.user_code) {
-        saveResult("teams-device-result", false, (data && data.message) ? data.message : "Sign-in failed to start. Save the App ID and Tenant ID first.");
-        return;
-      }
-      if (box) {
-        box.innerHTML = "";
-        const para = document.createElement("p");
-        const link = document.createElement("a");
-        link.href = data.verification_uri || "https://microsoft.com/devicelogin";
-        link.target = "_blank";
-        link.rel = "noopener";
-        link.textContent = data.verification_uri || "https://microsoft.com/devicelogin";
-        para.appendChild(document.createTextNode("Open "));
-        para.appendChild(link);
-        para.appendChild(document.createTextNode(" and enter this code: "));
-        const code = document.createElement("code");
-        code.textContent = data.user_code;
-        para.appendChild(code);
-        box.appendChild(para);
-        const hint = document.createElement("p");
-        hint.className = "muted";
-        hint.textContent = "After signing in there, choose 'I signed in, check status'.";
-        box.appendChild(hint);
-      }
-    } catch (err) { saveResult("teams-device-result", false, "Sign-in failed to start. Check your connection and try again."); }
-  }
-  async function pollTeamsDevice() {
-    const project = projectName();
-    try {
-      const resp = await fetch("/api/setup/teams/device/poll", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({project: project, token: setupToken()})
-      });
-      const data = await resp.json().catch(function () { return {}; });
-      if (data && data.status === "complete") {
-        saveResult("teams-device-result", true, "Teams polling is signed in.");
-        await saveStep("teams_signin", {data: {signed_in: true}});
-      } else if (data && data.status === "pending") {
-        saveResult("teams-device-result", true, "Still waiting. Finish signing in at the link above, then check again.");
-      } else if (data && data.status === "expired") {
-        saveResult("teams-device-result", false, "The code expired. Start sign-in again for a fresh code.");
-      } else {
-        saveResult("teams-device-result", false, (data && data.message) ? data.message : "Sign-in is not finished yet.");
-      }
-    } catch (err) { saveResult("teams-device-result", false, "Check failed. Check your connection and try again."); }
   }
   async function saveAdo() {
     const project = projectName();

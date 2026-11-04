@@ -38,6 +38,8 @@ DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 
 REFRESH_SECRET_NAME = "TEAMS_REFRESH_TOKEN"
 
+APP_TOKEN_SCOPE = "https://graph.microsoft.com/.default"
+
 _EXPIRY_SKEW_SECONDS = 300
 
 
@@ -96,6 +98,48 @@ def _fail(op: str, exc: Exception) -> DeviceAuthError:
     detail = _redact(exc)
     logger.error("teams device %s failed: %s", op, detail)
     return DeviceAuthError(f"{op} failed: {detail}")
+
+
+def app_token(
+    app_id: str,
+    tenant_id: str,
+    app_password: str,
+    transport: httpx.BaseTransport | None = None,
+    timeout: float = 30,
+) -> str:
+    """Mint a Graph app-only access token with client credentials.
+
+    Uses the tenant token endpoint with scope
+    https://graph.microsoft.com/.default. The secret is never logged;
+    failures raise DeviceAuthError with redacted detail.
+    """
+    client_id = (app_id or "").strip()
+    tenant = (tenant_id or "").strip()
+    secret = (app_password or "").strip()
+    if not client_id or not tenant or not secret:
+        raise DeviceAuthError(
+            "TEAMS_APP_ID, TEAMS_APP_PASSWORD, and TEAMS_TENANT_ID are required."
+        )
+    url = TOKEN_URL_TEMPLATE.format(tenant=tenant)
+    try:
+        with httpx.Client(timeout=timeout, transport=transport) as client:
+            resp = client.post(
+                url,
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": client_id,
+                    "client_secret": secret,
+                    "scope": APP_TOKEN_SCOPE,
+                },
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+    except Exception as exc:
+        raise _fail("app token", exc) from exc
+    if not isinstance(payload, dict) or not payload.get("access_token"):
+        raise DeviceAuthError("token endpoint returned no access token.")
+    logger.info("teams app token minted")
+    return str(payload.get("access_token", "") or "")
 
 
 def start_device_code(

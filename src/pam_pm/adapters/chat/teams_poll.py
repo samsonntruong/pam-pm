@@ -213,10 +213,19 @@ class GraphClient:
         logger.error("teams graph %s failed: %s", op, detail)
         return TeamsPollError(f"{op} failed: {detail}")
 
+    def _resolve_token(self) -> str:
+        provider: object = self._tokens
+        getter = getattr(provider, "access_token", None)
+        if callable(getter):
+            return str(getter())
+        if callable(provider):
+            return str(provider())  # type: ignore[operator]
+        raise TeamsPollError("token provider needs access_token or a callable.")
+
     def _get(self, path: str, params: dict[str, str] | None = None) -> Any:
         client = self._client_or_new()
         try:
-            token = str(self._tokens.access_token())
+            token = self._resolve_token()
         except Exception as exc:
             raise self._fail("token", exc) from exc
         try:
@@ -275,6 +284,76 @@ class GraphClient:
                 self._client.close()
             finally:
                 self._client = None
+
+
+class AppTokenProvider:
+    """Cached Graph app-only token minting with client credentials.
+
+    The first call mints with app_token; later calls reuse the cached
+    token until near expiry, then mint again. No refresh token is used.
+    """
+
+    def __init__(
+        self,
+        app_id: str = "",
+        tenant_id: str = "",
+        client_secret: str = "",
+        data_dir: str | Path | None = None,
+        timeout: int = 30,
+        transport: httpx.BaseTransport | None = None,
+        time_fn: Callable[[], float] | None = None,
+    ) -> None:
+        self._app_id = (app_id or "").strip()
+        self._tenant_id = (tenant_id or "").strip()
+        self._client_secret = (client_secret or "").strip()
+        self._data_dir = data_dir
+        self._timeout = timeout
+        self._transport = transport
+        self._now = time_fn or time.time
+        self._token = ""
+        self._expires_at = 0.0
+
+    def _resolve_config(self) -> None:
+        if self._app_id and self._tenant_id and self._client_secret:
+            return
+        try:
+            from pam_pm.core import secrets as secrets_mod
+
+            effective = secrets_mod.effective_teams_config(self._data_dir)
+        except Exception:  # noqa: BLE001
+            effective = {}
+        self._app_id = self._app_id or str(effective.get("app_id", "") or "")
+        self._tenant_id = self._tenant_id or str(effective.get("tenant_id", "") or "")
+        self._client_secret = self._client_secret or str(
+            effective.get("app_password", "") or ""
+        )
+
+    def access_token(self) -> str:
+        """Return a valid Graph app token, minting when needed."""
+        if self._token and self._now() < self._expires_at:
+            return self._token
+        self._resolve_config()
+        from pam_pm.adapters.chat.teams_auth import app_token
+
+        token = app_token(
+            self._app_id,
+            self._tenant_id,
+            self._client_secret,
+            transport=self._transport,
+            timeout=self._timeout,
+        )
+        self._token = token
+        self._expires_at = self._now() + max(1, 3600 - 300)
+        logger.info("teams graph app token minted")
+        return self._token
+
+    def __call__(self) -> str:
+        return self.access_token()
+
+    def clear_cache(self) -> None:
+        """Drop the cached token so the next call mints again."""
+        self._token = ""
+        self._expires_at = 0.0
 
 
 def _watermark_key(chat_id: str) -> str:

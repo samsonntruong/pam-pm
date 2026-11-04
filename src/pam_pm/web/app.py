@@ -655,6 +655,23 @@ def teams_refresh_available() -> bool:
     return bool((saved or {}).get("has_refresh_token", False))
 
 
+def teams_app_available() -> bool:
+    """Return True when Teams app ID, password, and tenant exist."""
+    try:
+        effective = secrets_mod.effective_teams_config()
+    except Exception:  # noqa: BLE001
+        return bool(
+            os.environ.get("TEAMS_APP_ID", "").strip()
+            and os.environ.get("TEAMS_APP_PASSWORD", "").strip()
+            and os.environ.get("TEAMS_TENANT_ID", "").strip()
+        )
+    return bool(
+        str(effective.get("app_id", "") or "").strip()
+        and str(effective.get("app_password", "") or "").strip()
+        and str(effective.get("tenant_id", "") or "").strip()
+    )
+
+
 def _teams_watched_chats(project: str) -> list[dict[str, Any]]:
     name = _safe_project(project)
     if name in _TEAMS_TEST_CHATS:
@@ -682,11 +699,11 @@ def get_teams_poller(
     """Return the shared TeamsPoller for a project, or None when off.
 
     The loop is off when the project chat backend is not teams, or
-    when no refresh token is stored (and no test graph is pinned).
-    Access tokens are minted silently from the stored refresh token
-    and rotated values are saved back (0600) by GraphTokenProvider.
-    Watermarks resume from SQLite. Inbound matches publish to the
-    shared bus used by Slack.
+    when the app ID, password, and tenant are not all stored (and no
+    test graph is pinned). App tokens are minted with client
+    credentials and cached by AppTokenProvider. Watermarks resume
+    from SQLite. Inbound matches publish to the shared bus used by
+    Slack.
     """
     name = _safe_project(project)
     if name in _TEAMS_POLLERS:
@@ -697,15 +714,14 @@ def get_teams_poller(
     poll_db = db if db is not None else _db_path()
     use_bus = bus_override if bus_override is not None else bus
     if use_graph is None:
-        if not teams_refresh_available():
+        if not teams_app_available():
             return None
         try:
-            from pam_pm.adapters.chat.teams_auth import GraphTokenProvider
-            from pam_pm.adapters.chat.teams_poll import GraphClient
+            from pam_pm.adapters.chat.teams_poll import AppTokenProvider, GraphClient
         except Exception:  # noqa: BLE001
             return None
         try:
-            provider = GraphTokenProvider()
+            provider = AppTokenProvider()
             use_graph = GraphClient(provider)
         except Exception:  # noqa: BLE001
             return None
@@ -797,9 +813,9 @@ def start_teams_polling(project: str = "default") -> Any | None:
 
 
 def start_all_teams_polling() -> list[str]:
-    """Start Teams loops for every teams project with a refresh token."""
+    """Start Teams loops for every teams project with app credentials."""
     started: list[str] = []
-    if not teams_refresh_available():
+    if not teams_app_available():
         return started
     for name in _known_project_names():
         try:
@@ -2081,6 +2097,7 @@ SLACK_CHECK_TRANSPORT: Any = None
 ADO_CHECK_TRANSPORT: Any = None
 JIRA_CHECK_TRANSPORT: Any = None  # C4b live probe transport
 TRELLO_CHECK_TRANSPORT: Any = None
+TEAMS_CHECK_TRANSPORT: Any = None
 
 _CHECK_TIMEOUT = 8.0
 
@@ -2353,43 +2370,62 @@ def _check_teams() -> tuple[bool, str, str]:
             "app_id": os.environ.get("TEAMS_APP_ID", ""),
             "app_password": os.environ.get("TEAMS_APP_PASSWORD", ""),
             "tenant_id": os.environ.get("TEAMS_TENANT_ID", ""),
-            "refresh_token": os.environ.get("TEAMS_REFRESH_TOKEN", ""),
         }
-    if not str(effective.get("app_id", "") or "").strip():
+    app_id = str(effective.get("app_id", "") or "").strip()
+    app_password = str(effective.get("app_password", "") or "").strip()
+    tenant_id = str(effective.get("tenant_id", "") or "").strip()
+    if not app_id:
         return (
             False,
             "Teams check failed. App ID is missing.",
             "Open Step 2, add the App ID, choose Save, then Test again.",
         )
-    if not str(effective.get("app_password", "") or "").strip():
+    if not app_password:
         return (
             False,
             "Teams check failed. App password is missing.",
             "Open Step 2, add the app password, choose Save, then Test again.",
         )
-    if not str(effective.get("tenant_id", "") or "").strip():
+    if not tenant_id:
         return (
             False,
             "Teams check failed. Tenant ID is missing.",
             "Open Step 2, add the tenant ID, choose Save, then Test again.",
         )
-    if not str(effective.get("refresh_token", "") or "").strip():
-        try:
-            saved = secrets_mod.load_teams_config()
-        except Exception:  # noqa: BLE001
-            saved = {}
-        if not bool((saved or {}).get("has_refresh_token", False)):
+    try:
+        from pam_pm.adapters.chat import teams_auth as teams_auth_mod
+
+        check_transport = TEAMS_CHECK_TRANSPORT
+        if check_transport is None:
+            check_transport = TEAMS_TEST_TRANSPORT
+        teams_auth_mod.app_token(
+            app_id, tenant_id, app_password, transport=check_transport
+        )
+    except Exception as exc:  # noqa: BLE001
+        detail = _redact_check_text(str(exc), [app_password, app_id, tenant_id])
+        low = detail.lower()
+        if "401" in low or "403" in low or "unauthor" in low or "invalid" in low:
             return (
                 False,
-                "Teams check failed. Teams is not signed in.",
-                "Open Step 2, finish device sign-in, then Test again.",
+                "Teams check failed. App credentials were rejected.",
+                "Open Step 2, check the App ID, app password, and tenant ID, "
+                + "choose Save, then Test again.",
             )
+        if "connect" in low or "timeout" in low or "timed out" in low:
+            return (
+                False,
+                "Teams check failed. Pam could not reach Entra.",
+                "Check your connection, then Test again.",
+            )
+        return (
+            False,
+            "Teams check failed. App token mint failed.",
+            "Open Step 2, check the App ID, app password, and tenant ID, "
+            + "choose Save, then Test again.",
+        )
     return (
         True,
-        (
-            "Teams check passed (presence only, send tested on Save). Pam can send "
-            "messages, and polling brings replies in with no public endpoint."
-        ),
+        "Teams check passed. Pam minted an app token and can read watched chats.",
         "",
     )
 

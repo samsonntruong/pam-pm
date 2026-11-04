@@ -230,31 +230,39 @@ def teams_client(tmp_path, monkeypatch):
     app_mod.SETUP_DONE = False
 
 
+def _fake_app_token_ok(request: httpx.Request) -> httpx.Response:
+    if request.url.path.endswith("/oauth2/v2.0/token"):
+        return httpx.Response(200, json={"access_token": "fake-app-token", "expires_in": 3600})
+    return httpx.Response(404, json={"message": "unknown fake route"})
+
+
 def test_wizard_save_and_test_teams(teams_client) -> None:
-    from pam_pm.adapters.chat import teams_auth as teams_auth_mod
     from pam_pm.core import store as store_mod
 
-    client, home, _ = teams_client
-    resp = client.post(
-        "/api/setup/teams",
-        json={
-            "token": "teams-test-setup-token-1",
-            "project": "teamswiz",
-            "app_id": APP_ID,
-            "app_password": APP_PASSWORD,
-            "tenant_id": TENANT_ID,
-        },
-    )
-    assert resp.status_code == 200
-    assert resp.json()["ok"] is True
-    assert teams_auth_mod.store_teams_refresh_token("teams-wiz-refresh-1", home) is True
-    assert client.post("/api/test/teams?project=teamswiz").json()["ok"] is True
-    assert store_mod.get_project_chat_backend(home / "state.db", "teamswiz") == "teams"
-    blob = (home / "wizard_progress.json").read_text(encoding="utf-8")
-    assert APP_PASSWORD not in blob
-    page = client.get("/setup?project=teamswiz").text
-    assert APP_PASSWORD not in page
-    assert "Microsoft Teams" in page
+    client, home, app_mod = teams_client
+    app_mod.TEAMS_CHECK_TRANSPORT = httpx.MockTransport(_fake_app_token_ok)
+    try:
+        resp = client.post(
+            "/api/setup/teams",
+            json={
+                "token": "teams-test-setup-token-1",
+                "project": "teamswiz",
+                "app_id": APP_ID,
+                "app_password": APP_PASSWORD,
+                "tenant_id": TENANT_ID,
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert client.post("/api/test/teams?project=teamswiz").json()["ok"] is True
+        assert store_mod.get_project_chat_backend(home / "state.db", "teamswiz") == "teams"
+        blob = (home / "wizard_progress.json").read_text(encoding="utf-8")
+        assert APP_PASSWORD not in blob
+        page = client.get("/setup?project=teamswiz").text
+        assert APP_PASSWORD not in page
+        assert "Microsoft Teams" in page
+    finally:
+        app_mod.TEAMS_CHECK_TRANSPORT = None
 
 def test_setup_save_persists_chat_backend(teams_client) -> None:
     from pam_pm.core import store as store_mod
@@ -333,11 +341,53 @@ def test_check_teams_names_each_missing_piece(tmp_path, monkeypatch) -> None:
     ok, msg, _hint = app_mod._check_teams()
     assert ok is False and "Tenant" in msg
     secrets_mod.save_secret("TEAMS_TENANT_ID", TENANT_ID, tmp_path)
-    ok, msg, _hint = app_mod._check_teams()
-    assert ok is False and "not signed in" in msg.lower()
-    secrets_mod.save_secret("TEAMS_REFRESH_TOKEN", "r-1", tmp_path)
-    ok, msg, _hint = app_mod._check_teams()
-    assert ok is True
+    app_mod.TEAMS_CHECK_TRANSPORT = httpx.MockTransport(_fake_app_token_ok)
+    try:
+        ok, msg, _hint = app_mod._check_teams()
+        assert ok is True
+    finally:
+        app_mod.TEAMS_CHECK_TRANSPORT = None
+
+
+def test_app_token_mint_success_and_401() -> None:
+    from pam_pm.adapters.chat.teams_auth import DeviceAuthError, app_token
+
+    def _ok(request: httpx.Request) -> httpx.Response:
+        body = dict(httpx.QueryParams(request.content.decode("utf-8")))
+        assert body["grant_type"] == "client_credentials"
+        assert body["scope"] == "https://graph.microsoft.com/.default"
+        return httpx.Response(200, json={"access_token": "app-tok-1", "expires_in": 3600})
+
+    token = app_token(APP_ID, TENANT_ID, APP_PASSWORD, transport=httpx.MockTransport(_ok))
+    assert token == "app-tok-1"
+
+    def _denied(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": "invalid_client"})
+
+    with pytest.raises(DeviceAuthError):
+        app_token(APP_ID, TENANT_ID, "bad-secret", transport=httpx.MockTransport(_denied))
+
+
+def test_check_teams_rejected_creds(tmp_path, monkeypatch) -> None:
+    import pam_pm.web.app as app_mod
+    from pam_pm.core import secrets as secrets_mod
+
+    for key in (*ENV_KEYS, "TEAMS_REFRESH_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("PAM_HOME", str(tmp_path))
+    secrets_mod.save_secret("TEAMS_APP_ID", APP_ID, tmp_path)
+    secrets_mod.save_secret("TEAMS_APP_PASSWORD", "bad-secret", tmp_path)
+    secrets_mod.save_secret("TEAMS_TENANT_ID", TENANT_ID, tmp_path)
+
+    def _denied(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": "invalid_client"})
+
+    app_mod.TEAMS_CHECK_TRANSPORT = httpx.MockTransport(_denied)
+    try:
+        ok, msg, _hint = app_mod._check_teams()
+        assert ok is False and "rejected" in msg.lower()
+    finally:
+        app_mod.TEAMS_CHECK_TRANSPORT = None
 
 
 def test_teams_package_zip_contents(teams_client) -> None:

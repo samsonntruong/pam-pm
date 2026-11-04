@@ -268,11 +268,20 @@ def test_trello_live_auth(c4_client) -> None:
 
 
 def test_teams_presence_only_message(c4_client, monkeypatch) -> None:
-    client, _, _ = c4_client
-    monkeypatch.setenv("TEAMS_APP_ID", "c4-app-id")
-    monkeypatch.setenv("TEAMS_APP_PASSWORD", "c4-app-pw")
-    monkeypatch.setenv("TEAMS_TENANT_ID", "c4-tenant")
-    monkeypatch.setenv("TEAMS_REFRESH_TOKEN", "c4-refresh")
-    data = client.post("/api/test/teams").json()
-    assert data["ok"] is True
-    assert "(presence only, send tested on Save)" in data["message"]
+    import pam_pm.web.app as app_mod
+
+    def _handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"access_token": "c4-app-token", "expires_in": 3600})
+
+    app_mod.set_teams_test_transport(httpx.MockTransport(_handle))
+    try:
+        client, _, _ = c4_client
+        monkeypatch.setenv("TEAMS_APP_ID", "c4-app-id")
+        monkeypatch.setenv("TEAMS_APP_PASSWORD", "c4-app-pw")
+        monkeypatch.setenv("TEAMS_TENANT_ID", "c4-tenant")
+        monkeypatch.setenv("TEAMS_REFRESH_TOKEN", "c4-refresh")
+        data = client.post("/api/test/teams").json()
+        assert data["ok"] is True
+        assert "(presence only" not in data["message"]
+    finally:
+        app_mod.set_teams_test_transport(None)

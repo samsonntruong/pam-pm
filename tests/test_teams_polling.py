@@ -112,6 +112,67 @@ def _poller(
     return TeamsPoller(stub, db, chats, interval=60, **kwargs)
 
 
+def _fake_app_token(seen: dict[str, Any], status: int = 200) -> httpx.MockTransport:
+    def handle(request: httpx.Request) -> httpx.Response:
+        body = dict(httpx.QueryParams(request.content.decode("utf-8")))
+        seen["grant"] = body.get("grant_type", "")
+        seen["scope"] = body.get("scope", "")
+        seen["calls"] = seen.get("calls", 0) + 1
+        if status != 200:
+            return httpx.Response(status, json={"error": "invalid_client"})
+        return httpx.Response(200, json={"access_token": "app-tok-1", "expires_in": 3600})
+
+    return httpx.MockTransport(handle)
+
+
+def test_app_token_mint_success_and_401() -> None:
+    from pam_pm.adapters.chat.teams_auth import DeviceAuthError, app_token
+
+    seen: dict[str, Any] = {}
+    token = app_token(APP_ID, TENANT_ID, APP_PASSWORD, transport=_fake_app_token(seen))
+    assert token == "app-tok-1"
+    assert seen["grant"] == "client_credentials"
+    assert seen["scope"] == "https://graph.microsoft.com/.default"
+    with pytest.raises(DeviceAuthError):
+        app_token(APP_ID, TENANT_ID, "bad", transport=_fake_app_token({}, status=401))
+
+
+def test_app_provider_caches_until_near_expiry() -> None:
+    from pam_pm.adapters.chat.teams_poll import AppTokenProvider
+
+    seen: dict[str, Any] = {}
+    clock = {"now": 1000.0}
+    provider = AppTokenProvider(
+        APP_ID,
+        TENANT_ID,
+        APP_PASSWORD,
+        transport=_fake_app_token(seen),
+        time_fn=lambda: clock["now"],
+    )
+    first = provider.access_token()
+    assert first == "app-tok-1"
+    assert provider.access_token() == first
+    assert seen["calls"] == 1
+    clock["now"] += 4000.0
+    assert provider.access_token() == "app-tok-1"
+    assert seen["calls"] == 2
+
+
+def test_graph_client_accepts_token_callable() -> None:
+    seen: dict[str, Any] = {}
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen["auth"] = request.headers.get("Authorization", "")
+        return httpx.Response(200, json={"value": []})
+
+    client = GraphClient(lambda: "callable-tok", transport=httpx.MockTransport(handle))
+    try:
+        assert client.list_chat_messages("chat-1") == []
+        assert seen["auth"] == "Bearer callable-tok"
+    finally:
+        client.close()
+
+
 # Device code flow with a fake token endpoint.
 
 
@@ -711,11 +772,11 @@ def test_wizard_device_start_and_poll(device_client) -> None:
     assert APP_PASSWORD not in blob
     page = client.get("/setup?project=teamsdev").text
     assert REFRESH not in page
-    assert "Step 2: Download package." in page
-    assert "Manage your apps" in page
-    assert "Admin consent note" in page
-    assert "microsoft.com/devicelogin" in page
-    assert "Teams polling is signed in" in page
+    assert "Step 2: Add permissions." in page
+    assert "Chat.Read.All" in page
+    assert "Grant admin consent" in page
+    assert "Download app package" in page
+    assert "microsoft.com/devicelogin" not in page
 
 
 def test_wizard_device_poll_without_start(device_client) -> None:
@@ -811,6 +872,22 @@ def test_poll_teams_once_wrapper_uses_bus_and_watermark(tmp_path, monkeypatch) -
 
 def test_no_refresh_token_means_loop_off(tmp_path, monkeypatch) -> None:
     import pam_pm.web.app as app_mod
+    from pam_pm.core import store as store_mod
+
+    for key in (*ENV_KEYS, "PAM_SETUP_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("PAM_HOME", str(tmp_path))
+    app_mod.reset_teams_poll_state()
+    try:
+        store_mod.set_project_chat_backend(tmp_path / "state.db", "loopoff", "teams")
+        assert app_mod.get_teams_poller("loopoff") is None
+        assert app_mod.poll_teams_once("loopoff") == []
+    finally:
+        app_mod.reset_teams_poll_state()
+
+
+def test_poller_runs_with_no_refresh_token(tmp_path, monkeypatch) -> None:
+    import pam_pm.web.app as app_mod
     from pam_pm.core import secrets as secrets_mod
     from pam_pm.core import store as store_mod
 
@@ -822,9 +899,16 @@ def test_no_refresh_token_means_loop_off(tmp_path, monkeypatch) -> None:
         secrets_mod.save_teams_config(
             tmp_path, app_id=APP_ID, app_password=APP_PASSWORD, tenant_id=TENANT_ID
         )
-        store_mod.set_project_chat_backend(tmp_path / "state.db", "loopoff", "teams")
-        assert app_mod.get_teams_poller("loopoff") is None
-        assert app_mod.poll_teams_once("loopoff") == []
+        store_mod.set_project_chat_backend(tmp_path / "state.db", "loopapp", "teams")
+        stub = StubGraph(
+            {"chat-1": [_graph_message("m-1", "hello", "2026-11-02T08:00:00Z")]}
+        )
+        app_mod.set_teams_test_graph("loopapp", stub)
+        app_mod.set_teams_test_chats("loopapp", [{"id": "chat-1", "chatType": "oneOnOne"}])
+        poller = app_mod.get_teams_poller("loopapp")
+        assert poller is not None
+        found = app_mod.poll_teams_once("loopapp")
+        assert [m.id for m in found] == ["m-1"]
     finally:
         app_mod.reset_teams_poll_state()
 
