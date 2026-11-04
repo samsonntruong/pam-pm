@@ -3361,19 +3361,28 @@ def _roster_entries(project: str) -> list[dict[str, Any]]:
                     details[label] = {
                         "skills": str(item.get("skills", "") or ""),
                         "capacity": _parse_capacity(item.get("capacity", 0)),
+                        "teams_chat_id": str(
+                            item.get("teams_chat_id", "") or ""
+                        ).strip(),
                     }
     names = _people_names(project)
-    out = [
-        {
+    out: list[dict[str, Any]] = []
+    for name in names:
+        row: dict[str, Any] = {
             "name": name,
             "skills": details.get(name, {}).get("skills", ""),
             "capacity": details.get(name, {}).get("capacity", 0.0),
         }
-        for name in names
-    ]
+        chat_id = str(details.get(name, {}).get("teams_chat_id", "") or "").strip()
+        if chat_id:
+            row["teams_chat_id"] = chat_id
+        out.append(row)
     for label in sorted(details):
         if label not in names:
-            out.append({"name": label, **details[label]})
+            row = {"name": label, **details[label]}
+            if not str(row.get("teams_chat_id", "") or "").strip():
+                row.pop("teams_chat_id", None)
+            out.append(row)
     return out
 
 
@@ -3393,13 +3402,15 @@ def _merge_roster_entries(
             continue
         seen.add(name)
         row = by_name.get(name, {})
-        out.append(
-            {
-                "name": name,
-                "skills": str(row.get("skills", "") or "").strip(),
-                "capacity": _parse_capacity(row.get("capacity", 0)),
-            }
-        )
+        entry: dict[str, Any] = {
+            "name": name,
+            "skills": str(row.get("skills", "") or "").strip(),
+            "capacity": _parse_capacity(row.get("capacity", 0)),
+        }
+        chat_id = str(row.get("teams_chat_id", "") or "").strip()
+        if chat_id:
+            entry["teams_chat_id"] = chat_id
+        out.append(entry)
     return out
 
 
@@ -3919,7 +3930,10 @@ def get_chat_adapter(project: str) -> Any | None:
         try:
             from pam_pm.adapters.chat.teams import TeamsAdapter
 
-            return TeamsAdapter()
+            return TeamsAdapter(
+                chats=_teams_watched_chats(name),
+                roster=_roster_entries(name),
+            )
         except Exception:  # noqa: BLE001
             return None
     try:

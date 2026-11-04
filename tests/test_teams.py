@@ -436,7 +436,9 @@ def test_teams_package_missing_app_id_errors_cleanly(teams_client) -> None:
     assert "App ID" in body["message"]
 
 
-def _fake_with_graph(seen: dict[str, Any], chats: list[dict[str, Any]]):
+def _fake_watched_members(
+    seen: dict[str, Any], members_by_chat: dict[str, list[dict[str, str]]]
+):
     def handle(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/oauth2/v2.0/token"):
             body = dict(httpx.QueryParams(request.content.decode("utf-8")))
@@ -447,10 +449,22 @@ def _fake_with_graph(seen: dict[str, Any], chats: list[dict[str, Any]]):
                 return httpx.Response(200, json={"access_token": "fake-graph-token"})
             seen["token_calls"] = seen.get("token_calls", 0) + 1
             return httpx.Response(200, json={"access_token": "fake-bf-token"})
-        if str(request.url).startswith("https://graph.microsoft.com/v1.0/chats"):
+        url = str(request.url)
+        if url == "https://graph.microsoft.com/v1.0/chats":
+            seen["listing_calls"] = seen.get("listing_calls", 0) + 1
+            return httpx.Response(
+                400, json={"error": "not supported in application-only context"}
+            )
+        if url.startswith("https://graph.microsoft.com/v1.0/chats/") and url.endswith(
+            "/members"
+        ):
             seen["graph_calls"] = seen.get("graph_calls", 0) + 1
             seen["graph_auth"] = request.headers.get("Authorization", "")
-            return httpx.Response(200, json={"value": chats})
+            chat_id = url.split("/v1.0/chats/", 1)[1].rsplit("/members", 1)[0]
+            seen.setdefault("member_chat_ids", []).append(chat_id)
+            return httpx.Response(
+                200, json={"value": members_by_chat.get(chat_id, [])}
+            )
         if request.url.path.endswith("/activities") and request.method == "POST":
             seen["send_calls"] = seen.get("send_calls", 0) + 1
             seen.setdefault("send_urls", []).append(str(request.url))
@@ -461,24 +475,38 @@ def _fake_with_graph(seen: dict[str, Any], chats: list[dict[str, Any]]):
     return httpx.MockTransport(handle)
 
 
-def _resolve_chats() -> list[dict[str, Any]]:
+def _watched_chats() -> list[dict[str, Any]]:
     return [
-        {
-            "id": "19:chat-oc-claws",
-            "chatType": "oneOnOne",
-            "members": [{"displayName": "Pam"}, {"displayName": "OC Claws"}],
-        },
-        {
-            "id": "19:chat-other",
-            "chatType": "oneOnOne",
-            "members": [{"displayName": "Pam"}, {"displayName": "Someone Else"}],
-        },
-        {
-            "id": "19:group-1",
-            "chatType": "group",
-            "members": [{"displayName": "OC Claws"}],
-        },
+        {"id": "19:chat-oc-claws", "chatType": "oneOnOne"},
+        {"id": "19:chat-other", "chatType": "oneOnOne"},
+        {"id": "team1/channel1", "chatType": "channel", "team_id": "team1"},
     ]
+
+
+def _watched_members() -> dict[str, list[dict[str, str]]]:
+    return {
+        "19:chat-oc-claws": [{"displayName": "Pam"}, {"displayName": "OC Claws"}],
+        "19:chat-other": [{"displayName": "Pam"}, {"displayName": "Someone Else"}],
+    }
+
+
+def test_resolve_member_match(clean_env) -> None:
+    seen: dict[str, Any] = {}
+    adapter = TeamsAdapter(
+        app_id=APP_ID,
+        app_password=APP_PASSWORD,
+        tenant_id=TENANT_ID,
+        transport=_fake_watched_members(seen, _watched_members()),
+        chats=_watched_chats(),
+    )
+    try:
+        assert adapter.resolve_conversation("OC Claws") == "19:chat-oc-claws"
+        assert adapter.resolve_conversation("someone else") == "19:chat-other"
+    finally:
+        adapter.close()
+    assert seen.get("listing_calls", 0) == 0
+    assert seen["graph_auth"] == "Bearer fake-graph-token"
+    assert "https://graph.microsoft.com/.default" in seen.get("token_scopes", [])
 
 
 def test_resolve_name_caches_one_graph_call(clean_env) -> None:
@@ -487,7 +515,8 @@ def test_resolve_name_caches_one_graph_call(clean_env) -> None:
         app_id=APP_ID,
         app_password=APP_PASSWORD,
         tenant_id=TENANT_ID,
-        transport=_fake_with_graph(seen, _resolve_chats()),
+        transport=_fake_watched_members(seen, _watched_members()),
+        chats=_watched_chats(),
     )
     try:
         assert adapter.send_dm("OC Claws", "hi one") == "activity-1"
@@ -496,11 +525,71 @@ def test_resolve_name_caches_one_graph_call(clean_env) -> None:
         ) == "activity-1"
     finally:
         adapter.close()
+    assert seen.get("listing_calls", 0) == 0
     assert seen.get("graph_calls") == 1
     assert seen.get("send_calls") == 2
     assert seen["graph_auth"] == "Bearer fake-graph-token"
     assert "https://graph.microsoft.com/.default" in seen.get("token_scopes", [])
     assert all("19:chat-oc-claws" in url for url in seen["send_urls"])
+
+
+def test_resolve_caches_members_fetch(clean_env) -> None:
+    seen: dict[str, Any] = {}
+    adapter = TeamsAdapter(
+        app_id=APP_ID,
+        app_password=APP_PASSWORD,
+        tenant_id=TENANT_ID,
+        transport=_fake_watched_members(seen, _watched_members()),
+        chats=_watched_chats(),
+    )
+    try:
+        first = adapter.resolve_conversation("OC Claws")
+        calls_after_first = seen.get("graph_calls", 0)
+        second = adapter.resolve_conversation("oc CLAWS")
+        assert first == second == "19:chat-oc-claws"
+        assert seen.get("graph_calls", 0) == calls_after_first
+    finally:
+        adapter.close()
+    assert seen.get("listing_calls", 0) == 0
+    assert seen.get("graph_calls") == 1
+
+
+def test_roster_override_wins(clean_env) -> None:
+    seen: dict[str, Any] = {}
+    adapter = TeamsAdapter(
+        app_id=APP_ID,
+        app_password=APP_PASSWORD,
+        tenant_id=TENANT_ID,
+        transport=_fake_watched_members(seen, _watched_members()),
+        chats=_watched_chats(),
+        roster=[{"name": "OC Claws", "teams_chat_id": "19:override-chat"}],
+    )
+    try:
+        assert adapter.resolve_conversation("OC Claws") == "19:override-chat"
+        assert adapter.resolve_conversation("oc claws") == "19:override-chat"
+    finally:
+        adapter.close()
+    assert seen.get("graph_calls", 0) == 0
+    assert seen.get("listing_calls", 0) == 0
+
+
+def test_roster_arg_override_wins_without_fetch(clean_env) -> None:
+    seen: dict[str, Any] = {}
+    adapter = TeamsAdapter(
+        app_id=APP_ID,
+        app_password=APP_PASSWORD,
+        tenant_id=TENANT_ID,
+        transport=_fake_watched_members(seen, _watched_members()),
+        chats=_watched_chats(),
+    )
+    try:
+        got = adapter.resolve_conversation(
+            "OC Claws", roster=[{"name": "oc claws", "teams_chat_id": "19:arg-chat"}]
+        )
+        assert got == "19:arg-chat"
+    finally:
+        adapter.close()
+    assert seen.get("graph_calls", 0) == 0
 
 
 def test_resolve_unknown_name_raises(clean_env) -> None:
@@ -509,7 +598,8 @@ def test_resolve_unknown_name_raises(clean_env) -> None:
         app_id=APP_ID,
         app_password=APP_PASSWORD,
         tenant_id=TENANT_ID,
-        transport=_fake_with_graph(seen, _resolve_chats()),
+        transport=_fake_watched_members(seen, _watched_members()),
+        chats=_watched_chats(),
     )
     try:
         with pytest.raises(TeamsError) as exc:
@@ -517,7 +607,8 @@ def test_resolve_unknown_name_raises(clean_env) -> None:
     finally:
         adapter.close()
     assert "Nobody Here" in str(exc.value)
-    assert "open a 1:1 with Pam in Teams first" in str(exc.value)
+    assert "watch the 1:1 in Setup, then retry" in str(exc.value)
+    assert seen.get("listing_calls", 0) == 0
 
 
 def test_explicit_conversation_ids_passthrough(clean_env) -> None:
@@ -526,7 +617,8 @@ def test_explicit_conversation_ids_passthrough(clean_env) -> None:
         app_id=APP_ID,
         app_password=APP_PASSWORD,
         tenant_id=TENANT_ID,
-        transport=_fake_with_graph(seen, _resolve_chats()),
+        transport=_fake_watched_members(seen, _watched_members()),
+        chats=_watched_chats(),
     )
     try:
         for convo_id in ("19:abc123", "a:xyz789", "foo:bar"):

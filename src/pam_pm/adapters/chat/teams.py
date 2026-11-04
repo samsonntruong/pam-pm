@@ -134,6 +134,8 @@ class TeamsAdapter(ChatAdapter):
         transport: httpx.BaseTransport | None = None,
         data_dir: str | Path | None = None,
         mode: str = "send",
+        chats: Sequence[dict[str, Any] | str] | None = None,
+        roster: Sequence[dict[str, Any]] | dict[str, Any] | None = None,
     ) -> None:
         self._app_id = self._resolve_value("TEAMS_APP_ID", app_id, data_dir)
         self._app_password = self._resolve_value(
@@ -151,6 +153,8 @@ class TeamsAdapter(ChatAdapter):
         want = str(mode or "send").strip().lower()
         self._mode = "poll" if want == "poll" else "send"
         self._poller: Any | None = None
+        self._chats: list[dict[str, Any]] = self._normalize_chats(chats)
+        self._roster_map: dict[str, str] = self._normalize_roster(roster)
 
     @staticmethod
     def _resolve_value(
@@ -168,6 +172,77 @@ class TeamsAdapter(ChatAdapter):
             return secrets_mod.load_secret(name, data_dir)
         except Exception:  # noqa: BLE001
             return ""
+
+    @staticmethod
+    def _normalize_chats(
+        chats: Sequence[dict[str, Any] | str] | None,
+    ) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        if not chats:
+            return out
+        for item in chats:
+            if isinstance(item, str):
+                cid = item.strip()
+                if cid:
+                    out.append({"id": cid})
+            elif isinstance(item, dict):
+                d = dict(item)
+                cid = str(d.get("id", "") or "").strip()
+                if not cid:
+                    cid = str(d.get("chat_id", "") or "").strip()
+                    if cid:
+                        d["id"] = cid
+                if cid:
+                    out.append(d)
+        return out
+
+    @staticmethod
+    def _normalize_roster(
+        roster: Sequence[dict[str, Any]] | dict[str, Any] | None,
+    ) -> dict[str, str]:
+        mapping: dict[str, str] = {}
+        if not roster:
+            return mapping
+        if isinstance(roster, dict):
+            for key, val in roster.items():
+                norm = str(key or "").strip().lower()
+                if not norm:
+                    continue
+                if isinstance(val, str):
+                    cid = val.strip()
+                    if cid:
+                        mapping[norm] = cid
+                elif isinstance(val, dict):
+                    cid = str(val.get("teams_chat_id", "") or "").strip()
+                    if cid:
+                        mapping[norm] = cid
+            return mapping
+        for entry in roster:
+            if not isinstance(entry, dict):
+                continue
+            norm = str(entry.get("name", "") or "").strip().lower()
+            if not norm:
+                continue
+            cid = str(entry.get("teams_chat_id", "") or "").strip()
+            if cid:
+                mapping[norm] = cid
+        return mapping
+
+    def _roster_override(
+        self,
+        key: str,
+        roster: Sequence[dict[str, Any]] | dict[str, Any] | None = None,
+    ) -> str | None:
+        if roster is not None:
+            tmp = self._normalize_roster(roster)
+            if key in tmp:
+                return tmp[key]
+        return self._roster_map.get(key)
+
+    @property
+    def known_chats(self) -> list[dict[str, Any]]:
+        """Return a copy of the known watched chats."""
+        return [dict(c) for c in self._chats]
 
     @property
     def app_id_configured(self) -> bool:
@@ -287,39 +362,65 @@ class TeamsAdapter(ChatAdapter):
             return text
         return self.resolve_conversation(text)
 
-    def resolve_conversation(self, person: str) -> str:
-        """Resolve a teammate display name to a 1:1 chat id via Graph."""
+    def resolve_conversation(
+        self,
+        person: str,
+        roster: Sequence[dict[str, Any]] | dict[str, Any] | None = None,
+    ) -> str:
+        """Resolve a teammate display name to a 1:1 chat id via Graph.
+
+        Iterates known watched chats and matches the other member
+        displayName case-insensitively. Honors an explicit roster
+        teams_chat_id override first. Results are cached per adapter.
+        """
         name = (person or "").strip()
         if not name:
             raise TeamsError(
                 "no 1:1 Teams chat found for ''; "
-                "open a 1:1 with Pam in Teams first."
+                "watch the 1:1 in Setup, then retry."
             )
         key = name.lower()
+        override = self._roster_override(key, roster)
+        if override:
+            self._conversation_cache[key] = override
+            return override
         cached = self._conversation_cache.get(key)
         if cached:
             return cached
+        if not self._chats:
+            raise TeamsError(
+                f"no 1:1 Teams chat found for '{name}'; "
+                "watch the 1:1 in Setup, then retry."
+            )
         client = self._client_or_raise()
         token = self._graph_access_token()
-        try:
-            resp = client.get(
-                GRAPH_CHATS_URL,
-                headers={"Authorization": "Bearer " + token},
-            )
-            resp.raise_for_status()
-            payload = resp.json()
-        except Exception as exc:
-            raise self._fail("resolve", exc) from exc
-        chats = payload.get("value", []) if isinstance(payload, dict) else []
-        for chat in chats:
-            if not isinstance(chat, dict):
-                continue
-            if str(chat.get("chatType", "")).lower() != "oneonone":
-                continue
-            chat_id = str(chat.get("id", "") or "")
+        for chat in self._chats:
+            chat_id = str(chat.get("id", "") or "").strip()
             if not chat_id:
                 continue
-            members = chat.get("members", [])
+            chat_type = str(
+                chat.get("chatType", "") or chat.get("chat_type", "") or ""
+            ).strip().lower()
+            if chat_type == "channel":
+                continue
+            if chat_type in ("group",):
+                continue
+            if chat_type and chat_type != "oneonone":
+                continue
+            if "/" in chat_id:
+                continue
+            if str(chat.get("team_id", "") or chat.get("teamId", "") or "").strip():
+                continue
+            try:
+                resp = client.get(
+                    GRAPH_CHATS_URL + "/" + chat_id + "/members",
+                    headers={"Authorization": "Bearer " + token},
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+            except Exception as exc:
+                raise self._fail("resolve", exc) from exc
+            members = payload.get("value", []) if isinstance(payload, dict) else []
             if not isinstance(members, list):
                 continue
             for member in members:
@@ -331,7 +432,7 @@ class TeamsAdapter(ChatAdapter):
                     return chat_id
         raise TeamsError(
             f"no 1:1 Teams chat found for '{name}'; "
-            "open a 1:1 with Pam in Teams first."
+            "watch the 1:1 in Setup, then retry."
         )
 
     def _post_activity(self, conversation_id: str, activity: dict[str, Any]) -> str:
