@@ -110,7 +110,7 @@ def test_send_dm_posts_activity(clean_env) -> None:
     seen: dict[str, Any] = {}
     adapter = _adapter(seen)
     try:
-        message_id = adapter.send_dm("conv-1", "Hello from Pam")
+        message_id = adapter.send_dm("19:conv-1", "Hello from Pam")
     finally:
         adapter.close()
     assert message_id == "activity-1"
@@ -127,7 +127,7 @@ def test_send_buttons_posts_choice_activity(clean_env) -> None:
     adapter = _adapter(seen)
     try:
         message_id = adapter.send_buttons(
-            "conv-1", "Pick one", [{"id": "a", "label": "Alpha"}]
+            "19:conv-1", "Pick one", [{"id": "a", "label": "Alpha"}]
         )
     finally:
         adapter.close()
@@ -189,7 +189,7 @@ def test_missing_creds_error(clean_env, tmp_path) -> None:
     try:
         assert adapter.app_id_configured is False
         with pytest.raises(TeamsError, match="TEAMS_APP_ID"):
-            adapter.send_dm("conv-1", "Hello")
+            adapter.send_dm("19:conv-1", "Hello")
     finally:
         adapter.close()
 
@@ -210,7 +210,7 @@ def test_no_secret_in_logs(clean_env, tmp_path, caplog) -> None:
             caplog.at_level(logging.INFO, logger="pam_pm.adapters.chat.teams"),
             pytest.raises(TeamsError),
         ):
-            adapter.send_dm("conv-1", "boom " + APP_PASSWORD)
+            adapter.send_dm("19:conv-1", "boom " + APP_PASSWORD)
     finally:
         adapter.close()
     assert APP_PASSWORD not in caplog.text
@@ -434,3 +434,110 @@ def test_teams_package_missing_app_id_errors_cleanly(teams_client) -> None:
     body = resp.json()
     assert body["ok"] is False
     assert "App ID" in body["message"]
+
+
+def _fake_with_graph(seen: dict[str, Any], chats: list[dict[str, Any]]):
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/oauth2/v2.0/token"):
+            body = dict(httpx.QueryParams(request.content.decode("utf-8")))
+            scope = body.get("scope", "")
+            seen.setdefault("token_scopes", []).append(scope)
+            if scope == "https://graph.microsoft.com/.default":
+                seen["graph_token_calls"] = seen.get("graph_token_calls", 0) + 1
+                return httpx.Response(200, json={"access_token": "fake-graph-token"})
+            seen["token_calls"] = seen.get("token_calls", 0) + 1
+            return httpx.Response(200, json={"access_token": "fake-bf-token"})
+        if str(request.url).startswith("https://graph.microsoft.com/v1.0/chats"):
+            seen["graph_calls"] = seen.get("graph_calls", 0) + 1
+            seen["graph_auth"] = request.headers.get("Authorization", "")
+            return httpx.Response(200, json={"value": chats})
+        if request.url.path.endswith("/activities") and request.method == "POST":
+            seen["send_calls"] = seen.get("send_calls", 0) + 1
+            seen.setdefault("send_urls", []).append(str(request.url))
+            seen["send_body"] = json.loads(request.content.decode("utf-8"))
+            return httpx.Response(200, json={"id": "activity-1"})
+        return httpx.Response(404, json={"message": "unknown fake route"})
+
+    return httpx.MockTransport(handle)
+
+
+def _resolve_chats() -> list[dict[str, Any]]:
+    return [
+        {
+            "id": "19:chat-oc-claws",
+            "chatType": "oneOnOne",
+            "members": [{"displayName": "Pam"}, {"displayName": "OC Claws"}],
+        },
+        {
+            "id": "19:chat-other",
+            "chatType": "oneOnOne",
+            "members": [{"displayName": "Pam"}, {"displayName": "Someone Else"}],
+        },
+        {
+            "id": "19:group-1",
+            "chatType": "group",
+            "members": [{"displayName": "OC Claws"}],
+        },
+    ]
+
+
+def test_resolve_name_caches_one_graph_call(clean_env) -> None:
+    seen: dict[str, Any] = {}
+    adapter = TeamsAdapter(
+        app_id=APP_ID,
+        app_password=APP_PASSWORD,
+        tenant_id=TENANT_ID,
+        transport=_fake_with_graph(seen, _resolve_chats()),
+    )
+    try:
+        assert adapter.send_dm("OC Claws", "hi one") == "activity-1"
+        assert adapter.send_buttons(
+            "oc claws", "hi two", [{"id": "a", "label": "Alpha"}]
+        ) == "activity-1"
+    finally:
+        adapter.close()
+    assert seen.get("graph_calls") == 1
+    assert seen.get("send_calls") == 2
+    assert seen["graph_auth"] == "Bearer fake-graph-token"
+    assert "https://graph.microsoft.com/.default" in seen.get("token_scopes", [])
+    assert all("19:chat-oc-claws" in url for url in seen["send_urls"])
+
+
+def test_resolve_unknown_name_raises(clean_env) -> None:
+    seen: dict[str, Any] = {}
+    adapter = TeamsAdapter(
+        app_id=APP_ID,
+        app_password=APP_PASSWORD,
+        tenant_id=TENANT_ID,
+        transport=_fake_with_graph(seen, _resolve_chats()),
+    )
+    try:
+        with pytest.raises(TeamsError) as exc:
+            adapter.send_dm("Nobody Here", "hello")
+    finally:
+        adapter.close()
+    assert "Nobody Here" in str(exc.value)
+    assert "open a 1:1 with Pam in Teams first" in str(exc.value)
+
+
+def test_explicit_conversation_ids_passthrough(clean_env) -> None:
+    seen: dict[str, Any] = {}
+    adapter = TeamsAdapter(
+        app_id=APP_ID,
+        app_password=APP_PASSWORD,
+        tenant_id=TENANT_ID,
+        transport=_fake_with_graph(seen, _resolve_chats()),
+    )
+    try:
+        for convo_id in ("19:abc123", "a:xyz789", "foo:bar"):
+            assert adapter.send_dm(convo_id, "hi") == "activity-1"
+        assert adapter.send_buttons("19:btn-convo", "pick", [{"id": "a"}]) == "activity-1"
+    finally:
+        adapter.close()
+    assert seen.get("graph_calls", 0) == 0
+    assert seen.get("graph_token_calls", 0) == 0
+    assert seen.get("send_calls") == 4
+    for convo_id, url in zip(
+        ("19:abc123", "a:xyz789", "foo:bar", "19:btn-convo"), seen["send_urls"]
+    ):
+        assert convo_id in url

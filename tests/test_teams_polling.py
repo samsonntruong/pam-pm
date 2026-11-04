@@ -593,7 +593,7 @@ def test_adapter_poll_mode_send_still_uses_bot_connector(clean_env) -> None:
         mode="poll",
     )
     try:
-        assert adapter.send_dm("conv-1", "Hello") == "activity-7"
+        assert adapter.send_dm("19:conv-1", "Hello") == "activity-7"
         assert seen["body"]["text"] == "Hello"
     finally:
         adapter.close()

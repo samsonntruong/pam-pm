@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 
 TOKEN_URL_TEMPLATE = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
 TOKEN_SCOPE = "https://api.botframework.com/.default"
+GRAPH_SCOPE = "https://graph.microsoft.com/.default"
+GRAPH_CHATS_URL = "https://graph.microsoft.com/v1.0/chats"
 DEFAULT_SERVICE_URL = "https://smba.trafficmanager.net/amer"
 
 _BEARER_RE = re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]+")
@@ -143,6 +145,8 @@ class TeamsAdapter(ChatAdapter):
         self._transport = transport
         self._client: httpx.Client | None = None
         self._token: str = ""
+        self._graph_token: str = ""
+        self._conversation_cache: dict[str, str] = {}
         self._inbound: dict[str, deque[ChatMessage]] = {}
         want = str(mode or "send").strip().lower()
         self._mode = "poll" if want == "poll" else "send"
@@ -242,6 +246,94 @@ class TeamsAdapter(ChatAdapter):
         except Exception as exc:
             raise self._fail("token", exc) from exc
 
+    def _graph_access_token(self) -> str:
+        if self._graph_token:
+            return self._graph_token
+        client = self._client_or_raise()
+        try:
+            resp = client.post(
+                TOKEN_URL_TEMPLATE.format(tenant=self._tenant_id),
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": self._app_id,
+                    "client_secret": self._app_password,
+                    "scope": GRAPH_SCOPE,
+                },
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            token = str(payload.get("access_token", "") or "")
+            if not token:
+                raise TeamsError("token endpoint returned no access token.")
+            self._graph_token = token
+            return token
+        except TeamsError:
+            raise
+        except Exception as exc:
+            raise self._fail("token", exc) from exc
+
+    @staticmethod
+    def _looks_like_conversation_id(value: str) -> bool:
+        text = (value or "").strip()
+        if not text:
+            return False
+        if ":" in text:
+            return True
+        return text.startswith(("19:", "a:"))
+
+    def _conversation_id_for(self, user_id: str) -> str:
+        text = (user_id or "").strip()
+        if self._looks_like_conversation_id(text):
+            return text
+        return self.resolve_conversation(text)
+
+    def resolve_conversation(self, person: str) -> str:
+        """Resolve a teammate display name to a 1:1 chat id via Graph."""
+        name = (person or "").strip()
+        if not name:
+            raise TeamsError(
+                "no 1:1 Teams chat found for ''; "
+                "open a 1:1 with Pam in Teams first."
+            )
+        key = name.lower()
+        cached = self._conversation_cache.get(key)
+        if cached:
+            return cached
+        client = self._client_or_raise()
+        token = self._graph_access_token()
+        try:
+            resp = client.get(
+                GRAPH_CHATS_URL,
+                headers={"Authorization": "Bearer " + token},
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+        except Exception as exc:
+            raise self._fail("resolve", exc) from exc
+        chats = payload.get("value", []) if isinstance(payload, dict) else []
+        for chat in chats:
+            if not isinstance(chat, dict):
+                continue
+            if str(chat.get("chatType", "")).lower() != "oneonone":
+                continue
+            chat_id = str(chat.get("id", "") or "")
+            if not chat_id:
+                continue
+            members = chat.get("members", [])
+            if not isinstance(members, list):
+                continue
+            for member in members:
+                if not isinstance(member, dict):
+                    continue
+                display = str(member.get("displayName", "") or "").strip()
+                if display.lower() == key:
+                    self._conversation_cache[key] = chat_id
+                    return chat_id
+        raise TeamsError(
+            f"no 1:1 Teams chat found for '{name}'; "
+            "open a 1:1 with Pam in Teams first."
+        )
+
     def _post_activity(self, conversation_id: str, activity: dict[str, Any]) -> str:
         client = self._client_or_raise()
         token = self._access_token()
@@ -266,7 +358,8 @@ class TeamsAdapter(ChatAdapter):
     def send_dm(self, user_id: str, text: str) -> str:
         if not (user_id or "").strip():
             raise TeamsError("send_dm needs a conversation id.")
-        return self._post_activity(user_id.strip(), {"type": "message", "text": text})
+        conversation_id = self._conversation_id_for(user_id.strip())
+        return self._post_activity(conversation_id, {"type": "message", "text": text})
 
     def read_replies(self, user_id: str, since: str | None = None) -> list[ChatMessage]:
         """Drain inbound messages queued by handle_activity for a user."""
@@ -293,8 +386,9 @@ class TeamsAdapter(ChatAdapter):
                 label = item.get("label", "")
                 value = item.get("value", bid)
             actions.append({"type": "imBack", "title": label or bid, "value": value})
+        conversation_id = self._conversation_id_for(user_id.strip())
         return self._post_activity(
-            user_id.strip(),
+            conversation_id,
             {
                 "type": "message",
                 "text": text,
