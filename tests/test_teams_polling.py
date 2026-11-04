@@ -789,6 +789,40 @@ def test_wizard_device_poll_without_start(device_client) -> None:
     assert resp.status_code == 400
     assert resp.json()["status"] == "missing"
 
+def test_own_app_message_without_user_skipped(tmp_path) -> None:
+    class Tokens:
+        def access_token(self) -> str:
+            return "graph-fake-token"
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "m-own",
+                        "messageType": "message",
+                        "createdDateTime": "2026-11-04T10:00:00Z",
+                        "body": {"contentType": "html", "content": "<p>own send</p>"},
+                        "from": {"application": {"id": "app-bot-1"}},
+                    },
+                ]
+            },
+        )
+
+    seen: list[Any] = []
+    poller = TeamsPoller(
+        GraphClient(Tokens(), transport=httpx.MockTransport(handle)),
+        tmp_path / "state.db",
+        [{"id": "chat-1", "chatType": "oneOnOne"}],
+        interval=60,
+        on_message=seen.append,
+        bot_id="app-bot-1",
+    )
+    assert poller.poll_once() == []
+    assert seen == []
+
+
 def test_teams_loop_publishes_dm_and_skips_own(tmp_path, monkeypatch) -> None:
     import pam_pm.web.app as app_mod
     from pam_pm.core import secrets as secrets_mod
