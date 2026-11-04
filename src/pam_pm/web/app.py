@@ -747,6 +747,7 @@ def get_teams_poller(
                 chat=get_chat_adapter(name),
                 board=get_board_adapter(name),
                 db=poll_db,
+                model_client=_resume_model_client(name),
                 event_sink=use_bus.publish if use_bus is not None else bus.publish,
             )
         except Exception:  # noqa: BLE001
@@ -3590,6 +3591,9 @@ def setup_page(request: Request, token: str = "") -> HTMLResponse:
             "setup_done": SETUP_DONE,
             "backend": backend,
             "backend_label": backend_label(backend),
+            "chat_backend": _project_chat_backend(project),
+            "chat_slack_value": "slack",
+            "chat_teams_value": "teams",
             "show_ado": backend == BACKEND_AZURE_DEVOPS,
             "show_jira": backend == BACKEND_JIRA,
             "show_linear": backend == BACKEND_LINEAR,
@@ -5007,6 +5011,54 @@ async def save_setup_backend(request: Request) -> Any:
     if "hx-request" in request.headers:
         return HTMLResponse(_test_result_html(True, f"Tasks will live on {label}."))
     return {"ok": True, "project": project, "backend": stored, "label": label}
+
+
+@app.post("/api/setup/chat")
+async def save_setup_chat(request: Request) -> Any:
+    if not await _setup_token_ok(request):
+        return _setup_token_denied(request)
+    project = request.query_params.get("project", "default").strip() or "default"
+    chat_backend = request.query_params.get("chat_backend", "").strip()
+    ctype = request.headers.get("content-type", "")
+    if "application/json" in ctype:
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = {}
+        if isinstance(payload, dict):
+            project = str(payload.get("project", project)).strip() or "default"
+            chat_backend = str(
+                payload.get("chat_backend", payload.get("backend", chat_backend))
+            ).strip()
+    else:
+        form = await request.form()
+        if "project" in form:
+            project = str(form.get("project", project)).strip() or "default"
+        if "chat_backend" in form:
+            chat_backend = str(form.get("chat_backend", chat_backend)).strip()
+        elif "backend" in form:
+            chat_backend = str(form.get("backend", chat_backend)).strip()
+    canonical = store_mod.normalize_chat_backend(chat_backend)
+    try:
+        stored = store_mod.set_project_chat_backend(
+            _db_path(), _safe_project(project), canonical
+        )
+    except Exception:  # noqa: BLE001
+        stored = canonical
+    try:
+        _write_project_step(project, "chat", {"chat_backend": stored})
+    except Exception:  # noqa: BLE001
+        msg = "That choice could not be saved."
+        hint = "Check your connection and try again."
+        if "hx-request" in request.headers:
+            return HTMLResponse(_test_result_html(False, msg, hint))
+        return JSONResponse(
+            {"ok": False, "message": msg, "hint": hint}, status_code=500
+        )
+    label = "Microsoft Teams" if stored == "teams" else "Slack"
+    if "hx-request" in request.headers:
+        return HTMLResponse(_test_result_html(True, f"Pam will talk to you on {label}."))
+    return {"ok": True, "project": project, "chat_backend": stored, "label": label}
 
 
 @app.get("/api/setup/share")

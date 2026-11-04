@@ -149,6 +149,7 @@ class TeamsAdapter(ChatAdapter):
         self._token: str = ""
         self._graph_token: str = ""
         self._conversation_cache: dict[str, str] = {}
+        self._display_name_cache: dict[str, str] = {}
         self._inbound: dict[str, deque[ChatMessage]] = {}
         want = str(mode or "send").strip().lower()
         self._mode = "poll" if want == "poll" else "send"
@@ -434,6 +435,79 @@ class TeamsAdapter(ChatAdapter):
             f"no 1:1 Teams chat found for '{name}'; "
             "watch the 1:1 in Setup, then retry."
         )
+
+    def display_name_for_user(self, user_id: str) -> str | None:
+        """Resolve a Teams user id to a member displayName via Graph.
+
+        Scans known watched 1:1 chats, GETs members, matches member id,
+        and caches the displayName. Returns None when unresolvable.
+        Never logs tokens.
+        """
+        want = (user_id or "").strip()
+        if not want:
+            return None
+        cached = self._display_name_cache.get(want)
+        if cached:
+            return cached
+        if not self._chats:
+            return None
+        try:
+            client = self._client_or_raise()
+            token = self._graph_access_token()
+        except Exception:  # noqa: BLE001
+            return None
+        for chat in self._chats:
+            chat_id = str(chat.get("id", "") or "").strip()
+            if not chat_id:
+                continue
+            chat_type = str(
+                chat.get("chatType", "") or chat.get("chat_type", "") or ""
+            ).strip().lower()
+            if chat_type == "channel":
+                continue
+            if chat_type in ("group",):
+                continue
+            if chat_type and chat_type != "oneonone":
+                continue
+            if "/" in chat_id:
+                continue
+            if str(chat.get("team_id", "") or chat.get("teamId", "") or "").strip():
+                continue
+            try:
+                resp = client.get(
+                    GRAPH_CHATS_URL + "/" + chat_id + "/members",
+                    headers={"Authorization": "Bearer " + token},
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+            except Exception as exc:  # noqa: BLE001
+                try:
+                    self._fail("resolve", exc)
+                except Exception:  # noqa: BLE001, S110
+                    pass
+                return None
+            members = payload.get("value", []) if isinstance(payload, dict) else []
+            if not isinstance(members, list):
+                continue
+            for member in members:
+                if not isinstance(member, dict):
+                    continue
+                mid = str(
+                    member.get("id", "") or member.get("userId", "") or ""
+                ).strip()
+                user_obj = member.get("user")
+                if not mid and isinstance(user_obj, dict):
+                    mid = str(user_obj.get("id", "") or "").strip()
+                if not mid or mid != want:
+                    continue
+                display = str(member.get("displayName", "") or "").strip()
+                if not display and isinstance(user_obj, dict):
+                    display = str(user_obj.get("displayName", "") or "").strip()
+                if display:
+                    self._display_name_cache[want] = display
+                    return display
+                return None
+        return None
 
     def _post_activity(self, conversation_id: str, activity: dict[str, Any]) -> str:
         client = self._client_or_raise()

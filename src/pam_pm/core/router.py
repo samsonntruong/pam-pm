@@ -841,6 +841,8 @@ def handle_teams_event(
     segmenter: Any = None,
     provider: str = "meta",
     event_sink: Any = None,
+    db: Any = None,
+    model_client: Any = None,
     bot_id: str = "",
 ) -> dict[str, Any]:
     """Route a polled Teams message the same way Slack events route.
@@ -889,14 +891,68 @@ def handle_teams_event(
     if not text.strip():
         logger.info("teams event ignored: empty message")
         return {"kind": "ignored", "replied": False}
-    log_route(CAP_TEAMS_TEXT, text_model(), f"teams message in {channel or 'chat'}")
+    if db is None or model_client is None:
+        log_route(CAP_TEAMS_TEXT, text_model(), f"teams message in {channel or 'chat'}")
+        return {
+            "kind": "message",
+            "capability": CAP_TEAMS_TEXT,
+            "model": text_model(),
+            "channel": channel,
+            "user_id": str(fields["user_id"] or ""),
+            "message_id": str(fields["message_id"] or ""),
+            "text": text,
+            "replied": False,
+        }
+    user_id = str(fields["user_id"] or "")
+    person = user_id or channel
+    if not person or chat is None:
+        logger.info("teams event ignored: message without person")
+        return {"kind": "ignored", "replied": False}
+    from pam_pm.agents import interviewer as interviewer_mod
+
+    try:
+        resolved = (
+            interviewer_mod.resolve_display_name(chat, user_id) if user_id else None
+        )
+        who = str(resolved or channel or person or "").strip()
+        outcome = interviewer_mod.resume_interview(
+            who or person,
+            text,
+            chat,
+            board,
+            model_client,
+            db=db,
+            message_id=str(fields["message_id"] or ""),
+        )
+    except Exception:  # noqa: BLE001
+        logger.info("teams resume failed, keeping local result")
+        return {"kind": "ignored", "replied": False}
+    raw_kind = str(outcome.get("kind", "") or "")
+    if raw_kind == "finished":
+        resume_kind = "finished"
+    elif raw_kind == "reply":
+        resume_kind = "follow-up sent"
+    elif raw_kind == "no_open_state":
+        resume_kind = "no_open_state"
+    elif raw_kind == "blocker_no_state":
+        resume_kind = "blocker_no_state"
+    elif "error" in raw_kind:
+        resume_kind = "model_error"
+    else:
+        resume_kind = raw_kind or "unknown"
+    logger.info("teams resume outcome: kind=%s", resume_kind)
+    kinds = {
+        "reply": "interview_reply",
+        "finished": "interview_finished",
+        "no_open_state": "interview_no_state",
+        "blocker_no_state": "interview_blocker",
+        "duplicate": "interview_duplicate",
+        "write_failed": "interview_write_failed",
+    }
     return {
-        "kind": "message",
-        "capability": CAP_TEAMS_TEXT,
-        "model": text_model(),
-        "channel": channel,
-        "user_id": str(fields["user_id"] or ""),
-        "message_id": str(fields["message_id"] or ""),
-        "text": text,
-        "replied": False,
+        "kind": kinds.get(str(outcome.get("kind", "") or ""), "interview_resume"),
+        "replied": bool(outcome.get("replied", False)),
+        "person": person,
+        "item_id": str(outcome.get("item_id", "") or ""),
+        "resume": outcome,
     }

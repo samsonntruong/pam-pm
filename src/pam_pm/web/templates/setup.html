@@ -104,7 +104,25 @@
   <p class="muted">The test checks tool calling, structured output, and image input. SAM 3.1 planning is Meta only; a custom provider reads the whole photo instead.</p>
 </section>
 
-<section class="card" id="step-2">
+<section class="card" id="step-2-chat">
+  <h2>Where should Pam talk to you?</h2>
+  <p class="muted">This choice is saved for each project.</p>
+  <div class="backend-cards">
+    <label class="card backend-card">
+      <input type="radio" name="chat_backend" value="{{ chat_slack_value }}" {% if chat_backend != chat_teams_value %}checked{% endif %} onchange="saveChatBackend(this.value)">
+      <strong><img src="/static/icons/slack.svg" alt="" width="16" height="16"> Slack</strong>
+      <span class="muted">Send morning messages over Slack. Enter the bot and app tokens below.</span>
+    </label>
+    <label class="card backend-card">
+      <input type="radio" name="chat_backend" value="{{ chat_teams_value }}" {% if chat_backend == chat_teams_value %}checked{% endif %} onchange="saveChatBackend(this.value)">
+      <strong><img src="/static/icons/teams.svg" alt="" width="16" height="16"> Microsoft Teams</strong>
+      <span class="muted">Send morning messages over Teams. Enter the app ID, secret, and tenant below.</span>
+    </label>
+  </div>
+  <div id="chat-result" class="result" aria-live="polite"></div>
+</section>
+
+<section class="card" id="step-2" {% if chat_backend == chat_teams_value %}hidden{% endif %}>
   <h2>Step 2: Slack</h2>
   <p>The team lead or a workspace admin creates ONE internal Slack app once from the file slack-app-manifest.yaml. Everyone else installs nothing and just gets messages from Pam. If installs need approval in your workspace, ask a workspace admin to approve it.</p>
   <p>Paste the tokens below, choose Save, then Test.</p>
@@ -123,7 +141,7 @@
   <blockquote>Pam was added to the workspace. You will get a morning message about your work. Your answers stay private. There is nothing to install.</blockquote>
 </section>
 
-<section class="card" id="step-2-teams">
+<section class="card" id="step-2-teams" {% if chat_backend != chat_teams_value %}hidden{% endif %}>
   <h2>Step 2: Microsoft Teams (optional)</h2>
   <label for="teams-app-id">Teams App ID</label>
   <input id="teams-app-id" name="app_id" type="password" value="" placeholder="{% if teams_has_app_id %}Saved on this machine{% else %}Paste app ID here{% endif %}" autocomplete="off">
@@ -819,6 +837,49 @@
         retry.type = "button";
         retry.textContent = "Try again";
         retry.addEventListener("click", function () { saveBackend(value); });
+        box.appendChild(retry);
+      }
+    } finally {
+      radios.forEach(function (radio) { radio.disabled = false; });
+    }
+  }
+  function toggleChatSections(value) {
+    const slack = document.getElementById("step-2");
+    const teams = document.getElementById("step-2-teams");
+    if (slack) {
+      if (value === "teams") { slack.setAttribute("hidden", ""); }
+      else { slack.removeAttribute("hidden"); }
+    }
+    if (teams) {
+      if (value === "teams") { teams.removeAttribute("hidden"); }
+      else { teams.setAttribute("hidden", ""); }
+    }
+  }
+  async function saveChatBackend(value) {
+    const project = projectName();
+    const box = document.getElementById("chat-result");
+    const radios = document.querySelectorAll('input[name="chat_backend"]:not([disabled])');
+    radios.forEach(function (radio) { radio.disabled = true; });
+    if (box) backendPill(box, "pill", "Saving your choice...");
+    try {
+      const resp = await fetch("/api/setup/chat", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({project: project, chat_backend: value, token: setupToken()})
+      });
+      const data = await resp.json().catch(function () { return {}; });
+      if (!resp.ok || (data && data.ok === false)) throw new Error("save failed");
+      const label = (data && data.label) ? data.label : value;
+      if (box) backendPill(box, "pill pill-ok", "Saved. Pam will talk to you on " + label + ".");
+      toggleChatSections(value);
+      await saveStep("chat", {data: {chat_backend: value}});
+    } catch (err) {
+      if (box) {
+        backendPill(box, "pill pill-fail", "Sorry, that choice could not be saved. Check your connection and try again.");
+        const retry = document.createElement("button");
+        retry.type = "button";
+        retry.textContent = "Try again";
+        retry.addEventListener("click", function () { saveChatBackend(value); });
         box.appendChild(retry);
       }
     } finally {
