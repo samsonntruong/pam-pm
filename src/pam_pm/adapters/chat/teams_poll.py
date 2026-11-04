@@ -106,7 +106,7 @@ def _sender_id(message: dict[str, Any]) -> str:
     sender = message.get("from") or {}
     if isinstance(sender, dict):
         user = sender.get("user") or {}
-        if isinstance(user, dict):
+        if isinstance(user, dict) and user.get("id"):
             return str(user.get("id", "") or "")
         app = sender.get("application") or {}
         if isinstance(app, dict):
