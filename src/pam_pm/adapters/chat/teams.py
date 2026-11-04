@@ -492,10 +492,8 @@ class TeamsAdapter(ChatAdapter):
             for member in members:
                 if not isinstance(member, dict):
                     continue
-                mid = str(
-                    member.get("id", "") or member.get("userId", "") or ""
-                ).strip()
                 user_obj = member.get("user")
+                mid = str(member.get("userId", "") or "").strip()
                 if not mid and isinstance(user_obj, dict):
                     mid = str(user_obj.get("id", "") or "").strip()
                 if not mid or mid != want:
