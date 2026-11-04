@@ -834,6 +834,29 @@ def test_teams_loop_publishes_dm_and_skips_own(tmp_path, monkeypatch) -> None:
         app_mod.reset_chat_state()
 
 
+def test_teams_poller_wires_app_id_as_bot_id(tmp_path, monkeypatch) -> None:
+    import pam_pm.web.app as app_mod
+    from pam_pm.core import secrets as secrets_mod
+    from pam_pm.core import store as store_mod
+
+    for key in (*ENV_KEYS, "PAM_SETUP_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("PAM_HOME", str(tmp_path))
+    app_mod.reset_teams_poll_state()
+    app_mod.reset_chat_state()
+    try:
+        secrets_mod.save_teams_config(
+            tmp_path, app_id=APP_ID, app_password=APP_PASSWORD, tenant_id=TENANT_ID
+        )
+        store_mod.set_project_chat_backend(tmp_path / "state.db", "loop9", "teams")
+        poller = app_mod.get_teams_poller("loop9", graph=StubGraph({}))
+        assert poller is not None
+        assert poller.bot_id == APP_ID
+    finally:
+        app_mod.reset_teams_poll_state()
+        app_mod.reset_chat_state()
+
+
 def test_poll_teams_once_wrapper_uses_bus_and_watermark(tmp_path, monkeypatch) -> None:
     import pam_pm.web.app as app_mod
     from pam_pm.core import secrets as secrets_mod

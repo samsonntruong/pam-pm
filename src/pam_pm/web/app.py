@@ -754,8 +754,21 @@ def get_teams_poller(
             logger.info("teams poll resume failed, keeping local result")
 
     try:
+        from pam_pm.core import secrets as secrets_mod
+
+        _bot_id = str(
+            secrets_mod.effective_teams_config().get("app_id", "") or ""
+        ).strip()
+    except Exception:  # noqa: BLE001
+        _bot_id = ""
+    try:
         poller = TeamsPoller(
-            use_graph, poll_db, watch, bus=use_bus, on_message=_resume_polled
+            use_graph,
+            poll_db,
+            watch,
+            bus=use_bus,
+            on_message=_resume_polled,
+            bot_id=_bot_id,
         )
     except Exception:  # noqa: BLE001
         return None
