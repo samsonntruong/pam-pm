@@ -20,6 +20,8 @@ Screenshots for each console screen live in `docs/images/`.
 
 You need nothing installed: no Python, no git, no admin rights. You will need a Meta Model API key, a Slack workspace where you can create an app, and a board backend for the wizard steps (built-in Pam board with no account needed, or Azure DevOps, Jira, Linear, Trello, ClickUp, Asana, or Monday).
 
+Chat works over Slack or Teams.
+
 Windows (PowerShell):
 
 ```powershell
@@ -76,6 +78,7 @@ pam doctor
 Full list: [docs/features.md](docs/features.md).
 
 - Morning check-ins in Slack DM: one question at a time, with pushback on vague answers until remaining work and an ETA are stated.
+- Teams chat backend: chat backend choice per project, DMs plus mentions, same flows as Slack. See [docs/teams-adapter.md](docs/teams-adapter.md).
 - Board sync: status updates, comments, and dependency links written with a quoted evidence line behind each write. Works with the Pam board, Azure DevOps, Jira, Linear, Trello, ClickUp, Asana, and Monday. Required vs optional fields per connector are listed in [.env.example](.env.example). See [docs/native-board.md](docs/native-board.md).
 - Blocker intake: asks what is blocked, finds or creates the blocking item, links it, asks the owner for an ETA, and notifies the waiting person when it clears.
 - Sprint review and retro: synthesizes per-item status into a review and creates retro actions tagged `retro-action`.
@@ -142,7 +145,7 @@ One internal Slack app per team, created once from the manifest at the repo root
 
 ## Roadmap
 
-Live now: eight board backends over direct REST (Pam board, Azure DevOps, Jira, Linear, Trello, ClickUp, Asana, Monday). Near term: PyPI release, daily lead digest, snooze and quiet hours, Teams two-way. Longer term: agent teammates, multi-project dashboards, plain-English rule creation, hosted multi-tenant version. Full list: [docs/roadmap.md](docs/roadmap.md).
+Live now: eight board backends over direct REST (Pam board, Azure DevOps, Jira, Linear, Trello, ClickUp, Asana, Monday) plus Teams two-way chat. Near term: PyPI release, daily lead digest, snooze and quiet hours. Longer term: agent teammates, multi-project dashboards, plain-English rule creation, hosted multi-tenant version. Full list: [docs/roadmap.md](docs/roadmap.md).
 
 ## Contributing, license, and status
 

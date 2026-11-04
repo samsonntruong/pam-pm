@@ -477,7 +477,7 @@ def _fake_watched_members(
 
 def _watched_chats() -> list[dict[str, Any]]:
     return [
-        {"id": "19:chat-oc-claws", "chatType": "oneOnOne"},
+        {"id": "19:chat-owen", "chatType": "oneOnOne"},
         {"id": "19:chat-other", "chatType": "oneOnOne"},
         {"id": "team1/channel1", "chatType": "channel", "team_id": "team1"},
     ]
@@ -485,7 +485,7 @@ def _watched_chats() -> list[dict[str, Any]]:
 
 def _watched_members() -> dict[str, list[dict[str, str]]]:
     return {
-        "19:chat-oc-claws": [{"displayName": "Pam"}, {"displayName": "OC Claws"}],
+        "19:chat-owen": [{"displayName": "Pam"}, {"displayName": "Owen Clark"}],
         "19:chat-other": [{"displayName": "Pam"}, {"displayName": "Someone Else"}],
     }
 
@@ -500,7 +500,7 @@ def test_resolve_member_match(clean_env) -> None:
         chats=_watched_chats(),
     )
     try:
-        assert adapter.resolve_conversation("OC Claws") == "19:chat-oc-claws"
+        assert adapter.resolve_conversation("Owen Clark") == "19:chat-owen"
         assert adapter.resolve_conversation("someone else") == "19:chat-other"
     finally:
         adapter.close()
@@ -519,9 +519,9 @@ def test_resolve_name_caches_one_graph_call(clean_env) -> None:
         chats=_watched_chats(),
     )
     try:
-        assert adapter.send_dm("OC Claws", "hi one") == "activity-1"
+        assert adapter.send_dm("Owen Clark", "hi one") == "activity-1"
         assert adapter.send_buttons(
-            "oc claws", "hi two", [{"id": "a", "label": "Alpha"}]
+            "owen clark", "hi two", [{"id": "a", "label": "Alpha"}]
         ) == "activity-1"
     finally:
         adapter.close()
@@ -530,7 +530,7 @@ def test_resolve_name_caches_one_graph_call(clean_env) -> None:
     assert seen.get("send_calls") == 2
     assert seen["graph_auth"] == "Bearer fake-graph-token"
     assert "https://graph.microsoft.com/.default" in seen.get("token_scopes", [])
-    assert all("19:chat-oc-claws" in url for url in seen["send_urls"])
+    assert all("19:chat-owen" in url for url in seen["send_urls"])
 
 
 def test_resolve_caches_members_fetch(clean_env) -> None:
@@ -543,10 +543,10 @@ def test_resolve_caches_members_fetch(clean_env) -> None:
         chats=_watched_chats(),
     )
     try:
-        first = adapter.resolve_conversation("OC Claws")
+        first = adapter.resolve_conversation("Owen Clark")
         calls_after_first = seen.get("graph_calls", 0)
-        second = adapter.resolve_conversation("oc CLAWS")
-        assert first == second == "19:chat-oc-claws"
+        second = adapter.resolve_conversation("owen CLARK")
+        assert first == second == "19:chat-owen"
         assert seen.get("graph_calls", 0) == calls_after_first
     finally:
         adapter.close()
@@ -562,11 +562,11 @@ def test_roster_override_wins(clean_env) -> None:
         tenant_id=TENANT_ID,
         transport=_fake_watched_members(seen, _watched_members()),
         chats=_watched_chats(),
-        roster=[{"name": "OC Claws", "teams_chat_id": "19:override-chat"}],
+        roster=[{"name": "Owen Clark", "teams_chat_id": "19:override-chat"}],
     )
     try:
-        assert adapter.resolve_conversation("OC Claws") == "19:override-chat"
-        assert adapter.resolve_conversation("oc claws") == "19:override-chat"
+        assert adapter.resolve_conversation("Owen Clark") == "19:override-chat"
+        assert adapter.resolve_conversation("owen clark") == "19:override-chat"
     finally:
         adapter.close()
     assert seen.get("graph_calls", 0) == 0
@@ -584,7 +584,7 @@ def test_roster_arg_override_wins_without_fetch(clean_env) -> None:
     )
     try:
         got = adapter.resolve_conversation(
-            "OC Claws", roster=[{"name": "oc claws", "teams_chat_id": "19:arg-chat"}]
+            "Owen Clark", roster=[{"name": "owen clark", "teams_chat_id": "19:arg-chat"}]
         )
         assert got == "19:arg-chat"
     finally:

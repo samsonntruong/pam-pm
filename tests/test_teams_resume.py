@@ -78,8 +78,8 @@ def test_display_name_for_user_resolves_and_caches() -> None:
                 200,
                 json={
                     "value": [
-                        {"id": "bot-id", "displayName": "Pam Bot"},
-                        {"id": "teams-guid-1", "displayName": "Maya Pam"},
+                        {"id": "mship-bot", "userId": "bot-id", "displayName": "Pam Bot"},
+                        {"id": "mship-maya", "userId": "teams-guid-1", "displayName": "Maya Pam"},
                     ]
                 },
             )

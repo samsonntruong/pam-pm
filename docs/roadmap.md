@@ -5,13 +5,13 @@ Live in 1.0 and what comes next. Tracked here so the README stays honest about w
 ## Done in 1.0
 
 - Eight board backends over direct REST, chosen per project in the wizard: Pam board, Azure DevOps, Jira, Linear, Trello, ClickUp, Asana, and Monday.
+- Teams two-way chat, chosen per project with Slack default. See [teams-adapter.md](teams-adapter.md).
 
 ## Near term
 
 - PyPI release so `pipx install pam-pm` works without a git URL.
 - Daily lead digest.
 - Snooze and quiet hours.
-- Teams two-way via Graph polling. See [teams-adapter.md](teams-adapter.md).
 
 ## Longer term
 

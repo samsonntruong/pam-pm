@@ -5,6 +5,7 @@ Everything Pam does, in one list. The README links here for the full detail behi
 ## Daily flow
 
 - Morning check-ins in Slack DM: one question at a time, with pushback on vague answers until remaining work and an ETA are stated.
+- Teams chat backend: chat backend choice per project, DMs plus mentions, same flows as Slack. See [teams-adapter.md](teams-adapter.md).
 - Board sync: status updates, comments, and dependency links written with a quoted evidence line behind each write. Works with the Pam board, Azure DevOps, Jira, Linear, Trello, ClickUp, Asana, and Monday.
 - Blocker intake: asks what is blocked, finds or creates the blocking item, links it with a Predecessor/Successor dependency, asks the owner for an ETA, and notifies the waiting person when it clears.
 

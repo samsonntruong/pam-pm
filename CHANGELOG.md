@@ -8,6 +8,7 @@
 - Listen meetings beta with realtime transcription, notes, and action item approval.
 - LAN share mode for team access on the local network.
 - Desktop wrapper beta: `pam desktop` window plus tray on Windows and macOS.
+- Teams two-way: per-project chat choice with Slack default, send via Bot Connector with Accept/Flag buttons, reply polling through Graph app permissions with per-chat watermarks, generated app package in the wizard.
 
 ## Unreleased
 
